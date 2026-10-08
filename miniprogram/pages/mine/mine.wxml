@@ -1,0 +1,146 @@
+<view class="page">
+
+  <!-- 用户信息 -->
+  <view class="card profile">
+    <button class="avatar avatar-btn" open-type="chooseAvatar" bindchooseavatar="onChooseAvatar">
+      <image wx:if="{{user.avatarUrl}}" src="{{user.avatarUrl}}" mode="aspectFill" />
+      <text wx:else>🐱</text>
+    </button>
+    <view class="p-info">
+      <input class="p-name-input" type="nickname" value="{{user.nickName}}" placeholder="点此设置昵称"
+        bindblur="onNickName" bindconfirm="onNickName" confirm-type="done" />
+      <view class="p-role">
+        <text class="tag {{isMember ? 'ok' : 'gray'}}">{{isMember ? (isAdmin ? '管理员' : '社团成员') : '爱猫同学'}}</text>
+        <text class="small muted" wx:if="{{school}}">{{school.name}}</text>
+      </view>
+      <text class="small muted edit-hint">点击头像换图 · 点昵称可改</text>
+    </view>
+  </view>
+
+  <!-- 我的数据 -->
+  <view class="stat-grid">
+    <view class="item">
+      <view class="stat-card">
+        <view class="num">{{stats.points}}</view>
+        <view class="lbl">猫粮值</view>
+      </view>
+    </view>
+    <view class="item">
+      <view class="stat-card">
+        <view class="num">{{stats.sightingCount}}</view>
+        <view class="lbl">打卡次数</view>
+      </view>
+    </view>
+    <view class="item">
+      <view class="stat-card">
+        <view class="num">{{stats.catSeen}}</view>
+        <view class="lbl">图鉴收集</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 图鉴进度（对齐预览：进度条 + 解锁墙） -->
+  <view class="card mt" wx:if="{{dex.length}}">
+    <view class="card-title">
+      图鉴进度
+      <text class="more" bindtap="goCats">去猫谱 ›</text>
+    </view>
+    <view class="flex-between small muted" style="margin-bottom:16rpx">
+      <text>已收集 {{stats.catSeen}} / {{dexTotal}}</text>
+      <text>{{dexPercent}}%</text>
+    </view>
+    <view class="progress">
+      <view class="bar" style="width: {{dexPercent}}%"></view>
+    </view>
+    <view class="dex-row">
+      <view class="dex-item {{item.unlocked ? '' : 'locked'}}" wx:for="{{dex}}" wx:key="id"
+        data-id="{{item.id}}" bindtap="goCat">
+        <image wx:if="{{item.avatar && item.unlocked}}" src="{{item.avatar}}" mode="aspectFill" />
+        <text wx:elif="{{item.unlocked}}">🐱</text>
+        <text wx:else>?</text>
+      </view>
+    </view>
+    <view class="small muted" style="margin-top:16rpx;line-height:1.7">
+      每拍到一只没见过的猫，图鉴自动解锁；灰色的是还没遇到的同学。
+    </view>
+  </view>
+
+  <!-- 学校设置 -->
+  <view class="card mt">
+    <view class="card-title">
+      学校
+      <text class="more" bindtap="toggleSchoolForm">{{showSchoolForm ? '收起' : '创建 / 切换'}}</text>
+    </view>
+    <view wx:if="{{!showSchoolForm && school}}">
+      <view class="row"><text class="label">当前</text><text class="value">{{school.name}} {{school.campus}}</text></view>
+      <view class="row" wx:if="{{school.intro}}"><text class="label">简介</text><text class="value">{{school.intro}}</text></view>
+    </view>
+    <view wx:if="{{!showSchoolForm && !school}}" class="small muted">未绑定学校</view>
+
+    <block wx:if="{{showSchoolForm}}">
+      <view class="form-item">
+        <text class="label">学校名称</text>
+        <input placeholder="如：南京大学" value="{{schoolForm.name}}" data-key="name" bindinput="onInput" />
+      </view>
+      <view class="form-item">
+        <text class="label">校区</text>
+        <input placeholder="如：仙林校区" value="{{schoolForm.campus}}" data-key="campus" bindinput="onInput" />
+      </view>
+      <view class="form-item">
+        <text class="label">城市</text>
+        <input placeholder="如：南京" value="{{schoolForm.city}}" data-key="city" bindinput="onInput" />
+      </view>
+      <view class="form-item">
+        <text class="label">简介</text>
+        <input placeholder="一句话介绍" value="{{schoolForm.intro}}" data-key="intro" bindinput="onInput" />
+      </view>
+      <button class="btn mt" bindtap="createSchool" wx:if="{{isAdmin}}">创建并绑定</button>
+      <view class="small muted mt" wx:else>仅管理员可创建学校</view>
+
+      <view class="mt" wx:if="{{schools.length}}">
+        <view class="bold small" style="margin-bottom:12rpx">已有学校</view>
+        <view class="school-item" wx:for="{{schools}}" wx:key="_id" data-id="{{item._id}}" bindtap="bindSchool">
+          {{item.name}} {{item.campus}}
+        </view>
+      </view>
+    </block>
+  </view>
+
+  <!-- 我的打卡 -->
+  <view class="card mt">
+    <view class="card-title">我的打卡</view>
+    <block wx:for="{{mySightings}}" wx:key="_id">
+      <view class="my-item">
+        <view class="flex-between">
+          <text class="bold" wx:if="{{item.catId}}" data-id="{{item.catId}}" bindtap="goCat">{{item.cat.name || '未知'}}</text>
+          <text class="bold muted" wx:else>{{item.catName}}</text>
+          <text class="small muted">{{item.timeText}}</text>
+        </view>
+        <view class="small muted ellipsis" wx:if="{{item.note}}">{{item.note}}</view>
+        <view class="photo-row" wx:if="{{item.photos.length}}">
+          <image wx:for="{{item.photos}}" wx:for-item="p" wx:key="*this" src="{{p}}" mode="aspectFill"
+            data-url="{{p}}" data-urls="{{item.photos}}" bindtap="previewPhoto" />
+        </view>
+      </view>
+    </block>
+    <view class="empty" wx:if="{{!mySightings.length}}">
+      <text class="emoji">🐾</text>
+      还没有打卡记录
+    </view>
+  </view>
+
+  <!-- 入口 -->
+  <view class="card mt">
+    <view class="menu-item" data-url="/pages/member/member" bindtap="go">
+      <text>身份与入社申请</text><text class="arrow">›</text>
+    </view>
+    <view class="menu-item" data-url="/pages/fund/fund" bindtap="go" wx:if="{{isMember}}">
+      <text>资金公示</text><text class="arrow">›</text>
+    </view>
+  </view>
+
+  <view class="tip small muted">
+    猫粮值规则：目击打卡 +10，上报新猫 +30，首次遇见某只猫 +20，参与 TNR 记录 +50。每日打卡积分上限 60，防止刷分。
+  </view>
+
+</view>

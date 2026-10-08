@@ -1,0 +1,22 @@
+# 基础服务（必装，纯 CPU 也能跑）
+# 用下限而非锁定版本：本机 Python 是 3.13，部分旧版本没有 cp313 的 Windows 轮子
+fastapi>=0.115
+uvicorn[standard]>=0.34
+numpy>=2.1
+pillow>=11.1
+httpx>=0.28
+python-dotenv>=1.0
+
+# 可选 A：ONNX 推理（推荐 —— 镜像小、不需要 PyTorch、CPU 推理足够快）
+# 本机实测：onnxruntime 1.30.0 提供 cp313-win_amd64 轮子，Python 3.13 可直接装
+onnxruntime>=1.19
+
+# 可选 B：PyTorch 路线（只在两种情况下需要）
+#   1) 要用 MegaDescriptor 权重（HF 上只有 .bin，必须先导出成 ONNX）
+#   2) 要用 CLIP 做毛色/花纹零样本分类（USE_CLIP=1）
+# 本机无 NVIDIA 显卡，装 CPU 版即可，千万别装默认 CUDA 版（会多拉 2GB+ 依赖）
+#
+# pip install torch --index-url https://download.pytorch.org/whl/cpu
+# pip install timm==1.0.11 open_clip_torch transformers ultralytics
+
+# 抽帧用的是系统 ffmpeg（环境变量 FFMPEG 指定），本服务不依赖 opencv

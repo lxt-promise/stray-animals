@@ -1,0 +1,121 @@
+<view class="page" wx:if="{{cat}}">
+
+  <!-- 头部 -->
+  <view class="detail-hero">
+    <image class="hero-img" wx:if="{{cat.avatar}}" src="{{cat.avatar}}" mode="aspectFill" />
+    <view class="hero-ph" wx:else>🐱</view>
+    <view class="hero-mask">
+      <view class="hero-name">{{cat.name}}</view>
+      <view class="hero-alias small" wx:if="{{cat.alias}}">又名 {{cat.alias}}</view>
+    </view>
+  </view>
+
+  <view class="tag-line">
+    <text class="tag {{statusLabel === '在校' ? 'ok' : ''}}">{{statusLabel}}</text>
+    <text class="tag purple">{{patternLabel}}</text>
+    <text class="tag" wx:if="{{rarityItem}}">{{rarityItem.label}}</text>
+    <text class="tag {{cat.sterilized === 'yes' ? 'ok' : 'warn'}}">{{sterLabel}}</text>
+  </view>
+
+  <!-- AI 识别置信度（对齐预览：圆环 + 说明） -->
+  <view class="card card-glow mt">
+    <view class="card-title">
+      AI 识别置信度
+      <text class="more mono">LOCAL ENGINE</text>
+    </view>
+    <view class="conf-row">
+      <view class="conf-ring" style="background: conic-gradient(var(--brand) 0turn {{ringTurn}}turn, rgba(146, 88, 32, .08) {{ringTurn}}turn)">
+        <view class="ring-inner">
+          <text class="ring-num">{{confidence}}</text><text class="ring-pct">%</text>
+        </view>
+      </view>
+      <view class="conf-text">
+        <view class="small">该猫已入库 <text class="bold">{{photoCount}}</text> 张标准照。</view>
+        <view class="small muted" style="margin-top:8rpx">{{confText}}</view>
+      </view>
+    </view>
+    <view class="divider"></view>
+    <view class="small muted">
+      最近被记录：{{sightings[0] ? sightings[0].timeText : '暂无'}} · 累计 {{cat.sightingCount || 0}} 次目击
+    </view>
+  </view>
+
+  <!-- 基本信息 -->
+  <view class="card mt">
+    <view class="card-title">档案</view>
+    <view class="row"><text class="label">性别</text><text class="value">{{cat.sex === 'male' ? '公' : (cat.sex === 'female' ? '母' : '未知')}}</text></view>
+    <view class="row"><text class="label">花色</text><text class="value">{{patternLabel}}<text wx:if="{{cat.colorNote}}"> · {{cat.colorNote}}</text></text></view>
+    <view class="row"><text class="label">健康</text><text class="value">{{healthLabel}}</text></view>
+    <view class="row" wx:if="{{cat.earMark}}"><text class="label">耳标</text><text class="value">{{cat.earMark}}</text></view>
+    <view class="row" wx:if="{{cat.birthday}}"><text class="label">出生</text><text class="value">{{cat.birthday}}</text></view>
+    <view class="row" wx:if="{{cat.location && cat.location.name}}">
+      <text class="label">常驻点</text>
+      <text class="value" bindtap="viewOnMap">{{cat.location.name}} <text class="small muted">（查看地图）</text></text>
+    </view>
+    <view class="row" wx:if="{{cat.characters.length}}">
+      <text class="label">性格</text>
+      <view class="value">
+        <text class="tag gray" wx:for="{{cat.characters}}" wx:key="*this">{{item}}</text>
+      </view>
+    </view>
+    <view class="row" wx:if="{{cat.note}}"><text class="label">简介</text><text class="value">{{cat.note}}</text></view>
+    <view class="row" wx:if="{{canEdit && cat.internalNote}}">
+      <text class="label">内部备注</text><text class="value">{{cat.internalNote}}</text>
+    </view>
+  </view>
+
+  <!-- 相册 -->
+  <view class="card mt" wx:if="{{cat.photos.length}}">
+    <view class="card-title">相册</view>
+    <view class="photo-grid">
+      <image wx:for="{{cat.photos}}" wx:key="*this" src="{{item}}" mode="aspectFill"
+        data-url="{{item}}" data-urls="{{cat.photos}}" bindtap="previewPhoto" />
+    </view>
+  </view>
+
+  <!-- TNR 记录（仅成员） -->
+  <view class="card mt" wx:if="{{canEdit && tnr.length}}">
+    <view class="card-title">TNR 记录</view>
+    <view class="tnr-item" wx:for="{{tnr}}" wx:key="_id">
+      <view class="flex-between">
+        <text class="bold small">{{item.status}}</text>
+        <text class="small muted">{{item.surgeryDate || item.trapDate || ''}}</text>
+      </view>
+      <view class="small muted" wx:if="{{item.hospital}}">{{item.hospital}}<text wx:if="{{item.cost}}"> · ¥{{item.cost}}</text></view>
+    </view>
+  </view>
+
+  <!-- 目击时间线 -->
+  <view class="card mt">
+    <view class="card-title">
+      目击记录
+      <text class="more">{{sightings.length}} 条</text>
+    </view>
+    <view class="tl-item" wx:for="{{sightings}}" wx:key="_id">
+      <view class="tl-dot"></view>
+      <view class="tl-body">
+        <view class="flex-between">
+          <text class="small bold">{{item.reporterName || '匿名'}}</text>
+          <text class="small muted">{{item.timeText}}</text>
+        </view>
+        <view class="small muted" wx:if="{{item.locationName}}">📍 {{item.locationName}}</view>
+        <view class="note small" wx:if="{{item.note}}">{{item.note}}</view>
+        <view class="photo-row" wx:if="{{item.photos.length}}">
+          <image wx:for="{{item.photos}}" wx:for-item="p" wx:key="*this" src="{{p}}" mode="aspectFill"
+            data-url="{{p}}" data-urls="{{item.photos}}" bindtap="previewPhoto" />
+        </view>
+      </view>
+    </view>
+    <view class="empty" wx:if="{{!sightings.length}}">
+      <text class="emoji">👀</text>
+      还没有人记录过它
+    </view>
+  </view>
+
+  <!-- 底部操作 -->
+  <view class="footer-bar">
+    <button class="btn btn-plain" style="flex:1" bindtap="goSighting">记录目击</button>
+    <button class="btn" style="flex:1" wx:if="{{canEdit}}" bindtap="goEdit">编辑档案</button>
+  </view>
+
+</view>

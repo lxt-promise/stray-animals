@@ -1,0 +1,83 @@
+<view class="page">
+
+  <view class="card">
+    <view class="form-item">
+      <text class="label">猫咪</text>
+      <picker mode="selector" range="{{catNames}}" value="{{catIndex}}" bindchange="onCatPick">
+        <view>{{catNames[catIndex]}} ›</view>
+      </picker>
+    </view>
+    <view class="form-item" wx:if="{{catIndex === 0}}">
+      <text class="label">猫名</text>
+      <input placeholder="手动填写名字" value="{{form.catName}}" data-key="catName" bindinput="onInput" />
+    </view>
+    <view class="form-item">
+      <text class="label">流程状态</text>
+      <picker mode="selector" range="{{statusOptions}}" range-key="label" value="{{statusIndex}}" bindchange="onStatusPick">
+        <view>{{statusOptions[statusIndex].label}} ›</view>
+      </picker>
+    </view>
+  </view>
+
+  <view class="card">
+    <view class="card-title">时间节点</view>
+    <view class="form-item">
+      <text class="label">诱捕日期</text>
+      <picker mode="date" value="{{form.trapDate}}" data-key="trapDate" bindchange="onDate">
+        <view>{{form.trapDate || '选择日期 ›'}}</view>
+      </picker>
+    </view>
+    <view class="form-item">
+      <text class="label">手术日期</text>
+      <picker mode="date" value="{{form.surgeryDate}}" data-key="surgeryDate" bindchange="onDate">
+        <view>{{form.surgeryDate || '选择日期 ›'}}</view>
+      </picker>
+    </view>
+    <view class="form-item">
+      <text class="label">放归日期</text>
+      <picker mode="date" value="{{form.releaseDate}}" data-key="releaseDate" bindchange="onDate">
+        <view>{{form.releaseDate || '选择日期 ›'}}</view>
+      </picker>
+    </view>
+  </view>
+
+  <view class="card">
+    <view class="card-title">手术信息</view>
+    <view class="form-item">
+      <text class="label">合作医院</text>
+      <input placeholder="医院名称" value="{{form.hospital}}" data-key="hospital" bindinput="onInput" />
+    </view>
+    <view class="form-item">
+      <text class="label">主刀医生</text>
+      <input placeholder="选填" value="{{form.vet}}" data-key="vet" bindinput="onInput" />
+    </view>
+    <view class="form-item">
+      <text class="label">费用(元)</text>
+      <input type="digit" placeholder="0.00" value="{{form.cost}}" data-key="cost" bindinput="onInput" />
+    </view>
+    <view class="form-item">
+      <text class="label">耳标</text>
+      <input placeholder="左耳 / 右耳" value="{{form.earMark}}" data-key="earMark" bindinput="onInput" />
+    </view>
+    <view class="form-item">
+      <text class="label">负责人</text>
+      <input placeholder="执行人" value="{{form.operator}}" data-key="operator" bindinput="onInput" />
+    </view>
+  </view>
+
+  <view class="card">
+    <view class="form-item col">
+      <text class="label">备注</text>
+      <textarea placeholder="诱捕难度、术后恢复情况…" value="{{form.note}}" data-key="note" bindinput="onInput" />
+    </view>
+  </view>
+
+  <view class="tip small muted">
+    状态改为「手术中/住院」或「已放归」后，会自动把该猫档案的绝育状态同步为「已绝育」。
+  </view>
+
+  <view class="footer-bar">
+    <button class="btn btn-block" bindtap="save" disabled="{{saving}}">保存</button>
+  </view>
+
+</view>

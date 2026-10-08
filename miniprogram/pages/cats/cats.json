@@ -1,0 +1,7 @@
+{
+  "navigationBarTitleText": "猫谱",
+  "enablePullDownRefresh": true,
+  "usingComponents": {
+    "cat-card": "/components/cat-card/cat-card"
+  }
+}

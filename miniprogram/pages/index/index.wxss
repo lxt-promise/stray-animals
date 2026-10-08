@@ -1,0 +1,223 @@
+.hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 12rpx 8rpx 26rpx;
+}
+.school-name {
+  font-size: 46rpx;
+  font-weight: 700;
+  letter-spacing: 1rpx;
+  color: var(--text);
+}
+.school-sub {
+  color: var(--text-sub);
+  margin-top: 8rpx;
+}
+.hero-right { display: flex; flex-direction: column; align-items: flex-end; gap: 12rpx; }
+.role-badge {
+  padding: 10rpx 22rpx;
+  border-radius: 30rpx;
+  background: rgba(146, 88, 32, .06);
+  color: var(--text-sub);
+  font-size: 24rpx;
+  border: 2rpx solid var(--card-line);
+}
+.role-badge.member {
+  background: rgba(249, 115, 22, .12);
+  color: var(--brand);
+  border-color: rgba(249, 115, 22, .3);
+}
+/* 右上角 AI 在线指示灯 */
+.ai-status {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+  padding: 8rpx 18rpx;
+  border-radius: 26rpx;
+  background: rgba(251, 191, 36, .1);
+  border: 2rpx solid rgba(251, 191, 36, .25);
+}
+.ai-status .txt { font-size: 20rpx; color: #B45309; letter-spacing: 1rpx; }
+
+/* ===================== AI 识别入口卡 ===================== */
+.ai-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius);
+  border: 2rpx solid rgba(249, 115, 22, .3);
+  background:
+    linear-gradient(135deg, rgba(249, 115, 22, .14) 0%, rgba(251, 191, 36, .12) 55%, rgba(234, 179, 8, .1) 100%);
+  box-shadow: var(--shadow), 0 0 46rpx rgba(249, 115, 22, .14);
+  padding: 30rpx 28rpx;
+  margin-bottom: 24rpx;
+}
+.ai-card .grid-bg-layer {
+  position: absolute;
+  left: 0; right: 0; top: 0; bottom: 0;
+  background-image:
+    linear-gradient(rgba(146, 88, 32, .05) 2rpx, transparent 2rpx),
+    linear-gradient(90deg, rgba(146, 88, 32, .05) 2rpx, transparent 2rpx);
+  background-size: 44rpx 44rpx;
+}
+.ai-card .scan-line { position: absolute; left: 0; right: 0; }
+.ai-card-inner { position: relative; z-index: 2; }
+.ai-head { display: flex; align-items: center; gap: 16rpx; }
+.ai-head .badge {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  height: 44rpx;
+  padding: 0 16rpx;
+  border-radius: 22rpx;
+  background: rgba(146, 88, 32, .18);
+  border: 2rpx solid rgba(249, 115, 22, .35);
+  font-size: 20rpx;
+  color: var(--brand);
+  letter-spacing: 1rpx;
+}
+.ai-title {
+  font-size: 36rpx;
+  font-weight: 700;
+  margin-top: 18rpx;
+  letter-spacing: 1rpx;
+}
+.ai-desc {
+  font-size: 24rpx;
+  color: rgba(67, 20, 7, .72);
+  margin-top: 10rpx;
+  line-height: 1.6;
+}
+.ai-actions { display: flex; gap: 18rpx; margin-top: 26rpx; }
+.ai-btn {
+  flex: 1;
+  height: 84rpx;
+  border-radius: 22rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10rpx;
+  font-size: 28rpx;
+  font-weight: 600;
+}
+.ai-btn.photo {
+  background: var(--brand-grad);
+  color: #FFFFFF;
+  box-shadow: 0 10rpx 26rpx rgba(249, 115, 22, .35);
+}
+.ai-btn.video {
+  background: rgba(146, 88, 32, .08);
+  color: var(--text);
+  border: 2rpx solid rgba(146, 88, 32, .16);
+}
+.ai-btn .ico { font-size: 32rpx; }
+.ai-meta {
+  display: flex;
+  align-items: center;
+  gap: 18rpx;
+  margin-top: 20rpx;
+  font-size: 20rpx;
+  color: rgba(67, 20, 7, .5);
+}
+.ai-meta .sep { width: 2rpx; height: 18rpx; background: rgba(146, 88, 32, .18); }
+
+/* ===================== 统计卡 ===================== */
+.stat-card {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFFBF6 100%);
+  border: 2rpx solid var(--card-line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 26rpx 16rpx;
+  text-align: center;
+}
+.stat-card::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  width: 56rpx;
+  height: 4rpx;
+  border-radius: 4rpx;
+  background: var(--brand-grad);
+  opacity: .8;
+}
+.stat-card .num {
+  font-size: 46rpx;
+  font-weight: 700;
+  color: var(--brand);
+  line-height: 1.1;
+  text-shadow: 0 0 24rpx rgba(249, 115, 22, .35);
+}
+.stat-card .num .unit { font-size: 24rpx; }
+.stat-card .lbl {
+  font-size: 22rpx;
+  color: var(--text-sub);
+  margin-top: 10rpx;
+}
+
+/* ===================== 快捷操作 ===================== */
+.quick-row { display: flex; gap: 20rpx; }
+.quick-btn {
+  position: relative;
+  overflow: hidden;
+  flex: 1;
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFFBF6 100%);
+  border: 2rpx solid var(--card-line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 30rpx 0;
+  text-align: center;
+}
+.quick-btn .ico { font-size: 48rpx; }
+.quick-btn .txt { font-size: 26rpx; margin-top: 10rpx; color: var(--text-sub); }
+.quick-btn.primary {
+  background: linear-gradient(135deg, rgba(251, 146, 60, .95) 0%, rgba(234, 88, 12, .95) 100%);
+  border-color: transparent;
+  box-shadow: 0 12rpx 30rpx rgba(249, 115, 22, .3);
+}
+.quick-btn.primary .txt { font-weight: 600; color: #FFFFFF; }
+
+/* ===================== 进度条 ===================== */
+.progress {
+  height: 16rpx;
+  background: rgba(146, 88, 32, .07);
+  border-radius: 8rpx;
+  overflow: hidden;
+  margin-top: 22rpx;
+}
+.progress .bar {
+  height: 100%;
+  background: var(--brand-grad);
+  box-shadow: 0 0 18rpx rgba(249, 115, 22, .5);
+  border-radius: 8rpx;
+  transition: width .4s;
+}
+
+/* ===================== 动态流 ===================== */
+.feed-item {
+  display: flex;
+  padding: 20rpx 0;
+  border-bottom: 2rpx solid var(--line);
+}
+.feed-item:last-child { border-bottom: none; }
+.feed-avatar {
+  width: 100rpx;
+  height: 100rpx;
+  border-radius: 20rpx;
+  background: rgba(146, 88, 32, .06);
+  border: 2rpx solid var(--card-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40rpx;
+  margin-right: 20rpx;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.feed-avatar image { width: 100%; height: 100%; }
+.feed-main { flex: 1; min-width: 0; }
+.feed-title { display: flex; align-items: center; }
+.feed-note { margin-top: 6rpx; line-height: 1.5; color: var(--text-sub); }

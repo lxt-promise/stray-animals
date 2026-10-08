@@ -1,0 +1,70 @@
+<view class="map-page">
+  <map
+    id="catMap"
+    class="map"
+    latitude="{{center.lat}}"
+    longitude="{{center.lng}}"
+    scale="{{scale}}"
+    markers="{{markers}}"
+    show-location
+    enable-poi
+    bindmarkertap="onMarkerTap"
+  ></map>
+
+  <view class="map-top">
+    <view class="map-hint" wx:if="{{!cats.length && !loading}}">
+      还没有标注猫点位，社团成员可在猫档案里填写常驻位置
+    </view>
+  </view>
+
+  <view class="locate-btn" bindtap="locateMe">◎</view>
+  <view class="legend-btn" bindtap="toggleLegend">ℹ️</view>
+
+  <!-- 点位说明（对齐预览：图例 + 坐标模糊化说明） -->
+  <view class="legend-card" wx:if="{{showLegend}}" bindtap="toggleLegend">
+    <view class="lg-title bold">点位说明</view>
+    <view class="lg-line">
+      <text class="tag ok">已绝育</text>
+      <text class="small muted">健康可控</text>
+      <text class="tag warn" style="margin-left:24rpx">未绝育</text>
+      <text class="small muted">待关注 / 待抓捕</text>
+    </view>
+    <view class="lg-note small muted">
+      幼猫与病猫的精确坐标对非社团成员做模糊化处理 —— 吸取街猫直播被虐猫者利用的教训，避免聚集点被别有用心的人定位。
+    </view>
+    <view class="lg-close small muted">点击任意处关闭</view>
+  </view>
+
+  <!-- 底部猫点位列表 -->
+  <view class="bottom-sheet {{showList ? '' : 'collapsed'}}">
+    <view class="sheet-handle" bindtap="toggleList">
+      <text class="handle-title">附近猫咪 {{cats.length}}</text>
+      <text class="handle-arrow">{{showList ? '收起' : '展开'}}</text>
+    </view>
+    <scroll-view scroll-y class="sheet-list" wx:if="{{showList}}">
+      <view
+        class="sheet-item {{activeId === item._id ? 'on' : ''}}"
+        wx:for="{{cats}}"
+        wx:key="_id"
+        data-id="{{item._id}}"
+        bindtap="goDetail"
+      >
+        <view class="sheet-avatar">
+          <image wx:if="{{item.avatar}}" src="{{item.avatar}}" mode="aspectFill" />
+          <text wx:else>🐱</text>
+        </view>
+        <view class="sheet-info">
+          <view class="flex">
+            <text class="bold">{{item.name}}</text>
+            <text class="tag {{item.sterilized === 'yes' ? 'ok' : 'warn'}}">
+              {{item.sterilized === 'yes' ? '已绝育' : '未绝育'}}
+            </text>
+          </view>
+          <view class="small muted">{{item.spot || '校园内'}}</view>
+        </view>
+      </view>
+    </scroll-view>
+  </view>
+
+  <view class="fab-small" bindtap="goSighting">打卡</view>
+</view>

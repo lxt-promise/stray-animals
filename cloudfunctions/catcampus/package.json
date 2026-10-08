@@ -1,0 +1,10 @@
+{
+  "name": "catcampus",
+  "version": "1.0.0",
+  "description": "喵园 CatCampus 后端云函数（统一 action 分发）",
+  "main": "index.js",
+  "license": "MIT",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

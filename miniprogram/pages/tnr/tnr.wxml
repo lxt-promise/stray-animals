@@ -1,0 +1,39 @@
+<view class="page">
+
+  <view class="card">
+    <view class="card-title">
+      TNR 台账
+      <text class="more">共 {{summary.total}} 条 / 完成 {{summary.done}} / 支出 ¥{{summary.cost}}</text>
+    </view>
+    <scroll-view scroll-x class="filter-scroll">
+      <view class="filter-row">
+        <text class="chip {{filter === item.value ? 'on' : ''}}"
+          wx:for="{{filters}}" wx:key="value"
+          data-value="{{item.value}}" bindtap="onFilter">{{item.label}}</text>
+      </view>
+    </scroll-view>
+  </view>
+
+  <view class="card" wx:for="{{list}}" wx:key="_id" data-id="{{item._id}}" bindtap="goEdit">
+    <view class="flex-between">
+      <view class="flex">
+        <text class="tnr-name">{{item.cat ? item.cat.name : item.catName}}</text>
+        <text class="tag {{item.statusItem.tag}}">{{item.statusItem.label}}</text>
+      </view>
+      <text class="small muted">{{item.surgeryDate || item.trapDate || '未排期'}}</text>
+    </view>
+    <view class="small muted" style="margin-top:12rpx" wx:if="{{item.hospital}}">
+      🏥 {{item.hospital}}<text wx:if="{{item.cost}}"> · ¥{{item.cost}}</text>
+    </view>
+    <view class="small muted" wx:if="{{item.operator}}">负责人：{{item.operator}}</view>
+    <view class="note small" wx:if="{{item.note}}">{{item.note}}</view>
+  </view>
+
+  <view class="empty" wx:if="{{!loading && !list.length}}">
+    <text class="emoji">✂️</text>
+    暂无 TNR 记录
+  </view>
+
+  <view class="fab" bindtap="goAdd">+ 新建</view>
+
+</view>

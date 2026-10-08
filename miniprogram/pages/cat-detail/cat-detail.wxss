@@ -1,0 +1,121 @@
+.detail-hero {
+  position: relative;
+  width: 100%;
+  height: 420rpx;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--brand-light);
+}
+.hero-img { width: 100%; height: 100%; }
+.hero-ph {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 140rpx;
+}
+.hero-mask {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 40rpx 28rpx 24rpx;
+  background: linear-gradient(transparent, rgba(146, 88, 32, .18));
+  color: #fff;
+}
+.hero-name { font-size: 44rpx; font-weight: 700; }
+.hero-alias { opacity: .85; margin-top: 4rpx; }
+
+.tag-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin-top: 20rpx;
+}
+
+.photo-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+}
+.photo-grid image {
+  width: 210rpx;
+  height: 210rpx;
+  border-radius: 16rpx;
+}
+
+.tnr-item {
+  padding: 16rpx 0;
+  border-bottom: 2rpx solid var(--line);
+}
+.tnr-item:last-child { border-bottom: none; }
+
+.tl-item {
+  display: flex;
+  padding: 16rpx 0;
+  border-bottom: 2rpx solid var(--line);
+}
+.tl-item:last-child { border-bottom: none; }
+.tl-dot {
+  width: 16rpx;
+  height: 16rpx;
+  border-radius: 50%;
+  background: var(--brand);
+  margin: 10rpx 20rpx 0 0;
+  flex-shrink: 0;
+}
+.tl-body { flex: 1; min-width: 0; }
+.tl-body .note { margin-top: 8rpx; line-height: 1.6; }
+.photo-row {
+  display: flex;
+  gap: 10rpx;
+  margin-top: 12rpx;
+  flex-wrap: wrap;
+}
+.photo-row image {
+  width: 150rpx;
+  height: 150rpx;
+  border-radius: 12rpx;
+}
+
+/* ===== AI 识别置信度圆环（对齐预览） ===== */
+.conf-row {
+  display: flex;
+  align-items: center;
+  gap: 28rpx;
+}
+.conf-ring {
+  width: 148rpx;
+  height: 148rpx;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ring-inner {
+  width: 118rpx;
+  height: 118rpx;
+  border-radius: 50%;
+  background: #FFFFFF;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ring-num {
+  font-size: 34rpx;
+  font-weight: 700;
+  color: var(--brand);
+}
+.ring-pct {
+  font-size: 22rpx;
+  font-weight: 700;
+  color: var(--brand);
+  margin-left: 2rpx;
+}
+.conf-text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.7;
+}

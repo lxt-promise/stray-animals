@@ -1,0 +1,95 @@
+.tabs {
+  display: flex;
+  background: var(--card);
+  border-radius: 40rpx;
+  padding: 8rpx;
+  margin-bottom: 20rpx;
+  box-shadow: var(--shadow);
+}
+.tabs .tab {
+  flex: 1;
+  text-align: center;
+  height: 64rpx;
+  line-height: 64rpx;
+  font-size: 28rpx;
+  color: var(--text-sub);
+  border-radius: 32rpx;
+}
+.tabs .tab.on {
+  background: var(--brand);
+  color: #fff;
+  font-weight: 600;
+}
+
+.search-bar {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 0 24rpx;
+  margin-bottom: 16rpx;
+  box-shadow: var(--shadow);
+}
+.search-input {
+  height: 80rpx;
+  font-size: 28rpx;
+}
+
+.filter-scroll {
+  white-space: nowrap;
+  margin-bottom: 12rpx;
+}
+.filter-row {
+  display: inline-flex;
+  gap: 12rpx;
+  padding: 4rpx 0;
+}
+.chip {
+  display: inline-block;
+  padding: 10rpx 24rpx;
+  border-radius: 28rpx;
+  background: var(--card);
+  color: var(--text-sub);
+  font-size: 24rpx;
+  box-shadow: 0 2rpx 8rpx rgba(146, 88, 32, .18);
+}
+.chip.on {
+  background: var(--brand-light);
+  color: var(--brand-dark);
+  font-weight: 600;
+}
+
+.cat-name {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--brand-dark);
+}
+.note {
+  margin-top: 12rpx;
+  line-height: 1.6;
+  color: var(--text);
+}
+.photo-row {
+  display: flex;
+  gap: 12rpx;
+  margin-top: 16rpx;
+  flex-wrap: wrap;
+}
+.photo-row image {
+  width: 200rpx;
+  height: 200rpx;
+  border-radius: 16rpx;
+}
+
+.fab {
+  position: fixed;
+  right: 32rpx;
+  bottom: 60rpx;
+  height: 96rpx;
+  padding: 0 36rpx;
+  line-height: 96rpx;
+  border-radius: 48rpx;
+  background: var(--brand);
+  color: #fff;
+  font-size: 30rpx;
+  font-weight: 600;
+  box-shadow: 0 10rpx 30rpx rgba(249, 115, 22, .4);
+}

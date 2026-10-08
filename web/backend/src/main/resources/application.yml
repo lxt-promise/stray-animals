@@ -1,0 +1,67 @@
+server:
+  port: 8080
+
+spring:
+  profiles:
+    active: mysql
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 50MB
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: false
+
+catcampus:
+  # JWT 签名密钥，生产环境务必修改（可用环境变量 CAMPUS_JWT_SECRET 覆盖）
+  jwt-secret: catcampus-dev-secret-change-me-2026
+  jwt-expire-hours: 720
+  # 图片上传目录（相对路径则位于项目根目录）
+  upload-dir: ./uploads
+
+  # 识别服务（server/ 目录下的 FastAPI 服务，见 docs/本地部署运行手册.md）
+  vision:
+    # 本地默认地址；部署到服务器后改成内网地址，如 http://10.0.0.5:8000
+    base-url: ${CAMPUS_VISION_URL:http://127.0.0.1:8090}
+    # 必须与 server/.env 里的 API_TOKEN 一致，否则会 401
+    token: ${CAMPUS_VISION_TOKEN:catcampus-local-dev-token}
+    # 建库 / 检索用的校区标识，留空表示全局库
+    school-id: ${CAMPUS_VISION_SCHOOL:}
+    timeout-seconds: 120
+    # 识别服务下载猫照片时用的「后端可访问地址」。
+    # 照片由本后端服务在 /uploads/** 下托管，所以必须用后端地址（默认 8080），
+    # 不能用上面的 vision base-url（那是识别服务自己的 8090，它自己并不托管照片）。
+    # 部署到服务器后改成公网/内网可访问的域名，例如 https://api.yourdomain.com
+    asset-base-url: ${CAMPUS_VISION_ASSET_URL:http://127.0.0.1:8080}
+
+---
+# 内置 H2：开箱即跑，数据落在 ./data/catcampus.mv.db
+spring:
+  config:
+    activate:
+      on-profile: h2
+  datasource:
+    url: jdbc:h2:file:./data/catcampus;DB_CLOSE_DELAY=-1;MODE=MySQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ''
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+
+---
+# MySQL：java -jar app.jar --spring.profiles.active=mysql
+spring:
+  config:
+    activate:
+      on-profile: mysql
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/catcampus?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: root
+    password: 123456
+  jpa:
+    database-platform: org.hibernate.dialect.MySQLDialect

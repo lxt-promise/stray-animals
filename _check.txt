@@ -1,0 +1,9 @@
+﻿--- NOTES ---
+preview/index.html inline script: OK
+preview/index.html div 閰嶅: OK (240)
+miniprogram + cloudfunctions js: checked
+椤甸潰娉ㄥ唽妫€鏌? 14 椤? 缂哄け 0
+浜戝嚱鏁?action: 26 涓?(login, updateProfile, createSchool, listSchools, getSchool, bindSchool, getOverview, listCats, getCat, saveCat, removeCat, recognize, addSighting, listSightings, listTnr, saveTnr, listTasks, saveTask, claimTask, listFunds, addFund, listMembers, setRole, applyJoin, listApplies, handleApply)
+--- ERRORS ---
+none
+EXIT=0

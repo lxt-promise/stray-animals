@@ -1,0 +1,78 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/cats/cats",
+    "pages/map/map",
+    "pages/workbench/workbench",
+    "pages/mine/mine",
+    "pages/recognize/recognize",
+    "pages/cat-detail/cat-detail",
+    "pages/cat-edit/cat-edit",
+    "pages/sighting-post/sighting-post",
+    "pages/tnr/tnr",
+    "pages/tnr-edit/tnr-edit",
+    "pages/task/task",
+    "pages/fund/fund",
+    "pages/member/member"
+  ],
+  "window": {
+    "backgroundTextStyle": "dark",
+    "navigationBarBackgroundColor": "#FFF7ED",
+    "navigationBarTitleText": "喵园",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#FFF7ED",
+    "backgroundColorTop": "#FFF7ED",
+    "backgroundColorBottom": "#FFF7ED"
+  },
+  "tabBar": {
+    "color": "#B9A08C",
+    "selectedColor": "#F97316",
+    "backgroundColor": "#FFFFFF",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "首页",
+        "iconPath": "images/tab/home.png",
+        "selectedIconPath": "images/tab/home_on.png"
+      },
+      {
+        "pagePath": "pages/cats/cats",
+        "text": "猫谱",
+        "iconPath": "images/tab/cat.png",
+        "selectedIconPath": "images/tab/cat_on.png"
+      },
+      {
+        "pagePath": "pages/map/map",
+        "text": "地图",
+        "iconPath": "images/tab/map.png",
+        "selectedIconPath": "images/tab/map_on.png"
+      },
+      {
+        "pagePath": "pages/workbench/workbench",
+        "text": "工作台",
+        "iconPath": "images/tab/work.png",
+        "selectedIconPath": "images/tab/work_on.png"
+      },
+      {
+        "pagePath": "pages/mine/mine",
+        "text": "我的",
+        "iconPath": "images/tab/mine.png",
+        "selectedIconPath": "images/tab/mine_on.png"
+      }
+    ]
+  },
+  "permission": {
+    "scope.userLocation": {
+      "desc": "用于在校园地图上展示你附近的猫咪点位"
+    }
+  },
+  "requiredPrivateInfos": [
+    "getLocation",
+    "chooseLocation",
+    "chooseAddress"
+  ],
+  "sitemapLocation": "sitemap.json",
+  "style": "v2",
+  "lazyCodeLoading": "requiredComponents"
+}

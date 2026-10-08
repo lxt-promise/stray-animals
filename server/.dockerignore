@@ -1,0 +1,32 @@
+# 部署到云托管时，构建上下文里不需要这些，排除可显著减小镜像、加快构建
+__pycache__/
+*.pyc
+*.pyo
+
+# 本地密钥不要进镜像；云端用「环境变量」注入 API_TOKEN
+.env
+.env.example
+
+# 运行时数据（特征库由云托管持久卷承载，无需打包）
+data/
+*.sqlite3
+
+# 开发/调试脚本、本地工具链
+tools/
+*.bat
+*.ps1
+
+# 本地 Python 虚拟环境
+env/
+venv/
+
+# 自托管专用文件（云托管自带网关，不需要 nginx / compose）
+deploy/
+docker-compose.yml
+Dockerfile.gpu
+
+# 杂项
+.git/
+.gitignore
+README.md
+*.md

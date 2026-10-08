@@ -1,0 +1,78 @@
+<view class="page">
+
+  <!-- 非成员：入社申请 -->
+  <block wx:if="{{!isMember}}">
+    <view class="card">
+      <view class="card-title">申请加入社团</view>
+      <view class="small muted" style="line-height:1.8;margin-bottom:20rpx">
+        社团成员可以编辑猫档案、登记 TNR、发布喂猫任务、管理资金。
+        因为会接触到猫的精确位置和医疗信息，所以需要人工审核。
+      </view>
+      <view class="form-item">
+        <text class="label">称呼</text>
+        <input placeholder="你的名字" value="{{applyForm.nickName}}" data-key="nickName" bindinput="onInput" />
+      </view>
+      <view class="form-item">
+        <text class="label">联系方式</text>
+        <input placeholder="微信 / 手机号" value="{{applyForm.contact}}" data-key="contact" bindinput="onInput" />
+      </view>
+      <view class="form-item col">
+        <text class="label">为什么想加入</text>
+        <textarea placeholder="简单说说" value="{{applyForm.reason}}" data-key="reason" bindinput="onInput" />
+      </view>
+      <view class="form-item col">
+        <text class="label">相关经历</text>
+        <textarea placeholder="喂猫 / 救助 / TNR 经验（选填）" value="{{applyForm.experience}}" data-key="experience" bindinput="onInput" />
+      </view>
+      <button class="btn mt" bindtap="submitApply" wx:if="{{!applied}}">提交申请</button>
+      <view class="ok-tip" wx:else>已提交，等待管理员审核</view>
+    </view>
+  </block>
+
+  <block wx:else>
+    <view class="tabs">
+      <view class="tab {{tab === 'member' ? 'on' : ''}}" data-tab="member" bindtap="switchTab">成员</view>
+      <view class="tab {{tab === 'apply' ? 'on' : ''}}" data-tab="apply" bindtap="switchTab">入社申请</view>
+    </view>
+
+    <!-- 成员列表 -->
+    <view class="card" wx:if="{{tab === 'member'}}">
+      <view class="card-title">成员 {{members.length}}</view>
+      <view class="member-item" wx:for="{{members}}" wx:key="_id" data-id="{{item._id}}" bindtap="changeRole">
+        <view class="m-avatar">
+          <image wx:if="{{item.avatarUrl}}" src="{{item.avatarUrl}}" mode="aspectFill" />
+          <text wx:else>🐱</text>
+        </view>
+        <view class="m-info">
+          <view class="bold">{{item.nickName}}</view>
+          <view class="small muted">打卡 {{item.sightingCount}} · 猫粮值 {{item.points}}</view>
+        </view>
+        <text class="tag {{item.role === 'admin' ? 'warn' : (item.role === 'member' ? 'ok' : 'gray')}}">
+          {{item.role === 'admin' ? '管理员' : (item.role === 'member' ? '成员' : '爱猫同学')}}
+        </text>
+      </view>
+      <view class="small muted" style="margin-top:16rpx" wx:if="{{isAdmin}}">点击成员可修改角色</view>
+    </view>
+
+    <!-- 入社申请 -->
+    <block wx:if="{{tab === 'apply'}}">
+      <view class="card" wx:for="{{applies}}" wx:key="_id">
+        <view class="flex-between">
+          <text class="bold">{{item.nickName}}</text>
+          <text class="small muted">{{item.contact}}</text>
+        </view>
+        <view class="note small" wx:if="{{item.reason}}">{{item.reason}}</view>
+        <view class="small muted" wx:if="{{item.experience}}">经历：{{item.experience}}</view>
+        <view class="apply-actions" wx:if="{{isAdmin}}">
+          <button class="btn btn-ghost btn-sm" data-id="{{item._id}}" data-approve="1" bindtap="handleApply">通过</button>
+          <button class="btn btn-plain btn-sm" data-id="{{item._id}}" bindtap="handleApply">拒绝</button>
+        </view>
+      </view>
+      <view class="empty" wx:if="{{!applies.length}}">
+        <text class="emoji">📮</text>
+        暂无待审核申请
+      </view>
+    </block>
+  </block>
+
+</view>

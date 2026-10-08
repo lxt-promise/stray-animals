@@ -1,0 +1,39 @@
+.fund-summary {
+  display: flex;
+  text-align: center;
+}
+.fs-item { flex: 1; }
+.fs-num {
+  font-size: 36rpx;
+  font-weight: 700;
+  margin-top: 8rpx;
+}
+.fs-num.ok { color: var(--ok); }
+.fs-num.warn { color: var(--warn); }
+.amount {
+  font-size: 32rpx;
+  font-weight: 700;
+}
+.amount.ok { color: var(--ok); }
+.amount.warn { color: var(--warn); }
+.tip {
+  padding: 8rpx 16rpx 24rpx;
+  line-height: 1.7;
+  text-align: center;
+  color: var(--text-sub);
+  font-size: 24rpx;
+}
+.fab {
+  position: fixed;
+  right: 32rpx;
+  bottom: 60rpx;
+  padding: 0 36rpx;
+  height: 96rpx;
+  line-height: 96rpx;
+  border-radius: 48rpx;
+  background: var(--brand);
+  color: #fff;
+  font-size: 30rpx;
+  font-weight: 600;
+  box-shadow: 0 10rpx 30rpx rgba(249, 115, 22, .4);
+}

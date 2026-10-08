@@ -1,0 +1,53 @@
+.form-item.col {
+  flex-direction: column;
+  align-items: flex-start;
+}
+.form-item.col .label { margin-bottom: 12rpx; }
+.form-item.col textarea {
+  width: 100%;
+  min-height: 140rpx;
+  font-size: 28rpx;
+}
+
+.loc-pick {
+  flex: 1;
+  color: var(--brand-dark);
+}
+
+.chip-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14rpx;
+}
+.chip {
+  padding: 12rpx 26rpx;
+  border-radius: 28rpx;
+  background: var(--bg);
+  color: var(--text-sub);
+  font-size: 26rpx;
+}
+.chip.on {
+  background: var(--brand-light);
+  color: var(--brand-dark);
+  font-weight: 600;
+}
+
+.upload-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+}
+.upload-box {
+  width: 160rpx;
+  height: 160rpx;
+  border-radius: 16rpx;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+.upload-box image { width: 100%; height: 100%; }
+.plus { font-size: 48rpx; color: var(--text-weak); line-height: 1; }

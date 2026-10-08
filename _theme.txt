@@ -1,0 +1,11 @@
+﻿files changed: 9
+components\cat-card\cat-card.wxss: 2
+pages\cats\cats.wxss: 5
+pages\fund\fund.wxss: 1
+pages\index\index.wxss: 3
+pages\map\map.wxss: 4
+pages\member\member.wxss: 1
+pages\task\task.wxss: 1
+pages\tnr\tnr.wxss: 1
+pages\workbench\workbench.wxss: 1
+total replacements: 19

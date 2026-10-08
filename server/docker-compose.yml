@@ -1,0 +1,30 @@
+version: "3.9"
+
+services:
+  recognizer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: catcampus-vision:1.0.0
+    container_name: catcampus-vision
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      INDEX_DB: /data/catcampus/index.sqlite3
+    volumes:
+      - ./models:/app/models:ro
+      - index_data:/data/catcampus
+    ports:
+      - "127.0.0.1:8000:8000"   # 只监听本机，由 Nginx 反代对外
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx;httpx.get('http://127.0.0.1:8000/health').raise_for_status()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+
+volumes:
+  index_data:

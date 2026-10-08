@@ -1,0 +1,39 @@
+/* TNR 编辑 —— 沿用全局暗色设计系统，这里只补局部细节 */
+
+/* 纵向排列的表单项（备注等多行输入） */
+.form-item.col {
+  flex-direction: column;
+  align-items: flex-start;
+}
+.form-item.col .label {
+  width: auto;
+  margin-bottom: 12rpx;
+}
+.form-item.col textarea {
+  width: 100%;
+  min-height: 160rpx;
+  background: rgba(146, 88, 32, .18);
+  border: 2rpx solid var(--card-line);
+  border-radius: var(--radius-sm);
+  padding: 18rpx;
+  color: var(--text);
+}
+
+/* 输入框弱底 */
+.form-item input {
+  background: rgba(146, 88, 32, .18);
+  border: 2rpx solid var(--card-line);
+  border-radius: var(--radius-sm);
+  padding: 14rpx 18rpx;
+}
+.form-item picker {
+  background: rgba(146, 88, 32, .18);
+  border: 2rpx solid var(--card-line);
+  border-radius: var(--radius-sm);
+  padding: 14rpx 18rpx;
+}
+
+.tip {
+  padding: 24rpx 8rpx 0;
+  line-height: 1.8;
+}

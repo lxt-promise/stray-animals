@@ -1,0 +1,74 @@
+<view class="page">
+
+  <view class="card">
+    <view class="card-title">你遇见了谁</view>
+    <view class="form-item">
+      <text class="label">猫咪</text>
+      <picker mode="selector" range="{{catNames}}" value="{{catIndex}}" bindchange="onCatPick">
+        <view>{{catNames[catIndex] || '选择猫咪 ›'}}</view>
+      </picker>
+    </view>
+    <view class="form-item" wx:if="{{isNewCat}}">
+      <text class="label">临时名字</text>
+      <input placeholder="如：图书馆门口的橘猫" value="{{newCatName}}" data-key="newCatName" bindinput="onInput" />
+    </view>
+    <view class="small muted" style="padding:16rpx 28rpx">
+      选「不指定」表示这是一只尚未建档的猫，社团成员核实后会为它建立正式档案。
+    </view>
+  </view>
+
+  <view class="card">
+    <view class="card-title">照片</view>
+    <view class="upload-row">
+      <view class="upload-box" wx:for="{{photos}}" wx:key="*this" data-index="{{index}}" bindtap="removePhoto">
+        <image src="{{item}}" mode="aspectFill" />
+      </view>
+      <view class="upload-box" bindtap="choosePhotos">
+        <view>
+          <view class="plus">+</view>
+          <view class="small muted">拍照</view>
+        </view>
+      </view>
+    </view>
+    <view class="small muted" style="margin-top:12rpx">
+      照片是核实猫只身份的关键（也用于图鉴），最多 6 张
+    </view>
+  </view>
+
+  <view class="card">
+    <view class="card-title">位置</view>
+    <view class="form-item">
+      <text class="label">地点</text>
+      <view bindtap="chooseLocation" class="loc-pick">
+        {{locationName || (locating ? '定位中…' : (location ? '已获取定位，点此修改 ›' : '点此选择位置 ›'))}}
+      </view>
+    </view>
+    <view class="form-item">
+      <text class="label">地点名称</text>
+      <input placeholder="如：教三楼北侧" value="{{locationName}}" data-key="locationName" bindinput="onInput" />
+    </view>
+  </view>
+
+  <view class="card">
+    <view class="card-title">状况</view>
+    <view class="form-item">
+      <text class="label">健康观察</text>
+      <picker mode="selector" range="{{healthOptions}}" range-key="label" value="{{healthIndex}}" bindchange="onHealthPick">
+        <view>{{healthOptions[healthIndex].label}} ›</view>
+      </picker>
+    </view>
+    <view class="form-item">
+      <text class="label">数量</text>
+      <input type="number" value="{{count}}" bindinput="changeCount" style="width:120rpx" />
+    </view>
+    <view class="form-item col">
+      <text class="label">描述</text>
+      <textarea placeholder="它在做什么？精神状态如何？" value="{{note}}" data-key="note" bindinput="onInput" />
+    </view>
+  </view>
+
+  <view class="footer-bar">
+    <button class="btn btn-block" bindtap="submit" disabled="{{submitting}}">提交打卡</button>
+  </view>
+
+</view>

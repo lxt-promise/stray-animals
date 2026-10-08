@@ -1,0 +1,37 @@
+.note {
+  margin-top: 12rpx;
+  line-height: 1.6;
+}
+.task-actions {
+  display: flex;
+  gap: 16rpx;
+  margin-top: 20rpx;
+}
+.filter-scroll { white-space: nowrap; }
+.filter-row { display: inline-flex; gap: 12rpx; padding: 4rpx 0; }
+.chip {
+  padding: 10rpx 24rpx;
+  border-radius: 28rpx;
+  background: var(--bg);
+  color: var(--text-sub);
+  font-size: 24rpx;
+}
+.chip.on {
+  background: var(--brand-light);
+  color: var(--brand-dark);
+  font-weight: 600;
+}
+.fab {
+  position: fixed;
+  right: 32rpx;
+  bottom: 60rpx;
+  padding: 0 36rpx;
+  height: 96rpx;
+  line-height: 96rpx;
+  border-radius: 48rpx;
+  background: var(--brand);
+  color: #fff;
+  font-size: 30rpx;
+  font-weight: 600;
+  box-shadow: 0 10rpx 30rpx rgba(249, 115, 22, .4);
+}

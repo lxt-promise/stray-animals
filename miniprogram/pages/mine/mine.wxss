@@ -1,0 +1,102 @@
+.profile {
+  display: flex;
+  align-items: center;
+}
+.profile .avatar {
+  width: 110rpx;
+  height: 110rpx;
+  border-radius: 50%;
+  background: var(--brand-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 48rpx;
+  margin-right: 24rpx;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.profile .avatar image { width: 100%; height: 100%; }
+.p-name { font-size: 34rpx; font-weight: 600; }
+.p-role { margin-top: 10rpx; display: flex; align-items: center; gap: 12rpx; }
+
+.school-item {
+  padding: 20rpx;
+  background: var(--bg);
+  border-radius: 12rpx;
+  margin-bottom: 12rpx;
+  font-size: 28rpx;
+}
+
+.my-item {
+  padding: 18rpx 0;
+  border-bottom: 2rpx solid var(--line);
+}
+.my-item:last-child { border-bottom: none; }
+.photo-row {
+  display: flex;
+  gap: 12rpx;
+  margin-top: 12rpx;
+  flex-wrap: wrap;
+}
+.photo-row image {
+  width: 140rpx;
+  height: 140rpx;
+  border-radius: 12rpx;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24rpx 0;
+  border-bottom: 2rpx solid var(--line);
+  font-size: 30rpx;
+}
+.menu-item:last-child { border-bottom: none; }
+.menu-item .arrow { color: var(--text-weak); font-size: 36rpx; }
+
+.tip {
+  padding: 24rpx;
+  line-height: 1.7;
+  text-align: center;
+}
+
+/* ===== 图鉴进度（对齐预览） ===== */
+.progress {
+  height: 16rpx;
+  background: rgba(146, 88, 32, .08);
+  border-radius: 8rpx;
+  overflow: hidden;
+}
+.progress .bar {
+  height: 100%;
+  background: var(--brand-grad);
+  box-shadow: 0 0 20rpx rgba(249, 115, 22, .5);
+  border-radius: 8rpx;
+  transition: width .4s;
+}
+.dex-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+  margin-top: 24rpx;
+}
+.dex-item {
+  width: 110rpx;
+  height: 110rpx;
+  border-radius: 16rpx;
+  background: var(--brand-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40rpx;
+  overflow: hidden;
+  border: 2rpx solid rgba(249, 115, 22, .25);
+}
+.dex-item image { width: 100%; height: 100%; }
+.dex-item.locked {
+  background: rgba(146, 88, 32, .06);
+  border-color: var(--card-line);
+  color: var(--text-weak);
+  opacity: .55;
+}

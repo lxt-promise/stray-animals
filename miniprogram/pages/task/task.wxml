@@ -1,0 +1,71 @@
+<view class="page">
+
+  <view class="card">
+    <view class="card-title">喂猫排班</view>
+    <scroll-view scroll-x class="filter-scroll">
+      <view class="filter-row">
+        <text class="chip {{filter === 'open' ? 'on' : ''}}" data-value="open" bindtap="onFilter">待认领</text>
+        <text class="chip {{filter === 'claimed' ? 'on' : ''}}" data-value="claimed" bindtap="onFilter">已认领</text>
+        <text class="chip {{filter === 'done' ? 'on' : ''}}" data-value="done" bindtap="onFilter">已完成</text>
+        <text class="chip {{filter === '' ? 'on' : ''}}" data-value="" bindtap="onFilter">全部</text>
+      </view>
+    </scroll-view>
+  </view>
+
+  <view class="card" wx:for="{{list}}" wx:key="_id">
+    <view class="flex-between">
+      <view>
+        <view class="bold">{{item.title}}</view>
+        <view class="small muted" style="margin-top:8rpx">
+          {{item.typeLabel}} · {{item.date || '未定日期'}}<text wx:if="{{item.spot}}"> · {{item.spot}}</text>
+        </view>
+      </view>
+      <text class="tag {{item.statusItem.tag}}">{{item.statusItem.label}}</text>
+    </view>
+    <view class="small muted" style="margin-top:12rpx" wx:if="{{item.assigneeName}}">认领人：{{item.assigneeName}}</view>
+    <view class="note small" wx:if="{{item.note}}">{{item.note}}</view>
+    <view class="task-actions" wx:if="{{isMember}}">
+      <button class="btn btn-ghost btn-sm" wx:if="{{item.status === 'open'}}" data-id="{{item._id}}" bindtap="claim">认领</button>
+      <button class="btn btn-plain btn-sm" wx:if="{{item.status === 'claimed'}}" data-id="{{item._id}}" bindtap="markDone">完成</button>
+      <button class="btn btn-plain btn-sm" wx:if="{{item.status === 'claimed'}}" data-id="{{item._id}}" data-cancel="1" bindtap="claim">取消认领</button>
+    </view>
+  </view>
+
+  <view class="empty" wx:if="{{!loading && !list.length}}">
+    <text class="emoji">📅</text>
+    暂无任务
+  </view>
+
+  <!-- 发布任务 -->
+  <view class="card mt" wx:if="{{showForm}}">
+    <view class="card-title">发布任务</view>
+    <view class="form-item">
+      <text class="label">标题</text>
+      <input placeholder="如：周三晚喂三食堂点位" value="{{form.title}}" data-key="title" bindinput="onInput" />
+    </view>
+    <view class="form-item">
+      <text class="label">类型</text>
+      <picker mode="selector" range="{{typeOptions}}" range-key="label" value="{{typeIndex}}" bindchange="onTypePick">
+        <view>{{typeOptions[typeIndex].label}} ›</view>
+      </picker>
+    </view>
+    <view class="form-item">
+      <text class="label">日期</text>
+      <picker mode="date" value="{{form.date}}" bindchange="onDate">
+        <view>{{form.date || '选择日期 ›'}}</view>
+      </picker>
+    </view>
+    <view class="form-item">
+      <text class="label">点位</text>
+      <input placeholder="如：三食堂后门" value="{{form.spot}}" data-key="spot" bindinput="onInput" />
+    </view>
+    <view class="form-item">
+      <text class="label">联系方式</text>
+      <input placeholder="微信群 / 手机号（仅成员可见）" value="{{form.contact}}" data-key="contact" bindinput="onInput" />
+    </view>
+    <button class="btn mt" bindtap="submit">发布</button>
+  </view>
+
+  <view class="fab" bindtap="toggleForm">{{showForm ? '收起' : '+ 发布'}}</view>
+
+</view>

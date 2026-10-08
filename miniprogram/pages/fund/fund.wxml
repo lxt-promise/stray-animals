@@ -1,0 +1,75 @@
+<view class="page">
+
+  <view class="card fund-summary">
+    <view class="fs-item">
+      <view class="small muted">收入</view>
+      <view class="fs-num ok">¥{{summary.income}}</view>
+    </view>
+    <view class="fs-item">
+      <view class="small muted">支出</view>
+      <view class="fs-num warn">¥{{summary.expense}}</view>
+    </view>
+    <view class="fs-item">
+      <view class="small muted">结余</view>
+      <view class="fs-num">¥{{summary.balance}}</view>
+    </view>
+  </view>
+
+  <view class="tip small muted">
+    资金公示是社团信任的基础。每一笔绝育、医疗支出都可关联到具体猫咪，
+    捐赠人能看到钱花在了哪只猫身上。
+  </view>
+
+  <view class="card" wx:for="{{list}}" wx:key="_id">
+    <view class="flex-between">
+      <view>
+        <view class="bold">{{item.title}}</view>
+        <view class="small muted" style="margin-top:8rpx">
+          {{item.category}} · {{item.date}} <text wx:if="{{item.operator}}"> · {{item.operator}}</text>
+        </view>
+      </view>
+      <view class="amount {{item.type === 'income' ? 'ok' : 'warn'}}">
+        {{item.type === 'income' ? '+' : '-'}}¥{{item.amount}}
+      </view>
+    </view>
+  </view>
+
+  <view class="empty" wx:if="{{!loading && !list.length}}">
+    <text class="emoji">💰</text>
+    暂无收支记录
+  </view>
+
+  <view class="card mt" wx:if="{{showForm}}">
+    <view class="card-title">记一笔</view>
+    <view class="form-item">
+      <text class="label">类型</text>
+      <picker mode="selector" range="{{typeOptions}}" range-key="label" value="{{typeIndex}}" bindchange="onTypePick">
+        <view>{{typeOptions[typeIndex].label}} ›</view>
+      </picker>
+    </view>
+    <view class="form-item">
+      <text class="label">类别</text>
+      <picker mode="selector" range="{{categories}}" range-key="label" value="{{categoryIndex}}" bindchange="onCategoryPick">
+        <view>{{categories[categoryIndex].label}} ›</view>
+      </picker>
+    </view>
+    <view class="form-item">
+      <text class="label">金额</text>
+      <input type="digit" placeholder="0.00" value="{{form.amount}}" data-key="amount" bindinput="onInput" />
+    </view>
+    <view class="form-item">
+      <text class="label">说明</text>
+      <input placeholder="如：橘座绝育手术费" value="{{form.title}}" data-key="title" bindinput="onInput" />
+    </view>
+    <view class="form-item">
+      <text class="label">日期</text>
+      <picker mode="date" value="{{form.date}}" bindchange="onDate">
+        <view>{{form.date || '选择日期 ›'}}</view>
+      </picker>
+    </view>
+    <button class="btn mt" bindtap="submit">保存</button>
+  </view>
+
+  <view class="fab" bindtap="toggleForm">{{showForm ? '收起' : '+ 记一笔'}}</view>
+
+</view>

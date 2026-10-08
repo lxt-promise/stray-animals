@@ -1,0 +1,159 @@
+<view class="page">
+
+  <!-- 顶部：学校 + 身份 -->
+  <view class="hero">
+    <view class="hero-left">
+      <view class="school-name">{{school ? school.name : '喵园'}}</view>
+      <view class="school-sub small">
+        {{school && school.campus ? school.campus : '校园流浪猫守护计划'}}
+      </view>
+    </view>
+    <view class="hero-right">
+      <view class="ai-status">
+        <view class="pulse-dot"></view>
+        <text class="txt mono">AI ONLINE</text>
+      </view>
+      <view class="role-badge {{isMember ? 'member' : ''}}">
+        {{isMember ? '社团成员' : '爱猫同学'}}
+      </view>
+    </view>
+  </view>
+
+  <!-- AI 识别入口 -->
+  <view class="ai-card">
+    <view class="grid-bg-layer"></view>
+    <view class="scan-line"></view>
+    <view class="ai-card-inner">
+      <view class="ai-head">
+        <view class="badge mono">AI · VISION</view>
+        <view class="badge mono" style="border-color:rgba(251,191,36,.55);color:#B45309">猫脸识别 v0.1</view>
+      </view>
+      <view class="ai-title">拍一张，认出它是谁</view>
+      <view class="ai-desc">
+        上传照片或视频，系统在校园猫档案库中检索匹配，秒级给出候选名单与相似度。
+        不认识的新猫？一键建档入库。
+      </view>
+      <view class="ai-actions">
+        <view class="ai-btn photo" bindtap="goRecognize" data-mode="image">
+          <text class="ico">📸</text><text>拍照识别</text>
+        </view>
+        <view class="ai-btn video" bindtap="goRecognize" data-mode="video">
+          <text class="ico">🎬</text><text>视频识别</text>
+        </view>
+      </view>
+      <view class="ai-meta">
+        <text class="mono">档案库 {{overview ? overview.catCount : 0}} 只</text>
+        <view class="sep"></view>
+        <text class="mono">平均响应 0.8s</text>
+        <view class="sep"></view>
+        <text class="mono">本地特征比对</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 无学校引导 -->
+  <view class="card" wx:if="{{!loading && !school}}">
+    <view class="card-title">还没有绑定学校</view>
+    <view class="muted small" style="line-height:1.7">
+      管理员可在「我的」中创建 / 绑定学校；创建后即可开始录入猫口档案。
+      数据按学校隔离，未来复制到其他学校只需新建一个学校即可。
+    </view>
+    <button class="btn btn-ghost btn-sm mt" bindtap="goCreateSchool">去设置</button>
+  </view>
+
+  <!-- 统计 -->
+  <view class="stat-grid" wx:if="{{overview}}">
+    <view class="item">
+      <view class="stat-card">
+        <view class="num">{{overview.catCount}}</view>
+        <view class="lbl">在册猫咪</view>
+      </view>
+    </view>
+    <view class="item">
+      <view class="stat-card">
+        <view class="num">{{overview.sterilizedRate}}<text class="unit">%</text></view>
+        <view class="lbl">绝育率</view>
+      </view>
+    </view>
+    <view class="item">
+      <view class="stat-card">
+        <view class="num">{{overview.sightingMonth}}</view>
+        <view class="lbl">本月目击</view>
+      </view>
+    </view>
+    <view class="item" wx:if="{{isMember}}">
+      <view class="stat-card">
+        <view class="num">{{overview.taskOpen}}</view>
+        <view class="lbl">待办任务</view>
+      </view>
+    </view>
+    <view class="item" wx:if="{{isMember}}">
+      <view class="stat-card">
+        <view class="num">{{overview.tnrMonth}}</view>
+        <view class="lbl">本月 TNR</view>
+      </view>
+    </view>
+    <view class="item" wx:else>
+      <view class="stat-card">
+        <view class="num">{{user ? user.points : 0}}</view>
+        <view class="lbl">我的猫粮值</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 快捷操作 -->
+  <view class="quick-row mt">
+    <view class="quick-btn primary" bindtap="goSighting">
+      <view class="ico">🐾</view>
+      <view class="txt">目击打卡</view>
+    </view>
+    <view class="quick-btn" bindtap="goSightingList">
+      <view class="ico">📷</view>
+      <view class="txt">最新动态</view>
+    </view>
+  </view>
+
+  <!-- 绝育进度条 -->
+  <view class="card mt" wx:if="{{overview && overview.catCount}}">
+    <view class="flex-between">
+      <view class="bold">TNR 进展</view>
+      <view class="small muted">已绝育 {{overview.sterilized}} / {{overview.catCount}}</view>
+    </view>
+    <view class="progress">
+      <view class="bar" style="width: {{overview.sterilizedRate}}%"></view>
+    </view>
+    <view class="small muted" style="margin-top:16rpx">
+      绝育率是衡量校园猫口是否可控的核心指标。国际通行做法是把它做到 70% 以上。
+    </view>
+  </view>
+
+  <!-- 最近目击 -->
+  <view class="card mt" wx:if="{{overview && overview.recent.length}}">
+    <view class="card-title">
+      最新目击
+      <text class="more" bindtap="goSightingList">查看全部 ›</text>
+    </view>
+    <block wx:for="{{overview.recent}}" wx:key="_id">
+      <view class="feed-item" bindtap="goCat" data-id="{{item.catId}}" wx:if="{{item.catId}}">
+        <view class="feed-avatar">
+          <image wx:if="{{item.photos[0]}}" src="{{item.photos[0]}}" mode="aspectFill" />
+          <text wx:else>🐱</text>
+        </view>
+        <view class="feed-main">
+          <view class="feed-title">
+            <text class="bold">{{item.cat ? item.cat.name : item.catName}}</text>
+            <text class="small muted" style="margin-left:12rpx">{{item.locationName}}</text>
+          </view>
+          <view class="feed-note ellipsis-2 small muted" wx:if="{{item.note}}">{{item.note}}</view>
+          <view class="small muted" style="margin-top:8rpx">{{item.reporterName}} · {{item.createdAtText}}</view>
+        </view>
+      </view>
+    </block>
+  </view>
+
+  <view class="empty" wx:if="{{!loading && overview && !overview.recent.length}}">
+    <text class="emoji">🐾</text>
+    还没有目击记录，去校园里拍下第一只猫吧
+  </view>
+
+</view>

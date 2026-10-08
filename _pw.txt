@@ -1,0 +1,4 @@
+﻿
+E:\Agent\WorkBuddy\2026-09-22-20-57-37\node_modules\playwright-core => True
+E:\Agent\WorkBuddy\binaries\node\workspace\node_modules\playwright-core => False
+chrome => True

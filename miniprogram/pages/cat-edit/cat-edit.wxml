@@ -1,0 +1,135 @@
+<view class="page">
+
+  <view class="card">
+    <view class="card-title">基础信息</view>
+
+    <view class="form-item">
+      <text class="label">名字 *</text>
+      <input placeholder="校园里大家怎么叫它" value="{{form.name}}" data-key="name" bindinput="onInput" />
+    </view>
+    <view class="form-item">
+      <text class="label">别名</text>
+      <input placeholder="其它称呼" value="{{form.alias}}" data-key="alias" bindinput="onInput" />
+    </view>
+
+    <view class="form-item">
+      <text class="label">性别</text>
+      <picker mode="selector" range="{{sexOptions}}" range-key="label" value="{{sexIndex}}"
+        data-key="sexOptions" data-field="sex" bindchange="onPick">
+        <view>{{sexOptions[sexIndex].label}} ›</view>
+      </picker>
+    </view>
+
+    <view class="form-item">
+      <text class="label">花色</text>
+      <picker mode="selector" range="{{patternOptions}}" range-key="label" value="{{patternIndex}}"
+        data-key="patternOptions" data-field="pattern" bindchange="onPick">
+        <view>{{patternOptions[patternIndex].label}} ›</view>
+      </picker>
+    </view>
+    <view class="form-item">
+      <text class="label">花色补充</text>
+      <input placeholder="如：白手套、左耳缺口" value="{{form.colorNote}}" data-key="colorNote" bindinput="onInput" />
+    </view>
+
+    <view class="form-item">
+      <text class="label">绝育状态</text>
+      <picker mode="selector" range="{{sterOptions}}" range-key="label" value="{{sterIndex}}"
+        data-key="sterOptions" data-field="sterilized" bindchange="onPick">
+        <view>{{sterOptions[sterIndex].label}} ›</view>
+      </picker>
+    </view>
+    <view class="form-item">
+      <text class="label">耳标</text>
+      <input placeholder="如：左耳 / 无" value="{{form.earMark}}" data-key="earMark" bindinput="onInput" />
+    </view>
+    <view class="form-item">
+      <text class="label">状态</text>
+      <picker mode="selector" range="{{statusOptions}}" range-key="label" value="{{statusIndex}}"
+        data-key="statusOptions" data-field="status" bindchange="onPick">
+        <view>{{statusOptions[statusIndex].label}} ›</view>
+      </picker>
+    </view>
+    <view class="form-item">
+      <text class="label">健康</text>
+      <picker mode="selector" range="{{healthOptions}}" range-key="label" value="{{healthIndex}}"
+        data-key="healthOptions" data-field="health" bindchange="onPick">
+        <view>{{healthOptions[healthIndex].label}} ›</view>
+      </picker>
+    </view>
+  </view>
+
+  <view class="card">
+    <view class="card-title">性格标签</view>
+    <view class="chip-wrap">
+      <text class="chip {{form.characters.indexOf(item.value) >= 0 ? 'on' : ''}}"
+        wx:for="{{charOptions}}" wx:key="value"
+        data-value="{{item.value}}" bindtap="toggleChar">{{item.label}}</text>
+    </view>
+  </view>
+
+  <view class="card">
+    <view class="card-title">常驻点位</view>
+    <view class="form-item">
+      <text class="label">位置</text>
+      <view bindtap="chooseLocation" class="loc-pick">
+        {{form.locationName || '点击在地图上选点 ›'}}
+      </view>
+    </view>
+    <view class="form-item">
+      <text class="label">点位名称</text>
+      <input placeholder="如：三食堂后门花坛" value="{{form.locationName}}" data-key="locationName" bindinput="onInput" />
+    </view>
+    <view class="form-item">
+      <text class="label">仅社团可见</text>
+      <switch checked="{{form.spotPrivate}}" bindchange="togglePrivate" color="#F97316" />
+    </view>
+    <view class="small muted" style="padding:16rpx 28rpx">
+      幼猫、伤病猫的精确位置建议设为「仅社团可见」——公开点位曾被虐猫者利用过。
+    </view>
+  </view>
+
+  <view class="card">
+    <view class="card-title">照片</view>
+    <view class="upload-row">
+      <view class="upload-box" bindtap="chooseAvatar">
+        <image wx:if="{{form.avatar}}" src="{{form.avatar}}" mode="aspectFill" />
+        <view wx:else>
+          <view class="plus">+</view>
+          <view class="small muted">头像</view>
+        </view>
+      </view>
+      <view class="upload-box" wx:for="{{form.photos}}" wx:key="*this" data-index="{{index}}" bindtap="removePhoto">
+        <image src="{{item}}" mode="aspectFill" />
+      </view>
+      <view class="upload-box" bindtap="choosePhotos">
+        <view>
+          <view class="plus">+</view>
+          <view class="small muted">相册</view>
+        </view>
+      </view>
+    </view>
+    <view class="small muted" style="margin-top:12rpx">点击相册图片可移除</view>
+  </view>
+
+  <view class="card">
+    <view class="card-title">文字</view>
+    <view class="form-item col">
+      <text class="label">公开简介</text>
+      <textarea placeholder="性格、喜好、与其它猫的关系…" value="{{form.note}}" data-key="note" bindinput="onInput" />
+    </view>
+    <view class="form-item col">
+      <text class="label">内部备注</text>
+      <textarea placeholder="诱捕要点、投喂情况（仅社团可见）" value="{{form.internalNote}}" data-key="internalNote" bindinput="onInput" />
+    </view>
+    <view class="form-item col">
+      <text class="label">医疗备注</text>
+      <textarea placeholder="病史、用药、疫苗（仅社团可见）" value="{{form.medicalNote}}" data-key="medicalNote" bindinput="onInput" />
+    </view>
+  </view>
+
+  <view class="footer-bar">
+    <button class="btn btn-block" bindtap="save" disabled="{{saving}}">保存档案</button>
+  </view>
+
+</view>

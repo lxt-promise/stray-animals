@@ -1,0 +1,100 @@
+<view class="page">
+
+  <view class="tabs">
+    <view class="tab {{tab === 'cat' ? 'on' : ''}}" data-tab="cat" bindtap="switchTab">猫谱</view>
+    <view class="tab {{tab === 'sighting' ? 'on' : ''}}" data-tab="sighting" bindtap="switchTab">目击动态</view>
+  </view>
+
+  <view class="search-bar">
+    <input
+      class="search-input"
+      placeholder="搜索猫咪名字 / 花色"
+      value="{{keyword}}"
+      bindinput="onSearch"
+      confirm-type="search"
+    />
+  </view>
+
+  <!-- 筛选 -->
+  <scroll-view scroll-x class="filter-scroll" wx:if="{{tab === 'cat'}}">
+    <view class="filter-row">
+      <text
+        class="chip {{filters.status === '' ? 'on' : ''}}"
+        data-key="status" data-value="" bindtap="onFilter">全部状态</text>
+      <block wx:for="{{statusOptions}}" wx:key="value">
+        <text
+          class="chip {{filters.status === item.value ? 'on' : ''}}"
+          data-key="status" data-value="{{item.value}}" bindtap="onFilter">{{item.label}}</text>
+      </block>
+    </view>
+  </scroll-view>
+
+  <scroll-view scroll-x class="filter-scroll" wx:if="{{tab === 'cat'}}">
+    <view class="filter-row">
+      <text class="chip {{filters.sterilized === 'no' ? 'on' : ''}}"
+        data-key="sterilized" data-value="no" bindtap="onFilter">未绝育优先</text>
+      <text class="chip {{filters.sterilized === 'yes' ? 'on' : ''}}"
+        data-key="sterilized" data-value="yes" bindtap="onFilter">已绝育</text>
+      <block wx:for="{{patternOptions}}" wx:key="value">
+        <text class="chip {{filters.pattern === item.value ? 'on' : ''}}"
+          data-key="pattern" data-value="{{item.value}}" bindtap="onFilter">{{item.label}}</text>
+      </block>
+    </view>
+  </scroll-view>
+
+  <!-- 猫谱列表 -->
+  <block wx:if="{{tab === 'cat'}}">
+    <cat-card
+      wx:for="{{list}}"
+      wx:key="_id"
+      cat="{{item}}"
+      bind:tap="goDetail"
+    />
+    <view class="empty" wx:if="{{!loading && !list.length}}">
+      <text class="emoji">🐈</text>
+      没有符合条件的猫咪
+    </view>
+  </block>
+
+  <!-- 目击动态 -->
+  <block wx:else>
+    <view class="card" wx:for="{{sightings}}" wx:key="_id">
+      <view class="flex-between">
+        <view class="flex">
+          <text class="cat-name" wx:if="{{item.catId}}" bindtap="goDetail" data-id="{{item.catId}}">
+            {{item.cat ? item.cat.name : '未知'}}
+          </text>
+          <text class="cat-name muted" wx:else>{{item.catName}}</text>
+          <text class="tag warn small" wx:if="{{item.pending}}">待建档</text>
+        </view>
+        <text class="small muted">{{item.timeText}}</text>
+      </view>
+      <view class="note" wx:if="{{item.note}}">{{item.note}}</view>
+      <view class="photo-row" wx:if="{{item.photos.length}}">
+        <image
+          wx:for="{{item.photos}}"
+          wx:for-item="p"
+          wx:key="*this"
+          src="{{p}}"
+          mode="aspectFill"
+          data-url="{{p}}"
+          data-urls="{{item.photos}}"
+          bindtap="previewPhoto"
+        />
+      </view>
+      <view class="small muted" style="margin-top:12rpx">
+        📍 {{item.locationName || '未记录位置'}} · 上报人 {{item.reporterName}}
+      </view>
+    </view>
+    <view class="empty" wx:if="{{!loading && !sightings.length}}">
+      <text class="emoji">📷</text>
+      还没有目击记录
+    </view>
+  </block>
+
+  <!-- 悬浮按钮 -->
+  <view class="fab" bindtap="{{tab === 'cat' ? 'goAdd' : 'goSighting'}}" wx:if="{{isMember || tab === 'sighting'}}">
+    {{tab === 'cat' ? '+ 建档' : '+ 打卡'}}
+  </view>
+
+</view>

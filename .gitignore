@@ -1,0 +1,24 @@
+# 依赖与构建产物
+node_modules/
+web/frontend/dist/
+web/backend/target/
+
+# 本地数据库文件
+web/backend/data/
+
+# 日志
+*.log
+*.log.*
+
+# 归档（历史 uni-app 版本，不参与构建）
+_archive/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 环境变量
+.env
+.env.local

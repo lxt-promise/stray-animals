@@ -1,0 +1,176 @@
+<view class="page rec-page">
+
+  <!-- 模式切换 -->
+  <view class="mode-tabs">
+    <view class="mt {{mode === 'image' ? 'on' : ''}}" data-mode="image" bindtap="switchMode">图片识别</view>
+    <view class="mt {{mode === 'video' ? 'on' : ''}}" data-mode="video" bindtap="switchMode">视频识别</view>
+  </view>
+
+  <!-- 取景区 -->
+  <view class="viewport {{stage === 'working' ? 'scanning' : ''}}" bindtap="choose">
+    <view class="grid-layer"></view>
+
+    <!-- 未选择：占位 -->
+    <view class="vp-empty" wx:if="{{stage === 'idle'}}">
+      <view class="vp-ico">{{mode === 'video' ? '🎬' : '📸'}}</view>
+      <view class="vp-title">{{mode === 'video' ? '上传一段视频' : '拍一张猫的照片'}}</view>
+      <view class="vp-tip small muted">
+        {{mode === 'video' ? '支持 15 秒内短视频，系统会抽取关键帧识别' : '支持拍照或从相册选择，正脸 / 侧身均可'}}
+      </view>
+      <view class="vp-btn">{{mode === 'video' ? '选择视频' : '开始识别'}}</view>
+    </view>
+
+    <!-- 已选择：预览 -->
+    <block wx:if="{{stage !== 'idle'}}">
+      <image wx:if="{{mode === 'image'}}" class="vp-media" src="{{localPath}}" mode="aspectFill" />
+      <video wx:else class="vp-media" src="{{localPath}}" object-fit="cover" muted="{{true}}" autoplay="{{true}}" loop="{{true}}" show-play-btn="{{false}}" controls="{{false}}" enable-progress-gesture="{{false}}" />
+      <view class="scan-line" wx:if="{{stage === 'working'}}"></view>
+      <view class="corner tl"></view>
+      <view class="corner tr"></view>
+      <view class="corner bl"></view>
+      <view class="corner br"></view>
+    </block>
+  </view>
+
+  <!-- 分析中 -->
+  <view class="card working-card" wx:if="{{stage === 'working'}}">
+    <view class="flex-between">
+      <view class="bold">识别进行中</view>
+      <view class="mono small" style="color:var(--brand)">{{progress}}%</view>
+    </view>
+    <view class="progress mt">
+      <view class="bar" style="width: {{progress}}%"></view>
+    </view>
+    <view class="small muted" style="margin-top:16rpx">{{stageText}}</view>
+    <view class="stage-log mt">
+      <view class="log-line mono small">[vision] detect → cat_face_roi</view>
+      <view class="log-line mono small">[vision] embedding → 512d_vector</view>
+      <view class="log-line mono small">[search] knn → campus_index</view>
+    </view>
+  </view>
+
+  <!-- 结果 -->
+  <block wx:if="{{stage === 'done' && !error && result}}">
+    <!-- 特征摘要 -->
+    <view class="card card-glow">
+      <view class="card-title">
+        识别特征
+        <text class="more mono">{{result.provider === 'custom' ? 'CUSTOM API' : 'LOCAL ENGINE'}} · {{result.latency}}ms</text>
+      </view>
+      <view class="feat-row">
+        <block wx:for="{{result.features.tags}}" wx:key="k">
+          <view class="feat">
+            <view class="fk small muted">{{item.k}}</view>
+            <view class="fv">{{item.v}}</view>
+          </view>
+        </block>
+      </view>
+      <view class="divider"></view>
+      <view class="notice small" wx:if="{{result.notice}}">ⓘ {{result.notice}}</view>
+      <view class="small muted mono" style="margin-top:10rpx">request_id: {{result.requestId}}</view>
+    </view>
+
+    <!-- 候选列表 -->
+    <view class="card" wx:if="{{result.candidates.length}}">
+      <view class="card-title">
+        匹配候选
+        <text class="more">共 {{result.candidates.length}} 只</text>
+      </view>
+      <block wx:for="{{result.candidates}}" wx:key="catId">
+        <view class="cand" bindtap="goCat" data-id="{{item.catId}}">
+          <view class="cand-avatar">
+            <image wx:if="{{item.avatar}}" src="{{item.avatar}}" mode="aspectFill" />
+            <text wx:else>🐱</text>
+          </view>
+          <view class="cand-main">
+            <view class="flex-between">
+              <view class="cand-name bold">{{item.name}}</view>
+              <view class="score mono" style="color:{{item.score >= 80 ? 'var(--brand)' : (item.score >= 60 ? 'var(--gold)' : 'var(--text-sub)')}}">
+                {{item.score}}%
+              </view>
+            </view>
+            <view class="score-bar">
+              <view class="sb-fill" style="width: {{item.score}}%"></view>
+            </view>
+            <view class="small muted">{{item.reason}}</view>
+          </view>
+          <view class="cand-arrow">›</view>
+        </view>
+      </block>
+      <view class="notice small mt" wx:if="{{result.lowConfidence}}">
+        ⓘ 匹配置信度偏低（低于 {{result.threshold}}%），请人工确认后再使用结果，别直接当结论。
+      </view>
+    </view>
+
+    <!-- 人工确认：人机协同闭环 -->
+    <view class="card" wx:if="{{result.candidates.length && taskId}}">
+      <view class="card-title">
+        人工确认
+        <text class="more small">让系统越用越准</text>
+      </view>
+      <view class="small muted">
+        确认后本次特征会写入该猫档案作为比对样本；攒够样本想微调模型时，训练集已经自动备好了。
+      </view>
+      <view class="act-row mt">
+        <block wx:if="{{!confirmedId}}">
+          <view class="act-btn primary" bindtap="confirmTop" data-id="{{result.candidates[0].catId}}">
+            就是「{{result.candidates[0].name}}」
+          </view>
+          <view class="act-btn ghost" bindtap="confirmNone">都不是</view>
+        </block>
+        <view class="act-btn ghost" wx:elif="{{confirmedId === 'none'}}">已记录：都不是</view>
+        <view class="act-btn ghost" wx:else>已确认 ✓</view>
+      </view>
+    </view>
+
+    <!-- 没匹配上 -->
+    <view class="card" wx:if="{{!result.candidates.length}}">
+      <view class="text-center" style="padding:20rpx 0">
+        <view style="font-size:70rpx">🆕</view>
+        <view class="bold mt">档案库里没有它</view>
+        <view class="small muted" style="margin-top:12rpx;line-height:1.7">
+          这可能是还没登记的新猫。把它录入校园猫谱，下次就能被认出来。
+        </view>
+      </view>
+    </view>
+
+    <view class="act-row">
+      <view class="act-btn ghost" bindtap="reset">重新识别</view>
+      <view class="act-btn ghost" bindtap="goSighting">去打卡</view>
+      <view class="act-btn primary" bindtap="goCreate">新建档案</view>
+    </view>
+  </block>
+
+  <!-- 错误 -->
+  <view class="card" wx:if="{{stage === 'done' && error}}">
+    <view class="text-center" style="padding:30rpx 0">
+      <view style="font-size:70rpx">⚠️</view>
+      <view class="bold mt">识别失败</view>
+      <view class="small muted" style="margin-top:12rpx">{{error}}</view>
+      <view class="act-btn ghost mt" bindtap="reset">再试一次</view>
+    </view>
+  </view>
+
+  <!-- 说明 -->
+  <view class="card" wx:if="{{stage === 'idle'}}">
+    <view class="card-title">它是怎么认出猫的</view>
+    <view class="step">
+      <view class="step-n">01</view>
+      <view class="step-t">检测画面中的猫脸与躯干区域，剔除背景干扰</view>
+    </view>
+    <view class="step">
+      <view class="step-n">02</view>
+      <view class="step-t">提取毛色、花纹、体型特征，编码成特征向量</view>
+    </view>
+    <view class="step">
+      <view class="step-n">03</view>
+      <view class="step-t">在所在学校的猫档案库里做相似度检索，输出 Top 候选</view>
+    </view>
+    <view class="divider"></view>
+    <view class="small muted" style="line-height:1.7">
+      识别接口已做抽象预留：默认走云函数内置的特征比对引擎；
+      在云函数配置 AI_ENDPOINT 环境变量后，可一键切换到第三方视觉大模型，返回结构完全一致。
+    </view>
+  </view>
+
+</view>
