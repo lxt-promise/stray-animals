@@ -1,0 +1,21 @@
+/* 猫粮明细 */
+.balance-card {
+  background: var(--brand-grad);
+  border-radius: 28rpx;
+  padding: 48rpx 0;
+  text-align: center;
+  color: #fff;
+  box-shadow: 0 12rpx 30rpx rgba(249, 115, 22, .25);
+}
+.b-num { font-size: 72rpx; font-weight: 800; line-height: 1; }
+.b-lbl { font-size: 26rpx; opacity: .92; margin-top: 12rpx; }
+
+.p-item { align-items: center; justify-content: space-between; }
+.p-main { display: flex; flex-direction: column; }
+.p-reason { font-size: 30rpx; font-weight: 600; color: var(--text); }
+.p-delta {
+  font-size: 34rpx;
+  font-weight: 700;
+  color: var(--brand-dark);
+  flex-shrink: 0;
+}

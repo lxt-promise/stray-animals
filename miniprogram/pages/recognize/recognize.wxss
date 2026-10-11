@@ -211,3 +211,34 @@
   font-family: "SF Mono", Menlo, Consolas, monospace;
 }
 .step-t { flex: 1; font-size: 26rpx; color: var(--text-sub); line-height: 1.6; }
+
+/* 历史识别记录 */
+.hist-clear { color: var(--text-sub); font-weight: 400; }
+.hist-item {
+  display: flex;
+  align-items: center;
+  padding: 18rpx 4rpx;
+  border-bottom: 2rpx solid rgba(0, 0, 0, .05);
+}
+.hist-item:last-child { border-bottom: none; }
+.hist-ico {
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: var(--radius-sm);
+  background: rgba(249, 115, 22, .1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34rpx;
+  flex-shrink: 0;
+}
+.hist-main { flex: 1; min-width: 0; margin-left: 20rpx; }
+.hist-title {
+  font-size: 28rpx;
+  color: var(--text);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hist-arrow { color: var(--text-sub); font-size: 40rpx; margin-left: 12rpx; }

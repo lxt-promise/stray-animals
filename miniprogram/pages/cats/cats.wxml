@@ -42,7 +42,7 @@
     </view>
   </scroll-view>
 
-  <!-- 猫谱列表 -->
+  <!-- 猫谱列表（建档入口 = 右下角悬浮按钮，避免与列表头重复） -->
   <block wx:if="{{tab === 'cat'}}">
     <cat-card
       wx:for="{{list}}"
@@ -92,8 +92,9 @@
     </view>
   </block>
 
-  <!-- 悬浮按钮 -->
-  <view class="fab" bindtap="{{tab === 'cat' ? 'goAdd' : 'goSighting'}}" wx:if="{{isMember || tab === 'sighting'}}">
+  <!-- 悬浮按钮：建档仅管理员以上；打卡对成员/管理员开放 -->
+  <view class="fab" bindtap="{{tab === 'cat' ? 'goAdd' : 'goSighting'}}"
+    wx:if="{{(tab === 'cat' && canAdd) || (tab === 'sighting' && isMember)}}">
     {{tab === 'cat' ? '+ 建档' : '+ 打卡'}}
   </view>
 

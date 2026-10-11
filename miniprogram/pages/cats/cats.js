@@ -1,5 +1,5 @@
 const app = getApp()
-const { C, fromNow, itemOf } = require('../../utils/util.js')
+const { C, fromNow, itemOf, isAdminPlus } = require('../../utils/util.js')
 
 Page({
   data: {
@@ -18,16 +18,33 @@ Page({
     loading: true,
     hasMore: false,
     page: 1,
-    isMember: false
+    isMember: false,
+    // 建档按钮只在管理员及以上出现（与云端 saveCat 的 admin 门槛对齐）
+    canAdd: false
   },
 
   onLoad(options) {
     if (options.tab === 'sighting') this.setData({ tab: 'sighting' })
+    this.consumePendingTab()
     this.reload()
   },
 
   onShow() {
-    if (this.data.list.length || this.data.sightings.length) this.reload()
+    // 首页「最新动态」用 switchTab 过来（switchTab 不支持带 query），
+    // 通过 globalData.catsTab 传递要切换的目标 tab。
+    const changed = this.consumePendingTab()
+    if (changed) this.reload()
+    else if (this.data.list.length || this.data.sightings.length) this.reload()
+  },
+
+  // 消费一次性的 tab 跳转请求；返回是否发生了切换
+  consumePendingTab() {
+    const want = app.globalData.catsTab
+    if (!want) return false
+    app.globalData.catsTab = ''
+    if (want === this.data.tab) return false
+    this.setData({ tab: want })
+    return true
   },
 
   onReachBottom() {
@@ -58,7 +75,7 @@ Page({
   async reload() {
     this.setData({ loading: true, page: 1, list: [], sightings: [] })
     await app.ensureReady()
-    this.setData({ isMember: app.isMember() })
+    this.setData({ isMember: app.isMember(), canAdd: isAdminPlus(app) })
     await this.fetch(1)
   },
 

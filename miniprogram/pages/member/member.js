@@ -1,5 +1,5 @@
 const app = getApp()
-const { C, toast } = require('../../utils/util.js')
+const { C, toast, showBusy, hideBusy } = require('../../utils/util.js')
 
 Page({
   data: {
@@ -60,10 +60,10 @@ Page({
   async submitApply() {
     const f = this.data.applyForm
     if (!f.reason.trim()) return toast('请简单说明你的动机')
-    wx.showLoading({ title: '提交中' })
+    showBusy({ title: '提交中' })
     try {
       const res = await app.callApi('applyJoin', f)
-      wx.hideLoading()
+      hideBusy()
       if (res.status === 'already') return toast('你已是社团成员')
       this.setData({ applied: true })
       wx.showModal({
@@ -72,7 +72,7 @@ Page({
         showCancel: false
       })
     } catch (e) {
-      wx.hideLoading()
+      hideBusy()
       toast(e.message)
     }
   },
@@ -86,13 +86,13 @@ Page({
       itemList: roles.map(r => r.label),
       success: async res => {
         const role = roles[res.tapIndex].value
-        wx.showLoading({ title: '处理中' })
+        showBusy({ title: '处理中' })
         try {
           await app.callApi('setRole', { userId: id, role })
-          wx.hideLoading()
+          hideBusy()
           this.init()
         } catch (err) {
-          wx.hideLoading()
+          hideBusy()
           toast(err.message)
         }
       }
@@ -101,14 +101,14 @@ Page({
 
   async handleApply(e) {
     const { id, approve } = e.currentTarget.dataset
-    wx.showLoading({ title: '处理中' })
+    showBusy({ title: '处理中' })
     try {
       await app.callApi('handleApply', { id, approve: !!approve })
-      wx.hideLoading()
+      hideBusy()
       wx.showToast({ title: approve ? '已通过' : '已拒绝', icon: 'success' })
       this.init()
     } catch (err) {
-      wx.hideLoading()
+      hideBusy()
       toast(err.message)
     }
   }

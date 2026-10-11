@@ -38,7 +38,8 @@ Page({
     this.setData({ loading: true })
     try {
       const res = await app.callApi('listTnr', {})
-      const list = res.map(t => Object.assign({}, t, {
+      // 云函数 listTnr 返回 { list, flow }，不是数组
+      const list = (res.list || []).map(t => Object.assign({}, t, {
         statusItem: itemOf(C.TNR_STATUS, t.status)
       }))
       const done = list.filter(t => t.status === 'released' || t.status === 'adopted').length

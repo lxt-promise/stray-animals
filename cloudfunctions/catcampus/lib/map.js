@@ -7,7 +7,7 @@
  *  2. 两级可见：非社团成员拿不到私有点位（spotPrivate），其余点位坐标做模糊化。
  *     过滤与模糊都在服务端完成 —— 客户端拿不到的数据才是安全的。
  */
-const { db, COL, isMember, blurLocation, needBlur } = require('./core')
+const { cloud, db, COL, isMember, blurLocation, needBlur } = require('./core')
 
 /** 网格边长（度）：zoom 越大格子越小 */
 function gridSize(zoom) {
@@ -22,6 +22,72 @@ function cellKey(loc, g) {
 function inBounds(loc, b) {
   if (!b || !b.sw || !b.ne) return true
   return loc.lat >= b.sw.lat && loc.lat <= b.ne.lat && loc.lng >= b.sw.lng && loc.lng <= b.ne.lng
+}
+
+/**
+ * 判断一个地址是不是「渲染层能直接加载」的图标地址。
+ *  `cloud://` fileID 由逻辑层云开发 SDK 解析，渲染层的 <map marker> 不认；
+ *  即便被换成 tcb.qcloud.la 直链，该域名不回 Access-Control-Allow-Origin，仍会被 CORS 拦。
+ *  所以只认 https/http 与本地 /images/ 路径。
+ */
+function isRenderableUrl(u) {
+  const s = String(u || '')
+  return /^https?:\/\//i.test(s) || s.indexOf('/images/') === 0
+}
+
+/**
+ * 把 marker 的头像地址统一换成「渲染层能加载」的 https 临时链接。
+ *
+ * 三步走，最后一步是「无论如何都不报错」的保险：
+ *  1. 已经是 https/http 的（说明前端或小程序运行时已经换过一次）→ 直接沿用，
+ *     不再往返一次 getTempFileURL，省掉一次网络调用；
+ *  2. `cloud://` fileID → 批量 getTempFileURL 换成官方临时链接；
+ *  3. **兜底**：任何仍然不是 http(s) 的地址（换失败 / 缺权限 / 云存储未开通）一律置空，
+ *     让上层退化成 emoji 爪印 marker。
+ *     —— 宁可不好看，也绝不让一个坏地址流到渲染层去刷 CORS 报错。
+ *
+ * ⚠️ 第 3 步是这套方案的成败关键：只要有一个非 http 地址漏下去，
+ *    渲染层的 <map> 就会自己把这些 tcb.qcloud.la 直链当成 marker 图标去加载，
+ *    于是「Access to image ... blocked by CORS policy」+「改为用默认marker」继续刷屏。
+ */
+async function attachMarkerUrls(list) {
+  if (!list || !list.length) return
+
+  const needFetch = []
+  list.forEach(p => {
+    if (!p) return
+    const a = String(p.avatar || '')
+    if (a && a.indexOf('cloud://') === 0) needFetch.push(a)
+  })
+  const uniq = [...new Set(needFetch)]
+
+  const map = {}
+  for (let i = 0; i < uniq.length; i += 50) {   // 官方接口单次上限 50
+    try {
+      const tmp = await cloud.getTempFileURL({ fileList: uniq.slice(i, i + 50) })
+      ;(tmp && tmp.fileList || []).forEach(it => {
+        if (it && it.fileID && it.tempFileURL) map[it.fileID] = it.tempFileURL
+      })
+    } catch (e) {
+      console.warn('[map] 批量换取 marker 临时链接失败', e && e.message)
+    }
+  }
+
+  let dropped = 0
+  list.forEach(p => {
+    if (!p) return
+    const a = String(p.avatar || '')
+    if (!a) return
+    if (a.indexOf('cloud://') === 0) {
+      p.avatar = map[a] || ''            // 换不到就置空 → 前端退 emoji
+      if (!p.avatar) dropped++
+    } else if (!isRenderableUrl(a)) {
+      p.avatar = ''                      // 未知协议：直接丢弃，绝不外泄
+      dropped++
+    }
+    // 已是 http(s) 的原样保留
+  })
+  if (dropped) console.warn('[map] 有 ' + dropped + ' 个头像无法转为可加载地址，已退化为 emoji marker')
 }
 
 /**
@@ -89,11 +155,18 @@ async function mapPoints(user, event) {
     })
   })
 
+  // 单点与簇内猫的头像都换成 https 临时链接（marker.iconPath 由渲染层加载，不认 cloud://）
+  await attachMarkerUrls(points)
+  await attachMarkerUrls(clusters.reduce((acc, c) => acc.concat(c.cats || []), []))
+
   return {
     zoom,
     grid: g,
     total: list.length,
     clusters,
+    // points.avatar 已由 attachMarkerUrls 换成 https 临时链接：
+    //  - marker.iconPath **不用它**（前端 buildCatMarker 一律用本地图标，从源头绕开 CORS）
+    //  - 底部猫列表的 <image> 组件用它展示真实头像（<image> 走逻辑层，能正常加载）
     points,
     scope: member ? 'member' : 'public',
     notice: member ? '' : '幼猫、病猫与私有点位已隐藏或模糊处理，保护猫咪安全。'

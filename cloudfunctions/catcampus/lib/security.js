@@ -107,6 +107,7 @@ async function audit(openid, kind, fileID, note) {
   try {
     await db.collection(COL.apply).add({
       data: {
+        openid: openid,
         _openid: openid,
         kind: 'sec_audit:' + kind,
         fileID: fileID || '',

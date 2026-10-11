@@ -11,7 +11,7 @@
     <view class="hero-right">
       <view class="ai-status">
         <view class="pulse-dot"></view>
-        <text class="txt mono">AI ONLINE</text>
+        <text class="txt mono">在线</text>
       </view>
       <view class="role-badge {{isMember ? 'member' : ''}}">
         {{isMember ? '社团成员' : '爱猫同学'}}
@@ -19,14 +19,14 @@
     </view>
   </view>
 
-  <!-- AI 识别入口 -->
+  <!-- 智能识别入口（合规：小程序端不得出现「AI」字样，用「智能匹配/花色比对」表述） -->
   <view class="ai-card">
     <view class="grid-bg-layer"></view>
     <view class="scan-line"></view>
     <view class="ai-card-inner">
       <view class="ai-head">
-        <view class="badge mono">AI · VISION</view>
-        <view class="badge mono" style="border-color:rgba(251,191,36,.55);color:#B45309">猫脸识别 v0.1</view>
+        <view class="badge mono">SMART MATCH</view>
+        <view class="badge mono" style="border-color:rgba(251,191,36,.55);color:#B45309">花色比对 v0.1</view>
       </view>
       <view class="ai-title">拍一张，认出它是谁</view>
       <view class="ai-desc">

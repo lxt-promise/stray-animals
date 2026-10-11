@@ -1,5 +1,5 @@
 const app = getApp()
-const { C, itemOf, requireMember, toast } = require('../../utils/util.js')
+const { C, itemOf, requireMember, toast, showBusy, hideBusy } = require('../../utils/util.js')
 
 Page({
   data: {
@@ -72,28 +72,28 @@ Page({
   async submit() {
     const f = this.data.form
     if (!f.title.trim()) return toast('请填写任务标题')
-    wx.showLoading({ title: '发布中' })
+    showBusy({ title: '发布中' })
     try {
       await app.callApi('saveTask', { data: f })
       this.setData({ showForm: false, form: { title: '', type: 'feed', date: '', spot: '', note: '', contact: '' } })
-      wx.hideLoading()
+      hideBusy()
       wx.showToast({ title: '已发布', icon: 'success' })
       this.load()
     } catch (e) {
-      wx.hideLoading()
+      hideBusy()
       toast(e.message)
     }
   },
 
   async claim(e) {
     const { id, cancel } = e.currentTarget.dataset
-    wx.showLoading({ title: '处理中' })
+    showBusy({ title: '处理中' })
     try {
       await app.callApi('claimTask', { id, cancel: !!cancel })
-      wx.hideLoading()
+      hideBusy()
       this.load()
     } catch (err) {
-      wx.hideLoading()
+      hideBusy()
       toast(err.message)
     }
   },
@@ -102,15 +102,15 @@ Page({
     const { id } = e.currentTarget.dataset
     const task = (this.data.allList || []).filter(t => t._id === id)[0]
     if (!task) return
-    wx.showLoading({ title: '处理中' })
+    showBusy({ title: '处理中' })
     try {
       await app.callApi('saveTask', {
         data: Object.assign({}, task, { status: 'done' })
       })
-      wx.hideLoading()
+      hideBusy()
       this.load()
     } catch (err) {
-      wx.hideLoading()
+      hideBusy()
       toast(err.message)
     }
   }

@@ -185,7 +185,8 @@ async function createOrder(me, event) {
 
   const now = new Date()
   const doc = {
-    _openid: me._openid,
+    openid: me.openid,
+    _openid: me.openid,
     outTradeNo: no,
     wxOrderId: '',
     productId,
@@ -221,7 +222,7 @@ async function queryOrder(me, event) {
   if (!orderId) throw new AppError('缺少 orderId')
   const body = {
     appid: CFG.appId,
-    openid: me._openid,
+    openid: me.openid,
     order_id: orderId,
     env: CFG.sandbox ? SANDBOX_ENV : PROD_ENV
   }
@@ -255,7 +256,7 @@ async function refundOrder(me, event) {
   }
   const body = {
     appid: CFG.appId,
-    openid: event.openid || me._openid,
+    openid: event.openid || me.openid,
     order_id: orderId,
     env: CFG.sandbox ? SANDBOX_ENV : PROD_ENV
   }
@@ -408,7 +409,7 @@ async function handleNotify(me, event) {
 /** 我的订单（用户维度） */
 async function listOrders(me, event) {
   const res = await db.collection(COL.vpayOrder)
-    .where({ _openid: me._openid })
+    .where({ openid: me.openid })
     .orderBy('createdAt', 'desc').limit(50).get()
   return res.data
 }

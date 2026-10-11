@@ -1,5 +1,5 @@
 const app = getApp()
-const { C, requireMember, toast } = require('../../utils/util.js')
+const { C, requireAdmin, toast, showBusy, hideBusy } = require('../../utils/util.js')
 
 Page({
   data: {
@@ -40,8 +40,9 @@ Page({
   },
 
   onLoad(options) {
-    if (!requireMember(app)) {
-      setTimeout(() => wx.navigateBack(), 800)
+    // 建档 / 改档：管理员及以上（含超级管理员）可手动录入
+    if (!requireAdmin(app)) {
+      setTimeout(() => wx.navigateBack(), 1500)
       return
     }
     // 支持从 AI 识别页带参新建：photo / pattern / color
@@ -59,6 +60,8 @@ Page({
       this.setData({ id: options.id, isNew: false })
       wx.setNavigationBarTitle({ title: '编辑档案' })
       this.loadCat(options.id)
+    } else {
+      wx.setNavigationBarTitle({ title: '录入新猫档案' })
     }
   },
 
@@ -132,7 +135,7 @@ Page({
   async chooseAvatar() {
     const res = await wx.chooseMedia({ count: 1, mediaType: ['image'], sizeType: ['compressed'] }).catch(() => null)
     if (!res) return
-    wx.showLoading({ title: '上传中' })
+    showBusy({ title: '上传中' })
     try {
       const file = res.tempFiles[0]
       const up = await wx.cloud.uploadFile({
@@ -143,14 +146,14 @@ Page({
     } catch (e) {
       toast('上传失败')
     } finally {
-      wx.hideLoading()
+      hideBusy()
     }
   },
 
   async choosePhotos() {
     const res = await wx.chooseMedia({ count: 6, mediaType: ['image'], sizeType: ['compressed'] }).catch(() => null)
     if (!res) return
-    wx.showLoading({ title: '上传中' })
+    showBusy({ title: '上传中' })
     try {
       const files = res.tempFiles || []
       const ids = []
@@ -165,7 +168,7 @@ Page({
     } catch (e) {
       toast('上传失败')
     } finally {
-      wx.hideLoading()
+      hideBusy()
     }
   },
 
@@ -190,18 +193,18 @@ Page({
     if (!f.name.trim()) return toast('请填写名字')
     if (this.data.saving) return
     this.setData({ saving: true })
-    wx.showLoading({ title: '保存中' })
+    showBusy({ title: '保存中' })
     try {
       const payload = Object.assign({}, f)
       if (payload.location && !payload.location.name) {
         payload.location.name = payload.locationName || ''
       }
       await app.callApi('saveCat', { data: payload })
-      wx.hideLoading()
-      wx.showToast({ title: '已保存', icon: 'success' })
+      hideBusy()
+      wx.showToast({ title: this.data.isNew ? '档案已建立' : '已保存', icon: 'success' })
       setTimeout(() => wx.navigateBack(), 900)
     } catch (e) {
-      wx.hideLoading()
+      hideBusy()
       toast(e.message || '保存失败')
     } finally {
       this.setData({ saving: false })

@@ -3,7 +3,6 @@
     "pages/index/index",
     "pages/cats/cats",
     "pages/map/map",
-    "pages/workbench/workbench",
     "pages/mine/mine",
     "pages/recognize/recognize",
     "pages/cat-detail/cat-detail",
@@ -13,7 +12,9 @@
     "pages/tnr-edit/tnr-edit",
     "pages/task/task",
     "pages/fund/fund",
-    "pages/member/member"
+    "pages/member/member",
+    "pages/admin/admin",
+    "pages/points/points"
   ],
   "window": {
     "backgroundTextStyle": "dark",
@@ -25,6 +26,7 @@
     "backgroundColorBottom": "#FFF7ED"
   },
   "tabBar": {
+    "custom": true,
     "color": "#B9A08C",
     "selectedColor": "#F97316",
     "backgroundColor": "#FFFFFF",
@@ -47,12 +49,6 @@
         "text": "地图",
         "iconPath": "images/tab/map.png",
         "selectedIconPath": "images/tab/map_on.png"
-      },
-      {
-        "pagePath": "pages/workbench/workbench",
-        "text": "工作台",
-        "iconPath": "images/tab/work.png",
-        "selectedIconPath": "images/tab/work_on.png"
       },
       {
         "pagePath": "pages/mine/mine",

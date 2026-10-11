@@ -10,7 +10,7 @@
       <input class="p-name-input" type="nickname" value="{{user.nickName}}" placeholder="点此设置昵称"
         bindblur="onNickName" bindconfirm="onNickName" confirm-type="done" />
       <view class="p-role">
-        <text class="tag {{isMember ? 'ok' : 'gray'}}">{{isMember ? (isAdmin ? '管理员' : '社团成员') : '爱猫同学'}}</text>
+        <text class="tag {{isSuper ? 'gold' : (isMember ? 'ok' : 'gray')}}">{{isSuper ? '超级管理员' : (isMember ? (isAdmin ? '管理员' : '社团成员') : '爱猫同学')}}</text>
         <text class="small muted" wx:if="{{school}}">{{school.name}}</text>
       </view>
       <text class="small muted edit-hint">点击头像换图 · 点昵称可改</text>
@@ -74,6 +74,31 @@
     <view wx:if="{{!showSchoolForm && school}}">
       <view class="row"><text class="label">当前</text><text class="value">{{school.name}} {{school.campus}}</text></view>
       <view class="row" wx:if="{{school.intro}}"><text class="label">简介</text><text class="value">{{school.intro}}</text></view>
+      <view class="row">
+        <text class="label">地图中心</text>
+        <text class="value">{{school.center ? '已设置' : '未设置（用默认范围）'}}</text>
+      </view>
+      <block wx:if="{{isSuper}}">
+        <view class="form-item">
+          <text class="label">地图范围</text>
+          <picker mode="selector" range="{{scaleOptions}}" range-key="label"
+            value="{{scaleIndex}}" bindchange="onScaleChange">
+            <view class="picker-value">{{scaleOptions[scaleIndex].label}}</view>
+          </picker>
+        </view>
+        <view class="range-actions">
+          <button class="btn btn-ghost btn-sm" bindtap="setSchoolCenter">选择地图中心点</button>
+          <button class="btn btn-sm" bindtap="saveScale">保存范围</button>
+        </view>
+        <view class="small muted" style="margin-top:12rpx;line-height:1.7">
+          「选择地图中心点」会同时保存中心与当前范围；只想调整大小就改上面的级别后点「保存范围」。
+          保存后地图页只会展示这块校园区域内的猫咪点位。
+        </view>
+        <view class="small muted" style="margin-top:8rpx;line-height:1.7">
+          当前：中心 {{school.center ? school.center.lat : '未设置'}}<text wx:if="{{school.center}}">, {{school.center.lng}}</text>
+          · 缩放 {{school.scale || '未设置'}}
+        </view>
+      </block>
     </view>
     <view wx:if="{{!showSchoolForm && !school}}" class="small muted">未绑定学校</view>
 
@@ -94,8 +119,8 @@
         <text class="label">简介</text>
         <input placeholder="一句话介绍" value="{{schoolForm.intro}}" data-key="intro" bindinput="onInput" />
       </view>
-      <button class="btn mt" bindtap="createSchool" wx:if="{{isAdmin}}">创建并绑定</button>
-      <view class="small muted mt" wx:else>仅管理员可创建学校</view>
+      <button class="btn mt" bindtap="createSchool" wx:if="{{isSuper}}">创建并绑定</button>
+      <view class="small muted mt" wx:else>仅超级管理员可创建学校</view>
 
       <view class="mt" wx:if="{{schools.length}}">
         <view class="bold small" style="margin-bottom:12rpx">已有学校</view>
@@ -129,8 +154,98 @@
     </view>
   </view>
 
+  <!-- 工作台（管理员及以上可见）：从底部 tab 迁移至此 -->
+  <view class="card mt" wx:if="{{isAdminPlus}}">
+    <view class="card-title" bindtap="toggleWb">
+      工作台
+      <text class="more">{{wbOpen ? '收起' : '展开'}}</text>
+    </view>
+
+    <!-- 折叠态：一行待办概览 -->
+    <view class="flex-between" bindtap="toggleWb">
+      <text class="small muted">待建档 {{wb.pendingSighting}} · 待抓捕 {{wb.todoTnr}} · 待认领 {{wb.openTask}}</text>
+      <text class="small muted">结余 ¥{{wb.balance}}</text>
+    </view>
+
+    <block wx:if="{{wbOpen}}">
+      <view class="wb-stat-row">
+        <view class="wb-stat">
+          <view class="num">{{wb.pendingSighting}}</view>
+          <view class="lbl">待建档目击</view>
+        </view>
+        <view class="wb-stat">
+          <view class="num">{{wb.todoTnr}}</view>
+          <view class="lbl">待抓捕 TNR</view>
+        </view>
+        <view class="wb-stat">
+          <view class="num">{{wb.openTask}}</view>
+          <view class="lbl">待认领任务</view>
+        </view>
+      </view>
+
+      <view class="flex-between" style="margin-top:20rpx">
+        <view>
+          <view class="small muted">资金结余</view>
+          <view class="wb-balance">¥ {{wb.balance}}</view>
+        </view>
+        <button class="btn btn-ghost btn-sm" data-url="/pages/fund/fund" bindtap="go">收支明细</button>
+      </view>
+
+      <view class="entry-grid">
+        <view class="entry" data-url="/pages/cat-edit/cat-edit" bindtap="go">
+          <view class="entry-inner">
+            <view class="ico">🐱</view>
+            <view class="txt">新建猫档案</view>
+            <view class="desc">手动录入 · 建档</view>
+          </view>
+        </view>
+        <view class="entry" data-url="/pages/tnr/tnr" bindtap="go">
+          <view class="entry-inner">
+            <view class="ico">✂️</view>
+            <view class="txt">TNR 台账</view>
+            <view class="desc">抓捕 / 绝育 / 放归</view>
+          </view>
+        </view>
+        <view class="entry" data-url="/pages/task/task" bindtap="go">
+          <view class="entry-inner">
+            <view class="ico">📅</view>
+            <view class="txt">喂猫排班</view>
+            <view class="desc">任务发布与认领</view>
+          </view>
+        </view>
+        <view class="entry" data-url="/pages/fund/fund" bindtap="go">
+          <view class="entry-inner">
+            <view class="ico">💰</view>
+            <view class="txt">资金公示</view>
+            <view class="desc">捐赠与支出透明</view>
+          </view>
+        </view>
+        <view class="entry" data-url="/pages/member/member" bindtap="go">
+          <view class="entry-inner">
+            <view class="ico">👥</view>
+            <view class="txt">成员管理</view>
+            <view class="desc">角色与入社审核</view>
+          </view>
+        </view>
+        <view class="entry" data-url="/pages/cats/cats?tab=sighting" bindtap="go">
+          <view class="entry-inner">
+            <view class="ico">📷</view>
+            <view class="txt">目击建档</view>
+            <view class="desc">认领 / 建档</view>
+          </view>
+        </view>
+      </view>
+    </block>
+  </view>
+
   <!-- 入口 -->
   <view class="card mt">
+    <view class="menu-item" data-url="/pages/points/points" bindtap="go">
+      <text>猫粮明细</text><text class="arrow">›</text>
+    </view>
+    <view class="menu-item" data-url="/pages/admin/admin" bindtap="go" wx:if="{{isSuper}}">
+      <text>超级管理后台</text><text class="arrow">›</text>
+    </view>
     <view class="menu-item" data-url="/pages/member/member" bindtap="go">
       <text>身份与入社申请</text><text class="arrow">›</text>
     </view>

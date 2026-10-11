@@ -151,25 +151,24 @@
     </view>
   </view>
 
-  <!-- 说明 -->
-  <view class="card" wx:if="{{stage === 'idle'}}">
-    <view class="card-title">它是怎么认出猫的</view>
-    <view class="step">
-      <view class="step-n">01</view>
-      <view class="step-t">检测画面中的猫脸与躯干区域，剔除背景干扰</view>
+  <!-- 历史识别记录（仅保留最新 5 条，点击回看结果） -->
+  <view class="card" wx:if="{{stage === 'idle' && history.length}}">
+    <view class="card-title">
+      历史识别记录
+      <text class="more hist-clear" bindtap="clearHistory">清空</text>
     </view>
-    <view class="step">
-      <view class="step-n">02</view>
-      <view class="step-t">提取毛色、花纹、体型特征，编码成特征向量</view>
-    </view>
-    <view class="step">
-      <view class="step-n">03</view>
-      <view class="step-t">在所在学校的猫档案库里做相似度检索，输出 Top 候选</view>
-    </view>
-    <view class="divider"></view>
-    <view class="small muted" style="line-height:1.7">
-      识别接口已做抽象预留：默认走云函数内置的特征比对引擎；
-      在云函数配置 AI_ENDPOINT 环境变量后，可一键切换到第三方视觉大模型，返回结构完全一致。
+    <view class="hist-item" wx:for="{{history}}" wx:key="ts" bindtap="tapHistory" data-index="{{index}}">
+      <view class="hist-ico">{{item.mode === 'video' ? '🎬' : '📷'}}</view>
+      <view class="hist-main">
+        <view class="hist-title">
+          <block wx:if="{{item.result.candidates.length}}">
+            「{{item.result.candidates[0].name}}」{{item.result.candidates[0].score}}%
+          </block>
+          <block wx:else>未匹配到档案猫</block>
+        </view>
+        <view class="small muted">{{item.timeText}}</view>
+      </view>
+      <view class="hist-arrow">›</view>
     </view>
   </view>
 

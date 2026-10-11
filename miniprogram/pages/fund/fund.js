@@ -1,5 +1,5 @@
 const app = getApp()
-const { C, itemOf, requireMember, toast, money } = require('../../utils/util.js')
+const { C, itemOf, requireMember, toast, money, showBusy, hideBusy } = require('../../utils/util.js')
 
 Page({
   data: {
@@ -73,15 +73,15 @@ Page({
   async submit() {
     const f = this.data.form
     if (!Number(f.amount)) return toast('请填写金额')
-    wx.showLoading({ title: '提交中' })
+    showBusy({ title: '提交中' })
     try {
       await app.callApi('addFund', { data: f })
       this.setData({ showForm: false, form: { type: 'income', category: 'other', amount: '', title: '', date: '' } })
-      wx.hideLoading()
+      hideBusy()
       wx.showToast({ title: '已记录', icon: 'success' })
       this.load()
     } catch (e) {
-      wx.hideLoading()
+      hideBusy()
       toast(e.message)
     }
   }

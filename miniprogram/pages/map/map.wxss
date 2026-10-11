@@ -2,108 +2,173 @@
   position: relative;
   width: 100vw;
   height: 100vh;
+  overflow: hidden;
 }
 .map {
   width: 100%;
   height: 100%;
 }
+
+/* ===== 卡通化图层 ===== */
+/* ⚠️ 这两层是 **原生组件（map）之上的 cover-view 兄弟节点**：
+ *   原生组件永远盖在同层普通 view 之上，所以下面这两层其实落在地图下方、不可见，
+ *   只做无害的装饰声明即可。真正要守住的底线是「绝不参与事件」——
+ *   一旦漏了 pointer-events:none，就会把地图的拖动/缩放/点标记全部吃掉，
+ *   用户感觉就是「地图范围怎么改都没反应」。
+ *   （调试期若怀疑图层遮挡，把 .cartoon-tint / .cartoon-dots 临时注释掉即可对照。） */
+.cartoon-tint {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(120% 60% at 12% 4%, rgba(251, 191, 36, .26) 0%, rgba(251, 191, 36, 0) 62%),
+    radial-gradient(100% 52% at 92% 96%, rgba(249, 115, 22, .18) 0%, rgba(249, 115, 22, 0) 66%),
+    linear-gradient(180deg, rgba(255, 247, 237, .18) 0%, rgba(255, 247, 237, .05) 40%, rgba(255, 247, 237, .22) 100%);
+  mix-blend-mode: multiply;
+}
+/* 手绘圆点纹理：给底图加一层"贴纸感" */
+.cartoon-dots {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: .5;
+  background-image: radial-gradient(rgba(146, 88, 32, .12) 2rpx, transparent 2rpx);
+  background-size: 46rpx 46rpx;
+  mask-image: radial-gradient(90% 70% at 50% 45%, transparent 30%, #000 100%);
+  -webkit-mask-image: radial-gradient(90% 70% at 50% 45%, transparent 30%, #000 100%);
+}
+
+/* ===== 顶部校园徽标 ===== */
 .map-top {
   position: absolute;
-  top: 20rpx;
+  top: 24rpx;
   left: 0;
   right: 0;
   display: flex;
   justify-content: center;
+  pointer-events: none;
 }
+.school-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8rpx;
+  background: rgba(255, 255, 255, .94);
+  border: 2rpx solid rgba(249, 115, 22, .28);
+  padding: 12rpx 28rpx;
+  border-radius: 32rpx;
+  box-shadow: 0 8rpx 24rpx rgba(146, 88, 32, .14);
+  max-width: 82%;
+}
+.school-chip .chip-ico { font-size: 28rpx; }
+.school-chip .chip-txt {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--brand-dark);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.school-chip .chip-sub { font-size: 22rpx; color: var(--text-weak); }
+
 .map-hint {
-  background: rgba(11, 17, 30, .92);
+  position: absolute;
+  top: 108rpx;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 78%;
+  background: rgba(67, 20, 7, .86);
   padding: 14rpx 28rpx;
-  border-radius: 30rpx;
+  border-radius: 28rpx;
   font-size: 24rpx;
-  color: var(--text-sub);
+  color: #FFF7ED;
+  text-align: center;
+  line-height: 1.6;
   box-shadow: var(--shadow);
 }
-.locate-btn {
+
+/* ===== 右侧悬浮按钮组 ===== */
+.fab-col {
   position: absolute;
   right: 28rpx;
-  top: 120rpx;
-  width: 76rpx;
-  height: 76rpx;
-  line-height: 76rpx;
+  top: 150rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+.float-btn {
+  width: 80rpx;
+  height: 80rpx;
+  line-height: 80rpx;
   text-align: center;
   border-radius: 50%;
-  background: var(--card);
-  font-size: 40rpx;
-  color: var(--brand);
-  box-shadow: var(--shadow);
+  background: rgba(255, 255, 255, .96);
+  border: 2rpx solid rgba(249, 115, 22, .22);
+  font-size: 36rpx;
+  box-shadow: 0 8rpx 22rpx rgba(146, 88, 32, .16);
 }
+
+/* ===== 底部列表 ===== */
 .bottom-sheet {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
   background: var(--card);
-  border-radius: 32rpx 32rpx 0 0;
-  box-shadow: 0 -8rpx 30rpx rgba(120, 80, 40, .12);
+  border-radius: 36rpx 36rpx 0 0;
+  box-shadow: 0 -8rpx 30rpx rgba(120, 80, 40, .16);
   transition: transform .3s;
+  padding-bottom: env(safe-area-inset-bottom);
 }
-.bottom-sheet.collapsed { transform: translateY(calc(100% - 96rpx)); }
+.bottom-sheet.collapsed { transform: translateY(calc(100% - 100rpx)); }
 .sheet-handle {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 28rpx 32rpx 20rpx;
 }
-.handle-title { font-size: 30rpx; font-weight: 600; }
+.handle-title { font-size: 30rpx; font-weight: 700; color: var(--brand-dark); }
 .handle-arrow { font-size: 24rpx; color: var(--text-sub); }
 .sheet-list { max-height: 520rpx; padding: 0 24rpx 24rpx; }
 .sheet-item {
   display: flex;
   align-items: center;
   padding: 18rpx 12rpx;
-  border-radius: 16rpx;
+  border-radius: 20rpx;
 }
 .sheet-item.on { background: var(--brand-light); }
 .sheet-avatar {
-  width: 80rpx;
-  height: 80rpx;
-  border-radius: 16rpx;
+  width: 84rpx;
+  height: 84rpx;
+  border-radius: 50%;
   background: var(--brand-light);
+  border: 3rpx solid rgba(249, 115, 22, .35);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 36rpx;
-  margin-right: 18rpx;
+  font-size: 38rpx;
+  margin-right: 20rpx;
   overflow: hidden;
+  flex-shrink: 0;
 }
 .sheet-avatar image { width: 100%; height: 100%; }
-.sheet-info { flex: 1; }
+.sheet-info { flex: 1; min-width: 0; }
+
 .fab-small {
   position: absolute;
   right: 28rpx;
-  bottom: 620rpx;
-  padding: 16rpx 28rpx;
+  bottom: 640rpx;
+  padding: 18rpx 32rpx;
   border-radius: 40rpx;
-  background: var(--brand);
+  background: var(--brand-grad);
   color: #fff;
   font-size: 26rpx;
+  font-weight: 600;
   box-shadow: 0 8rpx 20rpx rgba(249, 115, 22, .4);
 }
 
-/* ===== 点位说明（对齐预览：图例 + 坐标模糊化） ===== */
-.legend-btn {
-  position: absolute;
-  right: 28rpx;
-  top: 216rpx;
-  width: 76rpx;
-  height: 76rpx;
-  line-height: 76rpx;
-  text-align: center;
-  border-radius: 50%;
-  background: var(--card);
-  font-size: 36rpx;
-  box-shadow: var(--shadow);
-}
+/* ===== 点位说明 ===== */
 .legend-card {
   position: absolute;
   left: 32rpx;
@@ -111,8 +176,8 @@
   top: 210rpx;
   padding: 28rpx;
   border-radius: var(--radius);
-  background: rgba(255, 255, 255, .97);
-  border: 2rpx solid var(--card-line);
+  background: rgba(255, 255, 255, .98);
+  border: 2rpx solid rgba(249, 115, 22, .2);
   box-shadow: var(--shadow);
   z-index: 30;
 }

@@ -1,6 +1,6 @@
 <view class="cat-card" wx:if="{{cat}}" bindtap="onTap">
   <view class="avatar">
-    <image wx:if="{{cat.avatar}}" src="{{cat.avatar}}" mode="aspectFill" />
+    <image wx:if="{{avatar}}" src="{{avatar}}" mode="aspectFill" binderror="onAvatarError" />
     <text wx:else>🐱</text>
     <view class="rarity-dot" style="background: {{rarityItem.color}}"></view>
   </view>

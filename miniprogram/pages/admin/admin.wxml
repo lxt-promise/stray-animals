@@ -1,0 +1,45 @@
+<view class="page">
+
+  <view class="card">
+    <view class="card-title">成员管理（更改管理员身份）</view>
+    <view class="small muted" style="margin-bottom:16rpx">仅你能操作。超级管理员身份由账号本身决定，不可被降级。</view>
+    <view class="row member" wx:for="{{members}}" wx:key="_id">
+      <view class="m-info">
+        <text class="m-name">{{item.nickName || '匿名'}}</text>
+        <text class="tag {{item.isSuper ? 'gold' : (item.role === 'admin' ? 'ok' : (item.role === 'member' ? 'info' : 'gray'))}}">{{item.roleLabel}}</text>
+      </view>
+      <view class="m-actions" wx:if="{{!item.isSuper}}">
+        <text class="op {{item.role === 'admin' ? 'on' : ''}}" data-id="{{item._id}}" data-role="admin" bindtap="setRole">管理员</text>
+        <text class="op {{item.role === 'member' ? 'on' : ''}}" data-id="{{item._id}}" data-role="member" bindtap="setRole">成员</text>
+        <text class="op {{item.role === 'visitor' ? 'on' : ''}}" data-id="{{item._id}}" data-role="visitor" bindtap="setRole">访客</text>
+      </view>
+      <view class="m-actions" wx:else>
+        <text class="locked">不可更改</text>
+      </view>
+    </view>
+    <view class="empty" wx:if="{{!members.length}}"><text class="emoji">🐾</text>暂无成员</view>
+  </view>
+
+  <view class="card mt">
+    <view class="card-title">上传记录管理（修改 / 删除）</view>
+    <view class="small muted" style="margin-bottom:16rpx">最近 50 条目击打卡，可删除异常或错误上传。</view>
+    <view class="row s-item" wx:for="{{sightings}}" wx:key="_id">
+      <view class="s-main">
+        <view class="flex-between">
+          <text class="bold" wx:if="{{item.catId}}" data-id="{{item.catId}}" bindtap="goCat">{{item.cat.name || '未知'}}</text>
+          <text class="bold muted" wx:else>{{item.catName || '未认领的新猫'}}</text>
+          <text class="small muted">{{item.timeText}}</text>
+        </view>
+        <view class="small muted ellipsis" wx:if="{{item.note}}">{{item.note}}</view>
+        <view class="small muted">上报人：{{item.reporterName || item.reporter}}</view>
+      </view>
+      <text class="danger" data-id="{{item._id}}" bindtap="removeSighting">删除</text>
+    </view>
+    <view class="empty" wx:if="{{!sightings.length}}"><text class="emoji">🐾</text>暂无记录</view>
+  </view>
+
+  <view class="tip small muted">
+    学校创建、成员身份、上传记录均由超级管理员在云端二次校验，普通账号无法越权。
+  </view>
+
+</view>

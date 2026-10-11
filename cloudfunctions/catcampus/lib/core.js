@@ -24,6 +24,7 @@ const COL = {
   task: 'tasks',
   fund: 'funds',
   apply: 'applies',
+  point: 'points',      // 猫粮流水（记录表，与 users 分离）
   aiTask: 'ai_tasks',   // AI 识别异步任务（难点 1：短视频异步化）
   aiSample: 'ai_samples', // 用户确认的识别样本（人机协同闭环，为后续训练攒数据）
   vpayOrder: 'vpay_orders',       // 虚拟支付订单（待支付/已支付/已发货/已退款）
@@ -31,8 +32,128 @@ const COL = {
   vpayDelivery: 'vpay_deliveries' // 发货意图（业务侧消费：发放权益后标记 delivered）
 }
 
+/**
+ * 集合自愈：第一次用到某个集合时若不存在，直接建出来。
+ *
+ * 为什么需要：云开发的集合**不会**因为代码里写了名字就自动存在，
+ * 必须在控制台手工建。漏建任何一个，第一次用到就抛
+ * `-502005 database collection not exists`，而且报错点在深层的 DB 调用处，
+ * 对使用者非常不友好（例如 `ai_tasks` 只在识别时才碰到，很容易在部署时漏掉）。
+ *
+ * 这里用「惰性建表 + 进程内缓存」兜住：
+ *  - 第一次访问某集合前先确保它存在（缓存命中则零开销，不额外查库）；
+ *  - 并发时可能重复发起 createCollection，重复建会报「已存在」，
+ *    当作成功吞掉即可（幂等）。
+ */
+const _collectionReady = {}
+/** 正在后台创建中的集合（避免并发重复发起 createCollection） */
+const _collectionCreating = {}
+
+/**
+ * ⚠️ 性能红线：这个函数**绝不能**在请求热路径上被 await。
+ *
+ * 踩过的坑：`ensureCollection` 最初是 `await db.createCollection(name)`，
+ * 也就是一次完整的服务端往返（实测 300~500ms）。首次识别时它插在
+ * `getMe → ensureCollection → ai_tasks.add → ...` 的链条里，把单次
+ * `recognize` 的耗时推到约 2.9s，直接顶穿客户端 `cloud.callFunction`
+ * 约 3s 的调用预算，报 `-504003 Invoking task timed out after 3 seconds`。
+ *
+ * 正确做法：把「建集合」当**后台副作用**发起，不阻塞当前请求。
+ *  - 冷路径：本次请求正常执行；若集合真不存在，本次可能仍失败，
+ *    但后台创建已完成，重试即成功（前端本来就有重试/重进页面的机会）。
+ *  - 热路径：`_collectionReady` 命中，零开销、不发任何请求。
+ *  - 部署后调一次 `initCollections` 才是根治手段，这里是兜底。
+ */
+function ensureCollection(name) {
+  if (!name || _collectionReady[name]) return Promise.resolve()
+  if (_collectionCreating[name]) return _collectionCreating[name]
+
+  _collectionCreating[name] = db.createCollection(name)
+    .then(() => {
+      _collectionReady[name] = true
+      console.log('[db] 已自动创建集合', name)
+    })
+    .catch(e => {
+      // -501001 / 已存在 等一律视为「集合可用」，不打断业务
+      const msg = (e && (e.errMsg || e.message)) || ''
+      if (/exist|已存在|-501001/i.test(msg)) {
+        _collectionReady[name] = true
+      } else {
+        console.warn('[db] 自动创建集合失败（若后续仍报集合不存在，请在控制台手工建）', name, msg)
+      }
+    })
+    .finally(() => { delete _collectionCreating[name] })
+
+  return _collectionCreating[name]
+}
+
+/**
+ * 预热：不 await 地发起建表，只用于「写操作前顺手确保一下」。
+ * 与 ensureCollection 的区别是调用方明确表示「不等结果」。
+ */
+function warmCollection(name) {
+  ensureCollection(name).catch(() => {})
+}
+
+/** 用前先确保集合存在（写操作建议都套一层；读不存在的集合返回空，不会报错） */
+function coll(name) {
+  return {
+    // 注意：这里是 warm（不等建表结果），不是 await ensureCollection。
+    // 若 await，又会把一次 300~500ms 的建表往返塞进每次写操作里。
+    add: async arg => { warmCollection(name); return db.collection(name).add(arg) },
+    doc: id => db.collection(name).doc(id),
+    where: w => db.collection(name).where(w),
+    orderBy: (f, o) => db.collection(name).orderBy(f, o),
+    limit: n => db.collection(name).limit(n),
+    skip: n => db.collection(name).skip(n),
+    count: async () => {
+      try { return await db.collection(name).count() }
+      catch (e) { warmCollection(name); return { total: 0 } }
+    },
+    get: async () => {
+      try { return await db.collection(name).get() }
+      catch (e) { warmCollection(name); return { data: [] } }
+    }
+  }
+}
+
+/**
+ * 一次性把所有集合都建齐（部署后调一次即可；也可由 ensureAllCollections 幂等重跑）。
+ *
+ * 必须**并发**建，不能 for-await 串行 —— 14 个集合 × 每次约 400ms 的服务端往返
+ * ≈ 5.6s，串行同样会顶穿调用预算。并发后总耗时约等于单次。
+ */
+async function ensureAllCollections() {
+  const names = Object.values(COL)
+  await Promise.all(names.map(n => ensureCollection(n)))
+  const failed = names.filter(n => !_collectionReady[n])
+  if (failed.length) console.warn('[db] 以下集合创建未确认成功（可到控制台手工补建）', failed)
+  return names
+}
+
 /** 角色等级：用于 requireRole 的比较 */
 const ROLE_LEVEL = { visitor: 0, member: 1, admin: 2 }
+
+/**
+ * 超级管理员：以 openid 标识（绝不用昵称，改名/重名都不影响）。
+ * 默认包含项目拥有者 Promise；可用云函数环境变量 SUPER_ADMIN_OPENIDS（逗号分隔）覆盖。
+ * 超管在登录时自动获得 admin 角色，并独享「创建学校 / 更改管理员身份 / 修改上传记录」等权限。
+ */
+// 注意：以数据库里 Promise 档案的真实 _openid 为准（oKivox...），
+// o6zAJ... 为早期误填的 openid，保留是为了兼容旧会话，新部署请以后者为准。
+const SUPER_ADMIN_OPENIDS = (process.env.SUPER_ADMIN_OPENIDS || 'oKivoxRmuKFIMtqqFun-8pUpureM,o6zAJs5bk37YM7pl3csLZnY3mdqc')
+  .split(',').map(s => (s || '').trim()).filter(Boolean)
+
+function isSuper(user) {
+  return !!(user && user.openid && SUPER_ADMIN_OPENIDS.indexOf(user.openid) >= 0)
+}
+
+/** 仅超级管理员可执行；其余一律 403 */
+function requireSuper(user) {
+  if (!user) throw new AppError('请先登录', 401)
+  if (!isSuper(user)) throw new AppError('仅超级管理员可执行此操作', 403)
+  return user
+}
 
 /* ==================== 权限 ==================== */
 
@@ -215,7 +336,9 @@ function cosine(a, b) {
 
 module.exports = {
   cloud, db, _, COL, ROLE_LEVEL, AppError,
+  ensureCollection, ensureAllCollections, coll, warmCollection,
   roleOf, isMember, isAdmin, requireRole,
+  SUPER_ADMIN_OPENIDS, isSuper, requireSuper,
   resolveSchoolId, assertSchool, scopeWhere,
   blurLocation, needBlur, sanitizeCat, sanitizeSighting,
   escapeReg, pageOf, dayKey, startOfDay, distanceM, cosine

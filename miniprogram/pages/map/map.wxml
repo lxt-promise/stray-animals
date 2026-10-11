@@ -1,4 +1,5 @@
 <view class="map-page">
+  <!-- 底图：关掉自带 POI 与路名，减弱"电子地图"感 -->
   <map
     id="catMap"
     class="map"
@@ -7,20 +8,42 @@
     scale="{{scale}}"
     markers="{{markers}}"
     show-location
-    enable-poi
+    enable-zoom
+    enable-scroll
+    enable-3D="{{false}}"
+    show-compass="{{false}}"
+    enable-poi="{{false}}"
+    enable-building="{{false}}"
     bindmarkertap="onMarkerTap"
   ></map>
 
+  <!-- 卡通化图层：暖色柔光 + 手绘圆点纹理（纯装饰，pointer-events 穿透） -->
+  <view class="cartoon-tint"></view>
+  <view class="cartoon-dots"></view>
+
+  <!-- 顶部：当前校园 + 范围说明 -->
   <view class="map-top">
-    <view class="map-hint" wx:if="{{!cats.length && !loading}}">
-      还没有标注猫点位，社团成员可在猫档案里填写常驻位置
+    <view class="school-chip">
+      <text class="chip-ico">🏫</text>
+      <text class="chip-txt">{{school ? school.name : '未绑定学校'}}</text>
+      <text class="chip-sub" wx:if="{{school && school.campus}}">· {{school.campus}}</text>
     </view>
   </view>
 
-  <view class="locate-btn" bindtap="locateMe">◎</view>
-  <view class="legend-btn" bindtap="toggleLegend">ℹ️</view>
+  <view class="map-hint" wx:if="{{!cats.length && !loading}}">
+    <text wx:if="{{outsideCount}}">本校范围内暂无点位（有 {{outsideCount}} 只猫在范围外）</text>
+    <text wx:elif="{{school}}">这块校园里还没有猫点位，成员可在猫档案里填写常驻位置</text>
+    <text wx:else>还没有绑定学校，地图展示全部点位</text>
+  </view>
 
-  <!-- 点位说明（对齐预览：图例 + 坐标模糊化说明） -->
+  <!-- 右侧悬浮按钮组 -->
+  <view class="fab-col">
+    <view class="float-btn" bindtap="resetView">🏫</view>
+    <view class="float-btn" bindtap="locateMe">◎</view>
+    <view class="float-btn" bindtap="toggleLegend">ℹ️</view>
+  </view>
+
+  <!-- 点位说明 -->
   <view class="legend-card" wx:if="{{showLegend}}" bindtap="toggleLegend">
     <view class="lg-title bold">点位说明</view>
     <view class="lg-line">
@@ -30,7 +53,8 @@
       <text class="small muted">待关注 / 待抓捕</text>
     </view>
     <view class="lg-note small muted">
-      幼猫与病猫的精确坐标对非社团成员做模糊化处理 —— 吸取街猫直播被虐猫者利用的教训，避免聚集点被别有用心的人定位。
+      地图默认只展示当前校园范围；幼猫与病猫的精确坐标对非社团成员做模糊化处理 ——
+      吸取街猫直播被虐猫者利用的教训，避免聚集点被别有用心的人定位。
     </view>
     <view class="lg-close small muted">点击任意处关闭</view>
   </view>
@@ -38,7 +62,7 @@
   <!-- 底部猫点位列表 -->
   <view class="bottom-sheet {{showList ? '' : 'collapsed'}}">
     <view class="sheet-handle" bindtap="toggleList">
-      <text class="handle-title">附近猫咪 {{cats.length}}</text>
+      <text class="handle-title">🐾 附近猫咪 {{cats.length}}</text>
       <text class="handle-arrow">{{showList ? '收起' : '展开'}}</text>
     </view>
     <scroll-view scroll-y class="sheet-list" wx:if="{{showList}}">
@@ -60,7 +84,7 @@
               {{item.sterilized === 'yes' ? '已绝育' : '未绝育'}}
             </text>
           </view>
-          <view class="small muted">{{item.spot || '校园内'}}</view>
+          <view class="small muted">{{item.spot || '校园内'}}<text wx:if="{{item.dist}}"> · {{item.dist}}</text></view>
         </view>
       </view>
     </scroll-view>

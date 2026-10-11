@@ -1,14 +1,12 @@
 /**
  * 猫粮值（积分）发放 —— 难点 4「并发超发」
  *
- * 关键设计：
- *  1. 每日上限不再靠「先查打卡次数再算」——那是典型的 read-modify-write 竞态；
- *  2. 改为在用户档案上维护 pointsDay / pointsToday 两个字段，
- *     放进数据库事务里「读用户 → 算额度 → 原子自增」，并发下不会超发；
- *  3. 事务不可用时降级为普通原子自增（_.inc 本身是原子的，
- *     仅日上限在极端并发下可能略超，业务可接受）。
+ * 设计：
+ *  1. 每日上限在数据库事务里「读用户 → 算额度 → 原子自增」，并发下不会超发；
+ *  2. 每次发放同时写入独立的 points（猫粮流水）集合，作为可追溯的记录表，
+ *     与 users 表解耦；users.points 仅保留为展示用的余额缓存（同事务内更新）。
  */
-const { db, _, COL, dayKey } = require('./core')
+const { db, _, COL, dayKey, isSuper } = require('./core')
 
 /** 单次奖励额度 */
 const AWARD = {
@@ -25,19 +23,47 @@ const DAILY_CAP = 60
 /** 不受日上限约束的类型：TNR 是重投入行为，不该被打卡上限挤掉 */
 const UNCAPPED = ['tnrHelp']
 
+/** 奖励文案（流水里展示用） */
+const REASON = {
+  sighting: '目击打卡',
+  newCat: '上报新猫',
+  firstMeet: '首次遇见（图鉴解锁）',
+  tnrHelp: '参与 TNR',
+  confirm: '人工确认识别'
+}
+
 /**
  * 发放积分
  * @param {Object} user  用户档案（必须含 _id）
  * @param {string} kind  AWARD 的键
  * @param {number} [amount] 覆盖默认额度
+ * @param {{refType?:string, refId?:string}} [ref] 关联业务（打卡/TNR/识别任务等）
  * @returns {Promise<{gained:number, today:number, capped:boolean}>}
  */
-async function grant(user, kind, amount) {
+async function grant(user, kind, amount, ref) {
   const want = Number(amount != null ? amount : AWARD[kind] || 0)
   if (!user || !user._id || want <= 0) return { gained: 0, today: 0, capped: false }
 
   const today = dayKey()
-  const uncapped = UNCAPPED.indexOf(kind) >= 0
+  // 超级管理员不受日上限约束（便于测试与运营）；TNR 是重投入行为也不受限
+  const uncapped = UNCAPPED.indexOf(kind) >= 0 || isSuper(user)
+  const openid = user.openid || user._openid || ''
+
+  const writeLedger = (txOrDb, cur, gained) => {
+    const balance = (Number(cur.points) || 0) + gained
+    const row = {
+      openid,
+      userId: user._id,
+      kind,
+      reason: REASON[kind] || kind,
+      delta: gained,
+      balance,
+      refType: (ref && ref.refType) || '',
+      refId: (ref && ref.refId) || '',
+      createdAt: new Date()
+    }
+    return txOrDb.collection(COL.point).add({ data: row })
+  }
 
   try {
     return await db.runTransaction(async tx => {
@@ -47,13 +73,16 @@ async function grant(user, kind, amount) {
       const used = cur.pointsDay === today ? (Number(cur.pointsToday) || 0) : 0
       const room = uncapped ? want : Math.max(0, DAILY_CAP - used)
       const gained = Math.min(want, room)
-      await tx.collection(COL.user).doc(user._id).update({
-        data: {
-          points: _.inc(gained),
-          pointsDay: today,
-          pointsToday: cur.pointsDay === today ? _.inc(gained) : gained
-        }
-      })
+      if (gained > 0) {
+        await tx.collection(COL.user).doc(user._id).update({
+          data: {
+            points: _.inc(gained),
+            pointsDay: today,
+            pointsToday: cur.pointsDay === today ? _.inc(gained) : gained
+          }
+        })
+        await writeLedger(tx, cur, gained)
+      }
       return { gained, today: used + gained, capped: gained < want }
     })
   } catch (e) {
@@ -64,13 +93,16 @@ async function grant(user, kind, amount) {
     const used = cur.pointsDay === today ? (Number(cur.pointsToday) || 0) : 0
     const room = uncapped ? want : Math.max(0, DAILY_CAP - used)
     const gained = Math.min(want, room)
-    await db.collection(COL.user).doc(user._id).update({
-      data: {
-        points: _.inc(gained),
-        pointsDay: today,
-        pointsToday: cur.pointsDay === today ? _.inc(gained) : gained
-      }
-    })
+    if (gained > 0) {
+      await db.collection(COL.user).doc(user._id).update({
+        data: {
+          points: _.inc(gained),
+          pointsDay: today,
+          pointsToday: cur.pointsDay === today ? _.inc(gained) : gained
+        }
+      })
+      await writeLedger(db, cur, gained)
+    }
     return { gained, today: used + gained, capped: gained < want, degraded: true }
   }
 }
@@ -88,4 +120,15 @@ async function summary(user) {
   }
 }
 
-module.exports = { grant, summary, AWARD, DAILY_CAP }
+/** 猫粮流水（记录表），按时间倒序；可按 kind 过滤 */
+async function history(openid, event) {
+  const size = Math.min(Number(event && event.size) || 20, 100)
+  const where = {}
+  if (openid) where.openid = openid
+  if (event && event.kind) where.kind = event.kind
+  const res = await db.collection(COL.point)
+    .where(where).orderBy('createdAt', 'desc').limit(size).get()
+  return res.data
+}
+
+module.exports = { grant, summary, history, AWARD, DAILY_CAP }

@@ -59,12 +59,17 @@ Page({
     wx.navigateTo({ url: '/pages/cat-detail/cat-detail?id=' + e.currentTarget.dataset.id })
   },
 
+  // 注意：cats / mine 都是 tabBar 页面，必须用 switchTab；
+  // 用 navigateTo 会被微信静默拒绝（can not navigateTo a tabbar page），表现为「点了没反应」。
+  // 「最新动态」要带 tab=sighting，switchTab 不支持 query，
+  // 故先写入全局，由 cats 页在 onShow 时读取并切到「目击」tab。
   goSightingList() {
-    wx.navigateTo({ url: '/pages/cats/cats?tab=sighting' })
+    app.globalData.catsTab = 'sighting'
+    wx.switchTab({ url: '/pages/cats/cats' })
   },
 
   goCreateSchool() {
-    wx.navigateTo({ url: '/pages/mine/mine?action=school' })
+    wx.switchTab({ url: '/pages/mine/mine' })
   },
 
   formatTime(t) {

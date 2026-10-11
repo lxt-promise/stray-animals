@@ -1,5 +1,5 @@
 const app = getApp()
-const { C, toast } = require('../../utils/util.js')
+const { C, toast, showBusy, hideBusy } = require('../../utils/util.js')
 
 Page({
   data: {
@@ -83,7 +83,7 @@ Page({
   async choosePhotos() {
     const res = await wx.chooseMedia({ count: 6, mediaType: ['image'], sizeType: ['compressed'] }).catch(() => null)
     if (!res) return
-    wx.showLoading({ title: '上传中' })
+    showBusy({ title: '上传中' })
     try {
       const files = res.tempFiles || []
       for (const f of files) {
@@ -94,9 +94,10 @@ Page({
         this.setData({ photos: this.data.photos.concat(up.fileID) })
       }
     } catch (e) {
-      toast('上传失败')
+      console.error('[upload] 失败', e)
+      toast('上传失败：' + ((e && e.errMsg) || e.message || '未知错误'))
     } finally {
-      wx.hideLoading()
+      hideBusy()
     }
   },
 
@@ -122,7 +123,7 @@ Page({
       return toast('请至少选择猫或上传一张照片')
     }
     this.setData({ submitting: true })
-    wx.showLoading({ title: '提交中' })
+    showBusy({ title: '提交中' })
     try {
       const data = {
         catId: this.data.catId,
@@ -135,10 +136,17 @@ Page({
         count: this.data.count
       }
       const res = await app.callApi('addSighting', { data })
-      wx.hideLoading()
+      // 打卡积分写在云端用户档案上，必须立刻刷新全局 user，
+      // 否则「我的」页猫粮值/打卡次数一直停留在登录时的旧值
+      await app.refreshUser().catch(() => {})
+      hideBusy()
+      // +0 时给出原因：每日猫粮上限（60）已用完，而非静默的 0
+      const capped = res.dailyCapped && !res.pointsGained
       wx.showModal({
         title: '打卡成功',
-        content: '获得猫粮值 +' + res.pointsGained + (this.data.catId ? '' : '，社团会核实后为它建档'),
+        content: capped
+          ? '今日猫粮已达上限（60），明天再来赚～打卡本身已记录成功'
+          : '获得猫粮值 +' + res.pointsGained + (this.data.catId ? '' : '，社团会核实后为它建档'),
         showCancel: false,
         success: () => {
           if (this.data.catId) {
@@ -149,7 +157,7 @@ Page({
         }
       })
     } catch (e) {
-      wx.hideLoading()
+      hideBusy()
       toast(e.message || '提交失败')
     } finally {
       this.setData({ submitting: false })

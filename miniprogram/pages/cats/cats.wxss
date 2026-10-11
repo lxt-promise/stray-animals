@@ -62,6 +62,8 @@
   font-weight: 600;
   color: var(--brand-dark);
 }
+
+/* 列表头样式已随「手动录入」入口移除而废弃（建档统一走右下角悬浮按钮） */
 .note {
   margin-top: 12rpx;
   line-height: 1.6;
@@ -82,7 +84,9 @@
 .fab {
   position: fixed;
   right: 32rpx;
-  bottom: 60rpx;
+  /* 必须抬到自定义 tabBar 之上（bar 高约 110rpx + 安全区），
+     否则按钮下半截被盖住 —— 表现就是「建档按钮显示不全」。 */
+  bottom: calc(150rpx + env(safe-area-inset-bottom));
   height: 96rpx;
   padding: 0 36rpx;
   line-height: 96rpx;

@@ -15,9 +15,44 @@
   overflow: hidden;
   flex-shrink: 0;
 }
+/* 头像本体是 <button open-type="chooseAvatar">：必须重置微信 button 的
+   默认样式（padding / min-height / line-height / ::after 边框），
+   否则内容被顶偏、圆形被裁掉 —— 表现就是「头像显示不全」。 */
+.profile .avatar.avatar-btn {
+  padding: 0;
+  margin: 0 24rpx 0 0;
+  min-height: 0;
+  line-height: 1;
+  border: none;
+  background: var(--brand-light);
+}
+.profile .avatar.avatar-btn::after { border: none; }
 .profile .avatar image { width: 100%; height: 100%; }
 .p-name { font-size: 34rpx; font-weight: 600; }
 .p-role { margin-top: 10rpx; display: flex; align-items: center; gap: 12rpx; }
+
+/* ===== 我的数据（三格统计卡） =====
+   wxml 用的是 .stat-card/.num/.lbl，此前从未定义过样式，
+   数字贴边、标签错位 —— 这里补齐：等分三格 + 内容居中 + 卡片化。 */
+.stat-grid { margin: 16rpx -8rpx 0; }   /* 覆盖全局的 margin:0 -8rpx，与上方资料卡留出间距 */
+.stat-card {
+  background: var(--card, #fff);
+  border: 2rpx solid var(--card-line, rgba(0,0,0,.05));
+  border-radius: var(--radius-sm, 16rpx);
+  padding: 22rpx 8rpx;
+  text-align: center;
+}
+.stat-card .num {
+  font-size: 44rpx;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--brand);
+}
+.stat-card .lbl {
+  font-size: 22rpx;
+  color: var(--text-sub);
+  margin-top: 6rpx;
+}
 
 .school-item {
   padding: 20rpx;
@@ -25,6 +60,25 @@
   border-radius: 12rpx;
   margin-bottom: 12rpx;
   font-size: 28rpx;
+}
+
+.picker-value {
+  flex: 1;
+  font-size: 28rpx;
+  color: var(--brand-dark);
+  text-align: right;
+}
+
+/* 地图范围：两个动作并排（选择中心点 / 保存范围） */
+.range-actions {
+  display: flex;
+  gap: 20rpx;
+  margin-top: 20rpx;
+}
+.range-actions .btn {
+  flex: 1;
+  margin: 0;
+  width: auto;
 }
 
 .my-item {
@@ -59,6 +113,65 @@
   padding: 24rpx;
   line-height: 1.7;
   text-align: center;
+}
+
+/* ===== 工作台（从底部 tab 迁移至此） ===== */
+.wb-stat-row {
+  display: flex;
+  gap: 16rpx;
+  margin-top: 24rpx;
+}
+.wb-stat {
+  flex: 1;
+  background: var(--bg);
+  border-radius: 16rpx;
+  padding: 20rpx 8rpx;
+  text-align: center;
+}
+.wb-stat .num {
+  font-size: 40rpx;
+  font-weight: 700;
+  color: var(--brand);
+}
+.wb-stat .lbl {
+  font-size: 22rpx;
+  color: var(--text-sub);
+  margin-top: 6rpx;
+}
+.wb-balance {
+  font-size: 44rpx;
+  font-weight: 700;
+  color: var(--ok);
+  margin-top: 6rpx;
+}
+.entry-grid {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 24rpx -8rpx 0;
+}
+.entry {
+  width: 33.33%;
+  padding: 8rpx;
+}
+.entry-inner {
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  padding: 22rpx 8rpx;
+  text-align: center;
+  height: 100%;
+}
+.entry-inner .ico { font-size: 40rpx; }
+.entry-inner .txt {
+  font-size: 25rpx;
+  font-weight: 600;
+  margin-top: 10rpx;
+}
+.entry-inner .desc {
+  font-size: 19rpx;
+  color: var(--text-sub);
+  margin-top: 6rpx;
+  transform: scale(.92);
+  white-space: nowrap;
 }
 
 /* ===== 图鉴进度（对齐预览） ===== */

@@ -12,7 +12,7 @@
  *  3. 真·抽帧需要 ffmpeg，云函数 Node 环境没有；MVP 阶段用 wx.chooseMedia 返回的封面帧
  *     （thumbId）作为代表帧，frames 字段表示「计划抽帧数」留给将来的容器化服务。
  */
-const { cloud, db, _, COL, AppError, distanceM, cosine } = require('./core')
+const { cloud, db, _, COL, AppError, distanceM, cosine, warmCollection } = require('./core')
 const sec = require('./security')
 const points = require('./points')
 
@@ -329,7 +329,8 @@ async function start(user, event) {
   const fileId = event.fileId
   if (!fileId) throw new AppError('缺少素材 fileId')
   const doc = {
-    _openid: user._openid,
+    openid: user.openid,
+    _openid: user.openid,
     schoolId: event.schoolId || user.schoolId || '',
     type,
     fileId,
@@ -342,6 +343,12 @@ async function start(user, event) {
     createdAt: new Date(),
     updatedAt: new Date()
   }
+  // 集合自愈：ai_tasks 是后期新增的集合，控制台漏建时首次识别就会
+  // 报 `-502005 database collection not exists`。
+  // ⚠️ 必须 warm（后台发起、不 await）——这是识别热路径，
+  // await 一次建表往返（300~500ms）会直接把 recognize 顶穿客户端 3s 调用预算。
+  // 根治办法是部署后调一次 `initCollections`，这里只是兜底。
+  warmCollection(COL.aiTask)
   const add = await db.collection(COL.aiTask).add({ data: doc })
   return { taskId: add._id, status: 'pending', type }
 }
@@ -378,7 +385,7 @@ async function poll(user, event) {
   const res = await db.collection(COL.aiTask).doc(taskId).get()
   const t = res.data
   if (!t) throw new AppError('任务不存在', 404)
-  if (t._openid !== user._openid) throw new AppError('无权访问该任务', 403)
+  if ((t.openid || t._openid) !== user.openid) throw new AppError('无权访问该任务', 403)
 
   if (t.status === 'done' || t.status === 'failed') {
     return { taskId, status: t.status, progress: 100, result: t.result || null, error: t.error || '' }
@@ -432,14 +439,16 @@ async function confirm(user, event) {
   const res = await db.collection(COL.aiTask).doc(taskId).get()
   const task = res.data
   if (!task) throw new AppError('任务不存在', 404)
-  if (task._openid !== user._openid) throw new AppError('无权操作该任务', 403)
+  if ((task.openid || task._openid) !== user.openid) throw new AppError('无权操作该任务', 403)
 
   const result = task.result || {}
   const topCatId = (result.candidates && result.candidates[0] && result.candidates[0].catId) || ''
 
+  warmCollection(COL.aiSample)   // 同 ai_tasks：只后台发起，不阻塞确认请求
   await db.collection(COL.aiSample).add({
     data: {
-      _openid: user._openid,
+      openid: user.openid,
+      _openid: user.openid,
       schoolId: task.schoolId || '',
       fileId: task.fileId,
       type: task.type,
@@ -470,7 +479,7 @@ async function confirm(user, event) {
     }
   }
 
-  const g = await points.grant(user, 'confirm')
+  const g = await points.grant(user, 'confirm', null, { refType: 'ai_task', refId: taskId })
   await db.collection(COL.aiTask).doc(taskId).update({
     data: {
       confirmedCatId: correct ? (catId || topCatId) : '',

@@ -1,5 +1,5 @@
 const app = getApp()
-const { C, requireMember, toast } = require('../../utils/util.js')
+const { C, requireMember, toast, showBusy, hideBusy } = require('../../utils/util.js')
 
 Page({
   data: {
@@ -63,7 +63,8 @@ Page({
 
   async loadRecord(id) {
     const res = await app.callApi('listTnr', {})
-    const rec = res.filter(t => t._id === id)[0]
+    // 云函数 listTnr 返回 { list, flow }，不是数组
+    const rec = ((res && res.list) || []).filter(t => t._id === id)[0]
     if (!rec) return toast('记录不存在')
     const idx = Math.max(0, this.data.catIds.indexOf(rec.catId))
     this.setData({
@@ -128,14 +129,14 @@ Page({
     const f = this.data.form
     if (!f.catId && !f.catName.trim()) return toast('请选择或填写猫咪')
     this.setData({ saving: true })
-    wx.showLoading({ title: '保存中' })
+    showBusy({ title: '保存中' })
     try {
       await app.callApi('saveTnr', { data: f })
-      wx.hideLoading()
+      hideBusy()
       wx.showToast({ title: '已保存', icon: 'success' })
       setTimeout(() => wx.navigateBack(), 900)
     } catch (e) {
-      wx.hideLoading()
+      hideBusy()
       toast(e.message || '保存失败')
     } finally {
       this.setData({ saving: false })

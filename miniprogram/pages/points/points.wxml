@@ -1,0 +1,27 @@
+<view class="page">
+
+  <view class="balance-card">
+    <view class="b-num">{{balance}}</view>
+    <view class="b-lbl">当前猫粮值</view>
+  </view>
+
+  <view class="card mt">
+    <view class="card-title">发放记录</view>
+    <view class="row p-item" wx:for="{{list}}" wx:key="_id">
+      <view class="p-main">
+        <text class="p-reason">{{item.reason || item.kind}}</text>
+        <text class="small muted">{{item.timeText}}</text>
+      </view>
+      <text class="p-delta">+{{item.delta}}</text>
+    </view>
+    <view class="empty" wx:if="{{!list.length}}">
+      <text class="emoji">🐾</text>
+      还没有猫粮发放记录
+    </view>
+  </view>
+
+  <view class="tip small muted">
+    猫粮值规则：目击打卡 +10，上报新猫 +30，首次遇见某只猫 +20，参与 TNR 记录 +50。每日打卡积分上限 60。
+  </view>
+
+</view>
