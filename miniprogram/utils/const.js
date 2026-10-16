@@ -64,6 +64,32 @@ module.exports = {
     { value: 'unknown', label: '未知', tag: 'gray' }
   ],
 
+  // 投喂状态（目击打卡时选择：是否投喂、被谁投喂）
+  FEED_STATUS: [
+    { value: 'passed', label: '路过', tag: 'gray', desc: '只是遇见，本次未投喂' },
+    { value: 'fed', label: '本人投喂', tag: 'ok', desc: '我这次投喂了它，有照片可额外获得猫粮值' },
+    { value: 'fedByOther', label: '已被其他人投喂', tag: 'info', desc: '看到它正在吃或有余粮，避免重复投喂' }
+  ],
+
+  // 目击行为标签（结构化多选）
+  //
+  // ⚠️ 合规要点（2026-10-16 审核驳回「社交-笔记」类目）：
+  //   原来是自由文本 textarea「它在做什么？精神状态如何？」——
+  //   审核认定「用户自行生成文字 + 图片 + 公开可见」属于社交-笔记，个人主体未开放该类别。
+  //   改为**预设标签多选**后，用户只能从枚举里挑，不再创作内容；
+  //   功能形态从「写笔记」变成「登记猫况」，与所选「工具-信息查询」类目相符。
+  //   新增项请保持"客观状态描述"口径，不要出现主观评价/情绪表达类词汇。
+  SIGHT_BEHAVIOR: [
+    { value: 'resting', label: '休息/睡觉' },
+    { value: 'eating', label: '进食' },
+    { value: 'moving', label: '走动' },
+    { value: 'playing', label: '玩耍' },
+    { value: 'hiding', label: '躲避/怕人' },
+    { value: 'alert', label: '警觉观察' },
+    { value: 'withOthers', label: '与其他猫同框' },
+    { value: 'unusual', label: '状态异常' }
+  ],
+
   // TNR 流程状态
   TNR_STATUS: [
     { value: 'todo', label: '待抓捕', tag: 'warn' },
@@ -126,6 +152,8 @@ module.exports = {
     newCat: 30,        // 上报一只新猫
     firstMeet: 20,     // 首次遇见某只猫（图鉴 +1）
     tnrHelp: 50,       // 参与 TNR 记录
+    feed: 10,          // 本人投喂（额外）
+    feedPhoto: 15,     // 本人投喂且上传照片（额外，照片是投喂佐证）
     dailyCap: 60       // 每日打卡积分上限
   }
 }

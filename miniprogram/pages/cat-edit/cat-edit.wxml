@@ -61,10 +61,14 @@
 
   <view class="card">
     <view class="card-title">性格标签</view>
+    <!-- 性格标签两个坑都要避开：
+         1) 可点元素必须用 view（text 无事件、点击热区不稳定）；
+         2) 选中态由 JS 预计算成 item.on —— WXML mustache 不支持 indexOf()
+            等方法调用（编译期静默忽略），写在 class 里选中态永远不渲染 -->
     <view class="chip-wrap">
-      <text class="chip {{form.characters.indexOf(item.value) >= 0 ? 'on' : ''}}"
-        wx:for="{{charOptions}}" wx:key="value"
-        data-value="{{item.value}}" bindtap="toggleChar">{{item.label}}</text>
+      <view class="chip {{item.on ? 'on' : ''}}"
+        wx:for="{{charChips}}" wx:key="value"
+        data-value="{{item.value}}" bindtap="toggleChar" hover-class="pressed">{{item.on ? '✓ ' : ''}}{{item.label}}</view>
     </view>
   </view>
 
@@ -93,14 +97,14 @@
     <view class="card-title">照片</view>
     <view class="upload-row">
       <view class="upload-box" bindtap="chooseAvatar">
-        <image wx:if="{{form.avatar}}" src="{{form.avatar}}" mode="aspectFill" />
+        <image wx:if="{{avatarView}}" src="{{avatarView}}" mode="aspectFill" />
         <view wx:else>
           <view class="plus">+</view>
           <view class="small muted">头像</view>
         </view>
       </view>
-      <view class="upload-box" wx:for="{{form.photos}}" wx:key="*this" data-index="{{index}}" bindtap="removePhoto">
-        <image src="{{item}}" mode="aspectFill" />
+      <view class="upload-box" wx:for="{{photosView}}" wx:key="*this" data-index="{{index}}" bindtap="removePhoto">
+        <image wx:if="{{item}}" src="{{item}}" mode="aspectFill" />
       </view>
       <view class="upload-box" bindtap="choosePhotos">
         <view>

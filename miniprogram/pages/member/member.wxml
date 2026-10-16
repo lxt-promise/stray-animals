@@ -40,16 +40,16 @@
       <view class="card-title">成员 {{members.length}}</view>
       <view class="member-item" wx:for="{{members}}" wx:key="_id" data-id="{{item._id}}" bindtap="changeRole">
         <view class="m-avatar">
-          <image wx:if="{{item.avatarUrl}}" src="{{item.avatarUrl}}" mode="aspectFill" />
+          <image wx:if="{{item.avatar}}" src="{{item.avatar}}" mode="aspectFill" />
           <text wx:else>🐱</text>
         </view>
         <view class="m-info">
           <view class="bold">{{item.nickName}}</view>
           <view class="small muted">打卡 {{item.sightingCount}} · 猫粮值 {{item.points}}</view>
         </view>
-        <text class="tag {{item.role === 'admin' ? 'warn' : (item.role === 'member' ? 'ok' : 'gray')}}">
+        <view class="tag {{item.role === 'admin' ? 'warn' : (item.role === 'member' ? 'ok' : 'gray')}}">
           {{item.role === 'admin' ? '管理员' : (item.role === 'member' ? '成员' : '爱猫同学')}}
-        </text>
+        </view>
       </view>
       <view class="small muted" style="margin-top:16rpx" wx:if="{{isAdmin}}">点击成员可修改角色</view>
     </view>

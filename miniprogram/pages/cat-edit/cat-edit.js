@@ -1,5 +1,6 @@
 const app = getApp()
 const { C, requireAdmin, toast, showBusy, hideBusy } = require('../../utils/util.js')
+const photo = require('../../utils/photo.js')
 
 Page({
   data: {
@@ -36,6 +37,7 @@ Page({
     statusOptions: C.CAT_STATUS,
     healthOptions: C.HEALTH,
     charOptions: C.CHARACTER,
+    charChips: [],
     saving: false
   },
 
@@ -54,7 +56,10 @@ Page({
       if (pi >= 0) { this.setData({ patternIndex: pi }); f.pattern = options.pattern; touched = true }
     }
     if (options.color) { f.colorNote = options.color; touched = true }
-    if (touched) this.setData({ form: f })
+    if (touched) { this.setData({ form: f }); this.syncPhotoViews() }
+
+    // 性格标签选中态必须在 JS 层预计算（见 buildCharChips 注释），先渲染初始态
+    this.buildCharChips()
 
     if (options.id) {
       this.setData({ id: options.id, isNew: false })
@@ -99,6 +104,9 @@ Page({
         statusIndex: idx(C.CAT_STATUS, c.status),
         healthIndex: idx(C.HEALTH, c.health)
       })
+      this.syncPhotoViews()
+      // 档案回填后重建标签选中态
+      this.buildCharChips()
     } catch (e) {
       toast(e.message)
     }
@@ -119,6 +127,22 @@ Page({
     })
   },
 
+  /** 构建性格标签列表（含选中态 on）。
+   *  选中态必须在 JS 层算，不能写在 WXML class 里：
+   *  WXML mustache 表达式编译期白名单校验，只支持简单运算和属性访问，
+   *  indexOf() 等方法调用会被静默忽略、整段表达式退化为 false ——
+   *  表现为「点击有回调但选中态永远不显示」（2026-10-12 建档页实际踩坑）。 */
+  buildCharChips() {
+    const chars = this.data.form.characters || []
+    this.setData({
+      charChips: C.CHARACTER.map(c => ({
+        value: c.value,
+        label: c.label,
+        on: chars.indexOf(c.value) >= 0
+      }))
+    })
+  },
+
   toggleChar(e) {
     const v = e.currentTarget.dataset.value
     const chars = this.data.form.characters.slice()
@@ -126,10 +150,26 @@ Page({
     if (i >= 0) chars.splice(i, 1)
     else chars.push(v)
     this.setData({ 'form.characters': chars })
+    this.buildCharChips()
   },
 
   togglePrivate(e) {
     this.setData({ 'form.spotPrivate': e.detail.value })
+  },
+
+  /** 表单里存的是原始 fileID（提交要用的），展示另开 avatarView / photosView：
+   *  cloud:// 直接进 <image src> 在开发者工具会报 pageframe 加载失败，
+   *  这里先批量换临时链接再渲染（本地新选的图是临时路径，原样直出）。 */
+  async syncPhotoViews() {
+    const f = this.data.form || {}
+    const ids = [].concat(f.avatar ? [f.avatar] : []).concat(f.photos || [])
+      .filter(id => photo.isFileId(id))
+    if (ids.length) await photo.warm(ids)
+    const g = this.data.form || {}
+    this.setData({
+      avatarView: photo.display(g.avatar || '', 300),
+      photosView: (g.photos || []).map(p => photo.display(p, 300))
+    })
   },
 
   async chooseAvatar() {
@@ -143,6 +183,7 @@ Page({
         filePath: file.tempFilePath
       })
       this.setData({ 'form.avatar': up.fileID })
+      this.syncPhotoViews()
     } catch (e) {
       toast('上传失败')
     } finally {
@@ -154,9 +195,9 @@ Page({
     const res = await wx.chooseMedia({ count: 6, mediaType: ['image'], sizeType: ['compressed'] }).catch(() => null)
     if (!res) return
     showBusy({ title: '上传中' })
+    const ids = []
     try {
       const files = res.tempFiles || []
-      const ids = []
       for (const f of files) {
         const up = await wx.cloud.uploadFile({
           cloudPath: 'cats/' + Date.now() + '-' + Math.floor(Math.random() * 1000) + '.jpg',
@@ -164,12 +205,22 @@ Page({
         })
         ids.push(up.fileID)
       }
-      this.setData({ 'form.photos': this.data.form.photos.concat(ids) })
     } catch (e) {
+      // 中途失败不能整体丢弃：前几张已经传成功的 fileID 要保留下来
+      // （否则云存储留孤儿文件，用户还以为一张都没传）
+      if (ids.length) {
+        this.setData({ 'form.photos': this.data.form.photos.concat(ids) })
+        this.syncPhotoViews()
+        toast('部分照片上传失败，已保留 ' + ids.length + ' 张')
+        return
+      }
       toast('上传失败')
+      return
     } finally {
       hideBusy()
     }
+    this.setData({ 'form.photos': this.data.form.photos.concat(ids) })
+    this.syncPhotoViews()
   },
 
   removePhoto(e) {
@@ -177,6 +228,7 @@ Page({
     const photos = this.data.form.photos.slice()
     photos.splice(i, 1)
     this.setData({ 'form.photos': photos })
+    this.syncPhotoViews()
   },
 
   async chooseLocation() {
@@ -186,6 +238,28 @@ Page({
       'form.location': { lat: res.latitude, lng: res.longitude },
       'form.locationName': res.name || res.address || ''
     })
+  },
+
+  /**
+   * 保存成功后自动把这只猫送进服务端特征库（花色比对）。
+   *
+   * 单独一次云函数调用，不塞进 saveCat —— 客户端单次 callFunction 只有约 3s 预算，
+   * 建档本身已经有文字/图片安全检测，再叠建库必然顶爆。拆开就各有各的预算。
+   *
+   * @returns {Promise<boolean>} 是否当场入库成功（false 不代表失败，只是延后）
+   */
+  async autoIndexCat (catId, schoolId) {
+    if (!catId) return false
+    try {
+      const r = await app.callApi('autoIndexCat', {
+        catIds: [catId], schoolId: schoolId || '', photosPerCat: 3
+      })
+      return !!(r && r.ok)
+    } catch (e) {
+      // 静默：建档已经成功，入库交给识别热路径 / 定时任务兜底
+      console.warn('[cat-edit] 自动入库未当场完成', e && e.message)
+      return false
+    }
   },
 
   async save() {
@@ -199,9 +273,14 @@ Page({
       if (payload.location && !payload.location.name) {
         payload.location.name = payload.locationName || ''
       }
-      await app.callApi('saveCat', { data: payload })
+      const r = await app.callApi('saveCat', { data: payload })
       hideBusy()
-      wx.showToast({ title: this.data.isNew ? '档案已建立' : '已保存', icon: 'success' })
+      // 建档 / 改档后立刻自动入库：只建这一只，失败不影响「保存成功」。
+      // 用 await 是为了给准反馈；超时也无所谓 —— 识别热路径和每天 3 点定时会兜底。
+      const me = app.globalData.user || {}
+      const indexed = await this.autoIndexCat(r && r._id, payload.schoolId || me.schoolId)
+      const base = this.data.isNew ? '档案已建立' : '已保存'
+      wx.showToast({ title: indexed ? (base + '，已加入比对') : base, icon: 'success' })
       setTimeout(() => wx.navigateBack(), 900)
     } catch (e) {
       hideBusy()

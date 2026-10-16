@@ -65,7 +65,7 @@ python tools/export_onnx.py --yolo --weights yolov8n.pt
 
 # 2) 回填 .env
 #    REID_ONNX=/app/models/reid.onnx   REID_SIZE=224
-#    DETECT_ONNX=/app/models/yolo.onnx
+#    DETECT_ONNX=/app/models/yolo.onnx   # ⚠️ 见下方「检测模型」注意事项
 
 # 3) 起服务
 docker compose up -d --build
@@ -73,6 +73,24 @@ curl http://127.0.0.1:8000/health
 ```
 
 返回里 `provider` 是 `onnx` 说明模型加载成功；是 `hash` 说明在跑占位引擎（检查模型路径有没有挂进去）。
+
+### ⚠️ 检测模型（DETECT_ONNX）的坑
+
+**默认不要配**（留空 = 整图提特征）。曾经配上后线上 100% 复现 500：
+
+```
+onnxruntime ... Add node '/embeddings/Add'
+Attempting to broadcast an axis by a dimension other than 1. 257 by 1370
+```
+
+原因不是模型坏了，是「检测框裁出来的 crop」长宽比和原图差很多时，预处理里的
+letterbox 缩放系数若按**原图**尺寸算就会失效，把 crop 的一边缩得远超输入边长
+（224 的模型收到 1370 宽）。修复后 `_letterbox` 一律按**传进来的那张图**算缩放，
+`_to_nchw` 出口再自检形状（不对就报「期望 (1,3,224,224)，实际 …」，一眼定位）。
+
+真要开检测裁剪，注意两点：
+1. `DETECT_COLLAPSE_SQUARE=true` 时会把框扩成正方形（默认 false）；
+2. 改完先跑 `python server/tests/test_engine_shape.py`（12 项，不依赖 onnxruntime）。
 
 没有模型也想先跑通链路？直接 `docker compose up -d` 即可，服务会自动降级到占位引擎。
 
@@ -158,6 +176,110 @@ AI_TIMEOUT_MS = 15000
 ```bash
 python tools/build_index.py --server https://ai.yourdomain.com --token xxx cats.json
 ```
+
+---
+
+## 云托管部署：特征库持久化（COS 后端）
+
+云托管**没有持久盘**，默认 `INDEX_BACKEND=sqlite` 写的 `/data/catcampus/index.sqlite3` 在容器重建后会归零。
+特征库是可再生数据，不会出错，但每次重建都要重新下载全部猫照片重算一遍。
+想让特征库跨重建存活，就切到 COS 对象存储后端：**每只猫一个对象** `index/<cat_id>.bin`。
+
+### 1) 建桶（必须和云托管同地域）
+
+> ⚠️ **别用微信云托管控制台里自带的「对象存储」**（`tcb.qcloud.la` 域名那套）。
+> 它属于云开发（TCB）体系的托管存储：虽然底层也是 COS，但官方明确**不支持用 COS SDK/控制台/CAM 永久密钥
+> 直接操作它**，服务端只开放「临时密钥 + 开放接口」一条路，与本服务的 `COS_SECRET_ID/KEY` 模式不兼容，
+> 填进去会 403。要建的是**腾讯云控制台**的标准 COS 桶（同一个账号，入口不同）。
+
+[对象存储控制台](https://console.cloud.tencent.com/cos/bucket) → 存储桶列表 → 创建存储桶：
+
+| 项 | 填什么 |
+|---|---|
+| 名称 | `catcampus`（控制台只填自定义部分即可） |
+| 地域 | **上海**（和你的云托管服务同地域，地域创建后不可改） |
+| 访问权限 | **私有读写**（服务端用密钥签名访问，不需要公开读） |
+
+建好后，桶的**完整名字**是 `catcampus-<你的APPID>`，如 `catcampus-1250000000`。
+APPID 在控制台右上角「账号信息」里能看到。
+
+### 2) 拿密钥（别用主账号密钥）
+
+[访问密钥](https://console.cloud.tencent.com/cam/capi) → 新建密钥，得到一对值：
+
+- `SecretId`：`AKID` 开头的一长串
+- `SecretKey`：一串随机字符，**只在创建时展示一次**，当场复制
+
+> ⚠️ 主账号密钥泄露 = 整个腾讯云账号沦陷。正确姿势是建子账号：
+> [CAM 控制台](https://console.cloud.tencent.com/cam) → 用户 → 新建用户 → 访问方式选「编程访问」
+> → 在子账号的「API 密钥」页签新建密钥 → 只关联下面这条自定义策略（替换 APPID 和桶名）：
+>
+> ```json
+> {
+>   "version": "2.0",
+>   "statement": [
+>     {
+>       "effect": "allow",
+>       "action": [
+>         "name/cos:GetObject",
+>         "name/cos:PutObject",
+>         "name/cos:DeleteObject",
+>         "name/cos:HeadObject",
+>         "name/cos:GetBucket"
+>       ],
+>       "resource": [
+>         "qcs::cos:ap-shanghai:uid/1250000000:catcampus-1250000000/",
+>         "qcs::cos:ap-shanghai:uid/1250000000:catcampus-1250000000/index/*"
+>       ]
+>     }
+>   ]
+> }
+> ```
+>
+> 其中 `name/cos:GetBucket` 是冷启动时 `list_objects` 需要的，**漏了会 403**。
+> 嫌麻烦就关联系统策略 `QcloudCOSDataFullControl`（权限面大一些，但仍限定在 COS 数据面）。
+
+### 3) 填环境变量
+
+云托管控制台 → 服务 → 服务配置 → 环境变量，逐条新增（Key / Value 两栏）：
+
+| 变量 | 值 | 说明 |
+|---|---|---|
+| `INDEX_BACKEND` | `cos` | 切到 COS 后端。不填 / 填 `sqlite` = 本地文件 |
+| `COS_SECRET_ID` | `AKIDxxxx...` | 上一步的 SecretId |
+| `COS_SECRET_KEY` | `xxxx...` | 上一步的 SecretKey |
+| `COS_BUCKET` | `catcampus-1250000000` | ⚠️ **必须带 APPID 后缀**，只填 `catcampus` 会报 NoSuchBucket |
+| `COS_REGION` | `ap-shanghai` | 桶所在地域英文代号，必须和桶一致 |
+| `COS_TOKEN` | （留空） | 只有临时密钥 STS 才需要 |
+| `COS_ENDPOINT` | （留空） | 走默认公网域名；配了 VPC 想走内网再填 |
+| `INDEX_PREFIX` | `index/` | 对象键前缀，一般不用改 |
+
+注意：
+- 值里**不要加引号**、不要有前后空格；变量名区分大小写
+- 改完环境变量**必须重新部署版本**才生效
+- 建议同时把**最大实例数设为 1**（单写者，缓存模型严格正确），最小实例数保持 0 省钱
+
+### 4) 验证
+
+```bash
+curl https://ai.yourdomain.com/health
+# {"ok":true,"provider":"onnx","dim":768,"ffmpeg":false,"indexed":42,"indexBackend":"cos_store"}
+```
+
+`indexBackend` 必须是 **`cos_store`** —— 如果是 `sqlite_store` 说明环境变量没生效。
+然后在小程序端「重建特征库」一次，记下 `indexed`，**重新部署服务**后再访问 `/health`，数字不归零 = 持久化生效。
+
+常见报错速查：
+
+| 现象 | 原因 |
+|---|---|
+| 日志 `INDEX_BACKEND=cos 但缺少配置: COS_BUCKET` | 环境变量没生效（重新部署了吗？名字拼错了吗？） |
+| `NoSuchBucket` | 桶名漏了 `-1250000000` 后缀，或地域填错 |
+| `AccessDenied` / 403 | 子账号策略没给全（尤其 `name/cos:GetBucket`），或桶名/地域写错 |
+| `SignatureDoesNotMatch` | SecretKey 复制时多了空格 |
+| 能写但重启后归零 | 其实还是 sqlite 后端，看 `/health` 的 `indexBackend` |
+
+> 后端行为有 25 项测试兜底：`env/Scripts/python.exe server/tests/test_index_store.py`
 
 ---
 

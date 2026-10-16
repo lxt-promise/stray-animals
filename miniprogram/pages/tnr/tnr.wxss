@@ -25,7 +25,7 @@
 .fab {
   position: fixed;
   right: 32rpx;
-  bottom: 60rpx;
+  bottom: calc(150rpx + env(safe-area-inset-bottom));
   padding: 0 36rpx;
   height: 96rpx;
   line-height: 96rpx;

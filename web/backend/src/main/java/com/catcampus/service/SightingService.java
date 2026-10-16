@@ -46,15 +46,19 @@ public class SightingService {
         User me = userRepository.findById(uid).orElseThrow(() -> new BizException("用户不存在"));
 
         LocalDateTime todayStart = LocalDate.now().atStartOfDay();
-        int todayCount = sightingRepository.countByReporterIdAndCreatedAtAfter(uid, todayStart);
+        // 日上限按「今日已获积分合计」计算：早期只数基础打卡分（todayCount * 10），
+        // 导致「不选猫 +30」「首次遇见 +20」不受 cap 约束 —— 每天 6 条不选猫的目击稳拿 240 分
+        int todayEarned = sightingRepository.sumPointsByReporterIdAndCreatedAtAfter(uid, todayStart);
+        int room = Math.max(0, DAILY_CAP - todayEarned);
 
         boolean named = s.getCatId() != null;
-        int gain = todayCount * P_SIGHTING >= DAILY_CAP ? 0 : P_SIGHTING;
-        if (!named) gain += P_NEW_CAT;
-
         Set<Long> seen = new java.util.HashSet<>(UserService.splitIds(me.getCatSeen()));
         boolean firstMeet = named && !seen.contains(s.getCatId());
-        if (firstMeet) gain += P_FIRST_MEET;
+
+        int want = P_SIGHTING;
+        if (!named) want += P_NEW_CAT;
+        if (firstMeet) want += P_FIRST_MEET;
+        int gain = Math.min(want, room);   // 超出日上限的部分整体置 0，任何奖励都不绕过
 
         s.setPending(!named);
         s.setReporterId(uid);
@@ -66,13 +70,15 @@ public class SightingService {
 
         Sighting saved = sightingRepository.save(s);
 
-        me.setPoints((me.getPoints() == null ? 0 : me.getPoints()) + gain);
-        me.setSightingCount((me.getSightingCount() == null ? 0 : me.getSightingCount()) + 1);
+        // 积分/计数一律走原子 SQL：读-改-写（me.setPoints(...)+save）在并发打卡下
+        // 会丢失更新（两个请求都读到旧值，后写的覆盖先写的）
+        userRepository.addPoints(uid, gain);
+        userRepository.addSightingCount(uid, 1);
         if (firstMeet) {
             seen.add(s.getCatId());
-            me.setCatSeen(seen.stream().map(String::valueOf).collect(Collectors.joining(",")));
+            userRepository.updateCatSeen(uid,
+                    seen.stream().map(String::valueOf).collect(Collectors.joining(",")));
         }
-        userRepository.save(me);
 
         if (named) {
             catRepository.findById(s.getCatId()).ifPresent(c -> {

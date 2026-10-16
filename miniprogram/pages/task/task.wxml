@@ -4,10 +4,10 @@
     <view class="card-title">喂猫排班</view>
     <scroll-view scroll-x class="filter-scroll">
       <view class="filter-row">
-        <text class="chip {{filter === 'open' ? 'on' : ''}}" data-value="open" bindtap="onFilter">待认领</text>
-        <text class="chip {{filter === 'claimed' ? 'on' : ''}}" data-value="claimed" bindtap="onFilter">已认领</text>
-        <text class="chip {{filter === 'done' ? 'on' : ''}}" data-value="done" bindtap="onFilter">已完成</text>
-        <text class="chip {{filter === '' ? 'on' : ''}}" data-value="" bindtap="onFilter">全部</text>
+        <view class="chip {{filter === 'open' ? 'on' : ''}}" data-value="open" bindtap="onFilter" hover-class="pressed">待认领</view>
+        <view class="chip {{filter === 'claimed' ? 'on' : ''}}" data-value="claimed" bindtap="onFilter" hover-class="pressed">已认领</view>
+        <view class="chip {{filter === 'done' ? 'on' : ''}}" data-value="done" bindtap="onFilter" hover-class="pressed">已完成</view>
+        <view class="chip {{filter === '' ? 'on' : ''}}" data-value="" bindtap="onFilter" hover-class="pressed">全部</view>
       </view>
     </scroll-view>
   </view>
@@ -20,7 +20,7 @@
           {{item.typeLabel}} · {{item.date || '未定日期'}}<text wx:if="{{item.spot}}"> · {{item.spot}}</text>
         </view>
       </view>
-      <text class="tag {{item.statusItem.tag}}">{{item.statusItem.label}}</text>
+      <view class="tag {{item.statusItem.tag}}">{{item.statusItem.label}}</view>
     </view>
     <view class="small muted" style="margin-top:12rpx" wx:if="{{item.assigneeName}}">认领人：{{item.assigneeName}}</view>
     <view class="note small" wx:if="{{item.note}}">{{item.note}}</view>

@@ -231,7 +231,8 @@ function scopeWhere(user, event, extra) {
  * 吸取街猫「直播暴露猫位置被虐猫者利用」的教训，幼猫/病猫/私密点位必须走这里。
  */
 function blurLocation(loc, radiusM) {
-  if (!loc || typeof loc.lat !== 'number' || typeof loc.lng !== 'number') return loc
+  // isFinite 而非 typeof：NaN 坐标进来会产出 NaN:NaN 的模糊点
+  if (!loc || !isFinite(loc.lat) || !isFinite(loc.lng)) return loc
   const r = radiusM || 120
   const seed = Math.sin(loc.lat * 1237.13 + loc.lng * 917.71)
   const seed2 = Math.cos(loc.lat * 531.77 + loc.lng * 1481.31)
@@ -272,12 +273,32 @@ function sanitizeCat(cat, user) {
   return out
 }
 
-/** 目击记录脱敏：非成员看不到精确点位与上报人联系方式 */
+/**
+ * 目击记录脱敏。
+ *
+ * ⚠️ 2026-10-16 合规加严（审核驳回「社交-笔记」类目）：
+ *   原来只对非成员做**点位模糊**，其余字段（用户自由文本 note、用户上传的 photos）
+ *   照原样下发给所有人 —— 审核据此认定小程序存在「用户自行生成内容（文字、图片）的公开发布」，
+ *   属社交-笔记范畴，个人主体未开放。
+ *
+ *   现在对外（非社团成员）只暴露**结构化的猫况聚合信息**：
+ *     保留：catId / health / feedStatus / behaviors / count / createdAt（及模糊后的 location）
+ *     移除：note（用户文字）、photos（用户图片）、reporter / reporterName（身份）
+ *   成员（社团管理者）仍可见全字段 —— 他们需要原文与图片来核实存档。
+ *
+ *   这样即使用户传了照片、填了补充，对公众也只是一条"某时某地某猫状态正常"的**登记记录**，
+ *   不构成内容发布/传播。前端展示层同样不应渲染这些字段（见 sighting 列表页）。
+ */
 function sanitizeSighting(s, user) {
   if (!s) return s
   if (isMember(user)) return s
   const out = Object.assign({}, s)
   if (out.location) out.location = blurLocation(out.location)
+  // 用户生成内容一律不下发（合规红线）
+  delete out.note
+  delete out.photos
+  delete out.reporter
+  delete out.reporterName
   return out
 }
 
@@ -309,9 +330,11 @@ function startOfDay(d) {
   return new Date(t.getFullYear(), t.getMonth(), t.getDate())
 }
 
-/** Haversine 距离（米） */
+/** Haversine 距离（米）。
+ *  坐标校验必须用 isFinite 而非 typeof === 'number'：NaN/Infinity 也是 number，
+ *  放过去会把 NaN 距离带进打分与地图（矩形全变 NaN、静默失效）。 */
 function distanceM(a, b) {
-  if (!a || !b || typeof a.lat !== 'number' || typeof b.lat !== 'number') return null
+  if (!a || !b || !isFinite(a.lat) || !isFinite(a.lng) || !isFinite(b.lat) || !isFinite(b.lng)) return null
   const R = 6371000
   const dLat = ((b.lat - a.lat) * Math.PI) / 180
   const dLng = ((b.lng - a.lng) * Math.PI) / 180

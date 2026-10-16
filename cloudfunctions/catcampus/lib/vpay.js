@@ -22,7 +22,7 @@
  *   VPAY_OFFER_ID / VPAY_APP_ID / VPAY_APP_SECRET / VPAY_APP_KEY / VPAY_SANDBOX
  *   VPAY_MSG_TOKEN / VPAY_ENCODING_AES_KEY（消息推送验签）
  */
-const { db, _, COL, AppError } = require('./core')
+const { db, _, COL, AppError, warmCollection, isSuper } = require('./core')
 const crypto = require('crypto')
 const https = require('https')
 const http = require('http')
@@ -168,6 +168,41 @@ async function createOrder(me, event) {
     throw new AppError('outTradeNo 非法（8-32 位，仅数字字母 _-|*@，不能下划线开头）', 400)
   }
 
+  // 幂等复用：客户端「重试同一下单」会带同一个 outTradeNo 回来。
+  // 早期直接 add，每次重试都新插一单，后续按 outTradeNo 的更新会同时命中多单、
+  // 订单账目错乱。已有待支付订单且属于本人 → 直接复用重签。
+  const dup = await db.collection(COL.vpayOrder).where({ outTradeNo: no }).limit(1).get()
+  if (dup.data.length) {
+    const old = dup.data[0]
+    if (old.openid !== me.openid) throw new AppError('outTradeNo 已被占用', 409)
+    if (old.status === 'pending') {
+      // 复用订单：重算 paySig/signature（sessionKey 可能已轮换）
+      const signData2 = {
+        offerId: CFG.offerId,
+        buyQuantity: qty,
+        env,
+        currencyType: 'CNY',
+        productId,
+        goodsPrice: price,
+        outTradeNo: no,
+        attach: attach || ''
+      }
+      const str2 = JSON.stringify(signData2)
+      return {
+        orderId: old._id,
+        outTradeNo: no,
+        reused: true,
+        payData: {
+          signData: str2,
+          paySig: calcPaySig('requestVirtualPayment', str2, CFG.appKey),
+          signature: calcSignature(str2, sessionKey),
+          mode: 'short_series_goods'
+        }
+      }
+    }
+    throw new AppError('该订单已存在（状态 ' + old.status + '），不能重复下单', 409)
+  }
+
   // signData：顺序固定，与前端传给 wx.requestVirtualPayment 的字符串完全一致
   const signData = {
     offerId: CFG.offerId,
@@ -220,6 +255,16 @@ async function createOrder(me, event) {
 async function queryOrder(me, event) {
   const orderId = event.orderId || event.outTradeNo
   if (!orderId) throw new AppError('缺少 orderId')
+  // 归属校验：queryOrder 是 user 角色，早期不校验订单归属，
+  // 传别人的 outTradeNo 即可查到他人订单详情（金额/道具/状态）
+  if (!isSuper(me)) {
+    const where = /^[0-9a-zA-Z]{8,32}$/.test(orderId) && orderId.length > 20
+      ? { wxOrderId: orderId } : { outTradeNo: orderId }
+    const mine = await db.collection(COL.vpayOrder).where(where).limit(1).get()
+    if (!mine.data.length || mine.data[0].openid !== me.openid) {
+      throw new AppError('无权查看该订单', 403)
+    }
+  }
   const body = {
     appid: CFG.appId,
     openid: me.openid,
@@ -238,10 +283,14 @@ async function queryOrder(me, event) {
 async function syncOrderByWx(orderId, r) {
   if (!r) return
   const paid = r.errcode === 0 && (r.order && (r.order.state === 2 || r.order.state === 'PAID' || r.pay_state === 2))
+  // 只允许 pending → paid 的**单向**迁移：早期无条件 update，查单接口一报错
+  // （返回 {} / errcode !== 0）就把已 delivered / refunding 的订单拍回 pending，
+  // 管理端与业务侧看到的状态与事实相反。
+  if (!paid) return
   const where = /^[0-9a-zA-Z]{8,32}$/.test(orderId) && orderId.length > 20
     ? { wxOrderId: orderId } : { outTradeNo: orderId }
-  await db.collection(COL.vpayOrder).where(where).update({
-    data: { status: paid ? 'paid' : 'pending', updatedAt: new Date() }
+  await db.collection(COL.vpayOrder).where(Object.assign({}, where, { status: 'pending' })).update({
+    data: { status: 'paid', updatedAt: new Date() }
   }).catch(() => {})
 }
 
@@ -301,7 +350,7 @@ function verifyNotifySignature(p, token) {
   const arr = [token, p.timestamp, p.nonce, p.encrypt].filter(x => x !== undefined && x !== null).map(String)
   arr.sort()
   const calc = crypto.createHash('sha1').update(arr.join(''), 'utf8').digest('hex')
-  return calc === String(p.msg_signature || p.msg_signature || '')
+  return calc === String(p.msg_signature || '')
 }
 
 function ackXml(code, msg) {
@@ -334,6 +383,11 @@ async function onGoodsDeliver(p) {
   const quantity = Number((wxInfo.GoodsInfo && wxInfo.GoodsInfo.Quantity) || p.Quantity || 1)
 
   if (!wxOrderId) return ackXml(0, 'success')
+
+  // 集合自愈只后台发起：vpay_deliveries 漏建时 add 抛 -502005，
+  // 被 main 的 catch 吞成 ErrCode 0 —— 微信认为推送成功不再重试，
+  // 用户付了钱却没有任何 delivery 记录（资损）。至少要让错误类型可区分。
+  warmCollection(COL.vpayDelivery)
 
   const exist = await db.collection(COL.vpayDelivery).where({ wxOrderId }).limit(1).get()
   if (exist.data.length) {
@@ -371,7 +425,12 @@ async function handleNotify(me, event) {
   // 验签（配置了 Token 时；加密模式需先解密，见 decryptMessage）
   if (CFG.msgToken && p.encrypt != null) {
     const ok = verifyNotifySignature(p, CFG.msgToken)
-    if (!ok) console.warn('[vpay] 回调验签失败（仍记录）')
+    // 验签失败必须拒绝：支付链路「只 warn 不拒绝」等于没验签，
+    // 伪造推送可直接触发发货/退款状态变更。回非 0 ErrCode 让微信侧重试。
+    if (!ok) {
+      console.error('[vpay] 回调验签失败，拒绝处理')
+      return ackXml(1, 'signature verify failed')
+    }
   }
 
   await recordNotify(p)

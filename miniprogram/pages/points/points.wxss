@@ -19,3 +19,7 @@
   color: var(--brand-dark);
   flex-shrink: 0;
 }
+/* 负向流水（删除目击记录退回）用红色/降权，避免误读为「又发了」 */
+.p-delta.minus {
+  color: #B42318;
+}

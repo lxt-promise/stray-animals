@@ -158,6 +158,23 @@
   margin-top: 10rpx;
 }
 
+/* 统计骨架：尺寸与真实内容一致，占住高度避免下方内容被"顶"下来 */
+.stat-card.skeleton { box-shadow: none; }
+.stat-card.skeleton .sk {
+  display: block;
+  margin: 0 auto;
+  border-radius: 10rpx;
+  background: linear-gradient(90deg, #F3EDE3 25%, #FAF6EF 50%, #F3EDE3 75%);
+  background-size: 300rpx 100%;
+  animation: sk-sweep 1.1s linear infinite;
+}
+.stat-card .num.sk { width: 96rpx; height: 46rpx; }
+.stat-card .lbl.sk { width: 84rpx; height: 22rpx; margin-top: 14rpx; }
+@keyframes sk-sweep {
+  0%   { background-position: -150rpx 0; }
+  100% { background-position: 150rpx 0; }
+}
+
 /* ===================== 快捷操作 ===================== */
 .quick-row { display: flex; gap: 20rpx; }
 .quick-btn {

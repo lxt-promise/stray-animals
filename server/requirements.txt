@@ -11,6 +11,10 @@ python-dotenv>=1.0
 # 本机实测：onnxruntime 1.30.0 提供 cp313-win_amd64 轮子，Python 3.13 可直接装
 onnxruntime>=1.19
 
+# 可选 C：COS 对象存储后端特征库（INDEX_BACKEND=cos 时必装）
+# 云托管等无持久盘环境用它持久化特征库，容器重建不丢；sqlite 后端不需要
+cos-python-sdk-v5>=1.9.30
+
 # 可选 B：PyTorch 路线（只在两种情况下需要）
 #   1) 要用 MegaDescriptor 权重（HF 上只有 .bin，必须先导出成 ONNX）
 #   2) 要用 CLIP 做毛色/花纹零样本分类（USE_CLIP=1）

@@ -77,8 +77,15 @@ public class CatService {
     @Transactional
     public Cat save(Cat cat) {
         if (cat.getName() == null || cat.getName().isBlank()) throw new BizException("请填写猫咪名字");
+        validateGeo(cat);
         if (cat.getId() != null) {
             Cat old = catRepository.findById(cat.getId()).orElseThrow(() -> new BizException("猫咪不存在"));
+            // 数据隔离：编辑路径必须同校。早期不校验，A 校成员可编辑/覆盖 B 校档案
+            // （schoolId 由请求体可控，还可传 null 让记录混进全局查询）
+            Long mySchool = com.catcampus.common.CurrentUser.schoolId();
+            if (mySchool != null && old.getSchoolId() != null && !mySchool.equals(old.getSchoolId())) {
+                throw new BizException("无权编辑其他校区的档案");
+            }
             cat.setCreatedAt(old.getCreatedAt());
             cat.setSightingCount(old.getSightingCount());
             if (cat.getSchoolId() == null) cat.setSchoolId(old.getSchoolId());
@@ -92,7 +99,27 @@ public class CatService {
     }
 
     public void delete(Long id) {
-        catRepository.deleteById(id);
+        Cat old = catRepository.findById(id).orElseThrow(() -> new BizException("猫咪不存在"));
+        Long mySchool = com.catcampus.common.CurrentUser.schoolId();
+        if (mySchool != null && old.getSchoolId() != null && !mySchool.equals(old.getSchoolId())) {
+            throw new BizException("无权删除其他校区的档案");
+        }
+        catRepository.delete(old);
+    }
+
+    /** 坐标入库前校验。
+     *  Spring 的 String→Double 走 parseDouble，可接收字面量 "NaN"/"Infinity"；
+     *  Jackson 可把 1e400 转成 Infinity。这些值会让地图点位异常或消失，
+     *  且隐私抖动脱敏对 NaN 毫无意义（Math.sin(NaN) = NaN）。 */
+    private void validateGeo(Cat cat) {
+        if (cat.getLocationLat() != null) {
+            double lat = cat.getLocationLat();
+            if (!Double.isFinite(lat) || Math.abs(lat) > 90) throw new BizException("纬度超出范围（-90 ~ 90）");
+        }
+        if (cat.getLocationLng() != null) {
+            double lng = cat.getLocationLng();
+            if (!Double.isFinite(lng) || Math.abs(lng) > 180) throw new BizException("经度超出范围（-180 ~ 180）");
+        }
     }
 
     /** 填充非持久化字段，方便前端直接渲染 */
@@ -105,10 +132,14 @@ public class CatService {
     public void sanitize(Cat c) {
         if (com.catcampus.common.CurrentUser.isMember()) return;
         if (Boolean.TRUE.equals(c.getSpotPrivate()) || "kitten".equals(c.getStatus()) || "sick".equals(c.getStatus())) {
-            if (c.getLocationLat() != null) {
-                double seed = Math.sin(c.getLocationLat() * 1000 + c.getLocationLng() * 1000);
-                c.setLocationLat(c.getLocationLat() + (seed % 1) * 0.0007);
-                c.setLocationLng(c.getLocationLng() + (Math.cos(c.getLocationLat() * 977) % 1) * 0.0007);
+            // 两个坐标必须同时判空：前端两个输入框互相独立，只填纬度时
+            // locationLat != null && locationLng == null，下面拆箱直接 NPE 500
+            if (c.getLocationLat() != null && c.getLocationLng() != null) {
+                double lat = c.getLocationLat();
+                double lng = c.getLocationLng();
+                double seed = Math.sin(lat * 1000 + lng * 1000);
+                c.setLocationLat(lat + (seed % 1) * 0.0007);
+                c.setLocationLng(lng + (Math.cos(lat * 977) % 1) * 0.0007);
             }
         }
         c.setInternalNote(null);

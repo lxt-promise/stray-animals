@@ -19,6 +19,17 @@
 
 .loc-pick { flex: 1; color: var(--brand-dark); }
 
+/* 投喂状态动态提示：选中「本人投喂」时说明照片佐证奖励规则 */
+.feed-hint {
+  margin: -8rpx 28rpx 20rpx;
+  padding: 16rpx 20rpx;
+  background: var(--brand-light);
+  border-radius: 12rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: var(--brand-dark);
+}
+
 .form-item.col {
   flex-direction: column;
   align-items: flex-start;
@@ -27,5 +38,33 @@
 .form-item.col textarea {
   width: 100%;
   min-height: 140rpx;
+  font-size: 28rpx;
+}
+
+/* 行为标签多选（合规改造：替代原自由文本「描述」）
+   选中态由 JS 预计算 item.on 驱动 —— WXML mustache 不支持 indexOf 等方法调用。 */
+.tag-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+  width: 100%;
+}
+.tag-chip {
+  padding: 12rpx 28rpx;
+  border-radius: 32rpx;
+  background: var(--bg-soft, #F7F3EE);
+  color: var(--text-sub, #6B5B4E);
+  font-size: 26rpx;
+  border: 2rpx solid transparent;
+  transition: all .15s;
+}
+.tag-chip.on {
+  background: var(--brand-light, #FFEDD5);
+  color: var(--brand-dark, #C2410C);
+  border-color: var(--brand, #F97316);
+  font-weight: 600;
+}
+.form-item.col input {
+  width: 100%;
   font-size: 28rpx;
 }

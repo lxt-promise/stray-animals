@@ -14,6 +14,8 @@ const AWARD = {
   newCat: 30,        // 上报新猫
   firstMeet: 20,     // 首次遇见某只猫（图鉴解锁）
   tnrHelp: 50,       // 参与 TNR
+  feed: 10,          // 本人投喂（打卡时选择了「本人投喂」）
+  feedPhoto: 15,     // 本人投喂且上传照片（照片是投喂佐证，防刷）
   confirm: 5         // 人工确认一次识别结果（人机协同）
 }
 
@@ -29,7 +31,10 @@ const REASON = {
   newCat: '上报新猫',
   firstMeet: '首次遇见（图鉴解锁）',
   tnrHelp: '参与 TNR',
-  confirm: '人工确认识别'
+  feed: '本人投喂',
+  feedPhoto: '投喂照片记录',
+  confirm: '人工确认识别',
+  revoke: '删除目击记录退回'
 }
 
 /**
@@ -122,7 +127,9 @@ async function summary(user) {
 
 /** 猫粮流水（记录表），按时间倒序；可按 kind 过滤 */
 async function history(openid, event) {
-  const size = Math.min(Number(event && event.size) || 20, 100)
+  // size 可能为负/0/NaN：Number(-5) || 20 会保留 -5（truthy），
+  // Math.min(-5, 100) = -5 直接进 limit() 抛错——必须双向夹紧
+  const size = Math.max(1, Math.min(Number(event && event.size) || 20, 100))
   const where = {}
   if (openid) where.openid = openid
   if (event && event.kind) where.kind = event.kind

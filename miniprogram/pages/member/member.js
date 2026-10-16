@@ -1,7 +1,8 @@
 const app = getApp()
-const { C, toast, showBusy, hideBusy } = require('../../utils/util.js')
+const { C, toast, showBusy, hideBusy, shareBehavior } = require('../../utils/util.js')
+const photo = require('../../utils/photo.js')
 
-Page({
+Page(Object.assign({
   data: {
     tab: 'member',
     isMember: false,
@@ -35,7 +36,11 @@ Page({
       }
       if (this.data.tab === 'member') {
         const members = await app.callApi('listMembers', {})
-        this.setData({ members, loading: false })
+        // 成员头像都是别人上传的私有文件，cloud:// 直接进 <image> 解析不出来
+        //（开发者工具会报 pageframe 加载失败），统一先换 https 再渲染
+        const view = await photo.hydrateCatsAsync(
+          members.map(m => Object.assign({}, m, { avatar: m.avatarUrl || '' })), { px: 120 })
+        this.setData({ members: view, loading: false })
       } else {
         const applies = await app.callApi('listApplies', {})
         this.setData({ applies, loading: false })
@@ -112,4 +117,13 @@ Page({
       toast(err.message)
     }
   }
-})
+// ↓ 成员/志愿者页：招人向分享。带上学名更有本地归属感，落地页回落首页。
+}, shareBehavior(function () {
+  const s = app.globalData.school
+  const who = s && s.name ? s.name : '校园'
+  const n = (this.data.members || []).length
+  return {
+    title: n ? (who + '已有 ' + n + ' 位铲屎官加入 · 喵园') : ('加入喵园，一起照顾' + who + '的流浪猫'),
+    path: '/pages/index/index'
+  }
+})))

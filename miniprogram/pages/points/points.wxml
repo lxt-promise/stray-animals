@@ -12,7 +12,7 @@
         <text class="p-reason">{{item.reason || item.kind}}</text>
         <text class="small muted">{{item.timeText}}</text>
       </view>
-      <text class="p-delta">+{{item.delta}}</text>
+      <text class="p-delta {{item.delta < 0 ? 'minus' : ''}}">{{item.delta > 0 ? '+' : ''}}{{item.delta}}</text>
     </view>
     <view class="empty" wx:if="{{!list.length}}">
       <text class="emoji">🐾</text>
@@ -21,7 +21,7 @@
   </view>
 
   <view class="tip small muted">
-    猫粮值规则：目击打卡 +10，上报新猫 +30，首次遇见某只猫 +20，参与 TNR 记录 +50。每日打卡积分上限 60。
+    猫粮值规则：目击打卡 +10，本人投喂 +10，投喂有照片 +15，上报新猫 +30，首次遇见某只猫 +20，参与 TNR 记录 +50。每日打卡积分上限 60。
   </view>
 
 </view>

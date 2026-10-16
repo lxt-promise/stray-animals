@@ -3,14 +3,14 @@
   <!-- 用户信息 -->
   <view class="card profile">
     <button class="avatar avatar-btn" open-type="chooseAvatar" bindchooseavatar="onChooseAvatar">
-      <image wx:if="{{user.avatarUrl}}" src="{{user.avatarUrl}}" mode="aspectFill" />
+      <image wx:if="{{avatarView}}" src="{{avatarView}}" mode="aspectFill" />
       <text wx:else>🐱</text>
     </button>
     <view class="p-info">
       <input class="p-name-input" type="nickname" value="{{user.nickName}}" placeholder="点此设置昵称"
         bindblur="onNickName" bindconfirm="onNickName" confirm-type="done" />
       <view class="p-role">
-        <text class="tag {{isSuper ? 'gold' : (isMember ? 'ok' : 'gray')}}">{{isSuper ? '超级管理员' : (isMember ? (isAdmin ? '管理员' : '社团成员') : '爱猫同学')}}</text>
+        <view class="tag {{isSuper ? 'gold' : (isMember ? 'ok' : 'gray')}}">{{isSuper ? '超级管理员' : (isMember ? (isAdmin ? '管理员' : '社团成员') : '爱猫同学')}}</view>
         <text class="small muted" wx:if="{{school}}">{{school.name}}</text>
       </view>
       <text class="small muted edit-hint">点击头像换图 · 点昵称可改</text>
@@ -43,7 +43,7 @@
   <view class="card mt" wx:if="{{dex.length}}">
     <view class="card-title">
       图鉴进度
-      <text class="more" bindtap="goCats">去猫谱 ›</text>
+      <view class="more" bindtap="goCats" hover-class="pressed">去猫谱 ›</view>
     </view>
     <view class="flex-between small muted" style="margin-bottom:16rpx">
       <text>已收集 {{stats.catSeen}} / {{dexTotal}}</text>
@@ -55,7 +55,8 @@
     <view class="dex-row">
       <view class="dex-item {{item.unlocked ? '' : 'locked'}}" wx:for="{{dex}}" wx:key="id"
         data-id="{{item.id}}" bindtap="goCat">
-        <image wx:if="{{item.avatar && item.unlocked}}" src="{{item.avatar}}" mode="aspectFill" />
+        <image wx:if="{{item.avatar && item.unlocked}}" src="{{item.avatar}}" mode="aspectFill"
+               binderror="onDexAvatarErr" data-i="{{index}}" />
         <text wx:elif="{{item.unlocked}}">🐱</text>
         <text wx:else>?</text>
       </view>
@@ -69,7 +70,7 @@
   <view class="card mt">
     <view class="card-title">
       学校
-      <text class="more" bindtap="toggleSchoolForm">{{showSchoolForm ? '收起' : '创建 / 切换'}}</text>
+      <view class="more" bindtap="toggleSchoolForm" hover-class="pressed">{{showSchoolForm ? '收起' : '创建 / 切换'}}</view>
     </view>
     <view wx:if="{{!showSchoolForm && school}}">
       <view class="row"><text class="label">当前</text><text class="value">{{school.name}} {{school.campus}}</text></view>
@@ -129,29 +130,6 @@
         </view>
       </view>
     </block>
-  </view>
-
-  <!-- 我的打卡 -->
-  <view class="card mt">
-    <view class="card-title">我的打卡</view>
-    <block wx:for="{{mySightings}}" wx:key="_id">
-      <view class="my-item">
-        <view class="flex-between">
-          <text class="bold" wx:if="{{item.catId}}" data-id="{{item.catId}}" bindtap="goCat">{{item.cat.name || '未知'}}</text>
-          <text class="bold muted" wx:else>{{item.catName}}</text>
-          <text class="small muted">{{item.timeText}}</text>
-        </view>
-        <view class="small muted ellipsis" wx:if="{{item.note}}">{{item.note}}</view>
-        <view class="photo-row" wx:if="{{item.photos.length}}">
-          <image wx:for="{{item.photos}}" wx:for-item="p" wx:key="*this" src="{{p}}" mode="aspectFill"
-            data-url="{{p}}" data-urls="{{item.photos}}" bindtap="previewPhoto" />
-        </view>
-      </view>
-    </block>
-    <view class="empty" wx:if="{{!mySightings.length}}">
-      <text class="emoji">🐾</text>
-      还没有打卡记录
-    </view>
   </view>
 
   <!-- 工作台（管理员及以上可见）：从底部 tab 迁移至此 -->
@@ -227,7 +205,10 @@
             <view class="desc">角色与入社审核</view>
           </view>
         </view>
-        <view class="entry" data-url="/pages/cats/cats?tab=sighting" bindtap="go">
+        <!-- 目击建档入口：cats 是 tabBar 页，navigateTo 会被微信静默拒绝
+             （can not navigateTo a tabbar page，表现为「点了没反应」），
+             必须走 globalData + switchTab（与首页「最新动态」同一模式） -->
+        <view class="entry" bindtap="goCatsSighting">
           <view class="entry-inner">
             <view class="ico">📷</view>
             <view class="txt">目击建档</view>
@@ -243,6 +224,14 @@
     <view class="menu-item" data-url="/pages/points/points" bindtap="go">
       <text>猫粮明细</text><text class="arrow">›</text>
     </view>
+    <!-- 我的打卡：从独立卡片迁移为菜单项，点击后才展开下方记录（默认收起，页面更干净） -->
+    <view class="menu-item" bindtap="toggleMyCheckin" hover-class="pressed">
+      <text>我的打卡</text>
+      <view class="menu-right">
+        <text class="my-count" wx:if="{{stats.sightingCount}}">共 {{stats.sightingCount}} 次</text>
+        <text class="arrow {{myCheckinOpen ? 'open' : ''}}">›</text>
+      </view>
+    </view>
     <view class="menu-item" data-url="/pages/admin/admin" bindtap="go" wx:if="{{isSuper}}">
       <text>超级管理后台</text><text class="arrow">›</text>
     </view>
@@ -252,10 +241,46 @@
     <view class="menu-item" data-url="/pages/fund/fund" bindtap="go" wx:if="{{isMember}}">
       <text>资金公示</text><text class="arrow">›</text>
     </view>
+    <!-- 意见反馈：视觉层用普通 view（与其他菜单项严格一致），
+         button 透明覆盖整行只负责拉起客服会话 -->
+    <view class="menu-item">
+      <text class="cb-label">意见反馈</text>
+      <text class="arrow">›</text>
+      <button class="contact-hit" open-type="contact" session-from="feedback">意见反馈</button>
+    </view>
+  </view>
+
+  <!-- 我的打卡记录：点击上方「我的打卡」菜单项后展开 -->
+  <view class="card mt" wx:if="{{myCheckinOpen}}">
+    <view class="card-title">我的打卡</view>
+    <block wx:for="{{mySightings}}" wx:key="_id">
+      <view class="my-item">
+        <view class="flex-between">
+          <view class="flex" style="align-items:center;gap:12rpx">
+            <view class="bold" wx:if="{{item.catId}}" data-id="{{item.catId}}" bindtap="goCat" hover-class="pressed">{{item.cat.name || '未知'}}</view>
+            <text class="bold muted" wx:elif="{{!item.catId}}">{{item.catName}}</text>
+            <view class="tag ok small" wx:if="{{item.feedStatus === 'fed'}}">本人投喂</view>
+            <view class="tag info small" wx:if="{{item.feedStatus === 'fedByOther'}}">他人已喂</view>
+          </view>
+          <text class="small muted">{{item.timeText}}</text>
+        </view>
+        <view class="small muted ellipsis" wx:if="{{item.note}}">{{item.note}}</view>
+        <view class="photo-row" wx:if="{{item.photosSmall.length}}">
+          <image wx:for="{{item.photosSmall}}" wx:for-item="p" wx:for-index="pi" wx:key="*this"
+            src="{{p}}" mode="aspectFill" lazy-load="{{true}}"
+            binderror="onMyPhotoErr" data-i="{{index}}" data-j="{{pi}}"
+            data-url="{{item.photosFull[pi]}}" data-urls="{{item.photosFull}}" bindtap="previewPhoto" />
+        </view>
+      </view>
+    </block>
+    <view class="empty" wx:if="{{!mySightings.length}}">
+      <text class="emoji">🐾</text>
+      还没有打卡记录
+    </view>
   </view>
 
   <view class="tip small muted">
-    猫粮值规则：目击打卡 +10，上报新猫 +30，首次遇见某只猫 +20，参与 TNR 记录 +50。每日打卡积分上限 60，防止刷分。
+    猫粮值规则：目击打卡 +10，本人投喂 +10，投喂有照片 +15，上报新猫 +30，首次遇见某只猫 +20，参与 TNR 记录 +50。每日打卡积分上限 60，防止刷分。
   </view>
 
 </view>

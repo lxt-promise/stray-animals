@@ -114,12 +114,13 @@
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 0;
+  /* 必须让出自定义 tabBar（fixed、内容高约 100rpx + 安全区），
+     否则面板下半截被盖住 —— 与猫谱页 FAB 是同一类坑 */
+  bottom: calc(100rpx + env(safe-area-inset-bottom));
   background: var(--card);
   border-radius: 36rpx 36rpx 0 0;
   box-shadow: 0 -8rpx 30rpx rgba(120, 80, 40, .16);
   transition: transform .3s;
-  padding-bottom: env(safe-area-inset-bottom);
 }
 .bottom-sheet.collapsed { transform: translateY(calc(100% - 100rpx)); }
 .sheet-handle {
@@ -154,6 +155,14 @@
 }
 .sheet-avatar image { width: 100%; height: 100%; }
 .sheet-info { flex: 1; min-width: 0; }
+/* 「查看更多 / 收起」折叠开关：居中一行文字按钮 */
+.sheet-more {
+  text-align: center;
+  padding: 20rpx 0 8rpx;
+  font-size: 26rpx;
+  color: var(--brand);
+  font-weight: 600;
+}
 
 .fab-small {
   position: absolute;
@@ -168,20 +177,179 @@
   box-shadow: 0 8rpx 20rpx rgba(249, 115, 22, .4);
 }
 
-/* ===== 点位说明 ===== */
+/* ===== 点位图例说明（紧凑小卡，左下角） ===== */
 .legend-card {
   position: absolute;
-  left: 32rpx;
-  right: 32rpx;
-  top: 210rpx;
-  padding: 28rpx;
+  left: 28rpx;
+  /* 默认贴在底部面板把手上方（列表收起态）；
+     列表展开时由 .above-sheet 整体上移，避开「附近猫咪」面板 */
+  bottom: calc(216rpx + env(safe-area-inset-bottom));
+  /* 缩小：不再通栏，固定窄宽度，最多占到屏宽减两边留白 */
+  width: 560rpx;
+  max-width: calc(100% - 56rpx);
+  padding: 24rpx;
   border-radius: var(--radius);
   background: rgba(255, 255, 255, .98);
   border: 2rpx solid rgba(249, 115, 22, .2);
   box-shadow: var(--shadow);
   z-index: 30;
 }
-.lg-title { font-size: 30rpx; margin-bottom: 20rpx; }
-.lg-line { display: flex; align-items: center; flex-wrap: wrap; margin-bottom: 16rpx; }
-.lg-note { line-height: 1.8; }
-.lg-close { margin-top: 16rpx; text-align: right; }
+/* 列表展开：底部面板最高约占 732rpx（tabBar100 + 把手88 + 列表520 + 24），
+   图例卡与入口胶囊一起上移到此线之上，彻底避开「附近猫咪」 */
+.legend-card.above-sheet { bottom: calc(752rpx + env(safe-area-inset-bottom)); }
+/* ===== 图例入口（左下角胶囊，参考样式） ===== */
+.legend-entry {
+  position: absolute;
+  left: 28rpx;
+  /* tabBar 100rpx + 底部面板收起态把手约 100rpx + 间距，收起时贴在把手上方 */
+  bottom: calc(216rpx + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  padding: 12rpx 26rpx 12rpx 18rpx;
+  background: rgba(255, 255, 255, .96);
+  border-radius: 999rpx;
+  box-shadow: 0 6rpx 20rpx rgba(90, 66, 40, .20);
+  z-index: 40;
+}
+.legend-entry.above-sheet { bottom: calc(752rpx + env(safe-area-inset-bottom)); }
+.le-dot {
+  width: 16rpx;
+  height: 16rpx;
+  border-radius: 50%;
+  margin-right: 12rpx;
+  flex-shrink: 0;
+  border: 2rpx solid rgba(255, 255, 255, .9);
+}
+.le-dot.done { background: #2FA36B; }
+.le-dot.todo { background: #F97316; }
+.le-txt { font-size: 26rpx; font-weight: 600; color: #4A3B2C; }
+
+/* ===== 图例说明卡片（参考信号灯样式，紧凑尺寸） ===== */
+.lg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14rpx;
+}
+.lg-title { font-size: 28rpx; }
+.lg-x { font-size: 28rpx; color: var(--text-weak); padding: 8rpx; }
+.lg-row {
+  display: flex;
+  align-items: center;
+  padding: 10rpx 0;
+}
+.lg-icon {
+  width: 40rpx;
+  height: 54rpx;
+  margin-right: 10rpx;
+  flex-shrink: 0;
+}
+/* 多行说明：图标顶对齐，避免长文案把 emoji 顶到中间显得脱节 */
+.lg-row.multi { align-items: flex-start; }
+.lg-row.multi .lg-emoji { line-height: 1.55; }
+.lg-emoji { font-size: 30rpx; width: 48rpx; text-align: center; margin-right: 10rpx; flex-shrink: 0; }
+/* flex:1 + min-width:0 —— 不给最小宽度，长文案会把行撑破或挤掉图标 */
+.lg-txt { flex: 1; min-width: 0; font-size: 24rpx; line-height: 1.55; color: var(--text-sub); }
+.lg-note { line-height: 1.6; margin-top: 12rpx; padding-top: 12rpx; border-top: 1rpx solid #F0E9DF; }
+
+/* ===== 猫咪信息弹窗（点地图卡通头像弹出） ===== */
+.popup-mask {
+  position: fixed;
+  left: 0; right: 0; top: 0; bottom: 0;
+  background: rgba(46, 36, 26, .45);
+  z-index: 90;
+}
+.cat-popup {
+  position: fixed;
+  left: 24rpx; right: 24rpx;
+  bottom: calc(120rpx + env(safe-area-inset-bottom));
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--card);
+  border-radius: 32rpx;
+  box-shadow: 0 12rpx 48rpx rgba(90, 66, 40, .22);
+  padding: 16rpx 28rpx 28rpx;
+  z-index: 95;
+  animation: popup-in .24s ease-out;
+}
+@keyframes popup-in {
+  from { transform: translateY(48rpx); opacity: .3; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.popup-grip {
+  width: 72rpx; height: 8rpx;
+  border-radius: 4rpx;
+  background: #E9E1D6;
+  margin: 0 auto 18rpx;
+}
+.popup-loading {
+  padding: 80rpx 0;
+  text-align: center;
+  color: var(--text-sub);
+  font-size: 28rpx;
+}
+.popup-loading .emoji { display: block; font-size: 56rpx; margin-bottom: 12rpx; }
+
+/* 头部 */
+.popup-head { display: flex; align-items: center; }
+.popup-avatar {
+  width: 128rpx; height: 128rpx;
+  border-radius: 28rpx;
+  background: var(--brand-light);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 60rpx;
+  margin-right: 24rpx;
+  flex-shrink: 0;
+  overflow: hidden;
+  border: 4rpx solid #FFFFFF;
+  box-shadow: 0 4rpx 16rpx rgba(120, 90, 50, .14);
+}
+.popup-avatar image { width: 100%; height: 100%; }
+.popup-headinfo { flex: 1; min-width: 0; }
+.popup-headinfo .p-name { font-size: 36rpx; font-weight: 700; max-width: 340rpx; }
+.popup-headinfo .sex { font-size: 34rpx; font-weight: 700; }
+.popup-headinfo .sex.male { color: #3B82F6; }
+.popup-headinfo .sex.female { color: #EC4899; }
+.popup-headinfo .tag-row { margin-top: 10rpx; }
+
+/* 分区 */
+.popup-section { margin-top: 28rpx; }
+.sec-title { font-size: 28rpx; font-weight: 600; margin-bottom: 14rpx; }
+.last-fed { margin-top: 14rpx; }
+
+/* 巡护记录 */
+.rec {
+  padding: 18rpx 0;
+  border-bottom: 1rpx solid var(--line, #F0E9DF);
+}
+.rec:last-of-type { border-bottom: none; }
+.rec-photo {
+  width: 160rpx; height: 160rpx;
+  border-radius: 16rpx;
+  margin-top: 12rpx;
+  background: var(--bg);
+}
+.more-link {
+  margin-top: 16rpx;
+  text-align: center;
+  color: var(--brand-dark);
+  font-size: 26rpx;
+  padding: 12rpx 0;
+}
+
+/* 底部按钮 */
+.popup-actions { display: flex; gap: 20rpx; margin-top: 28rpx; }
+.popup-btn {
+  flex: 1;
+  text-align: center;
+  font-size: 30rpx;
+  font-weight: 600;
+  padding: 22rpx 0;
+  border-radius: 999rpx;
+}
+.popup-btn.primary { background: var(--brand); color: #FFFFFF; }
+.popup-btn.plain {
+  background: var(--bg);
+  color: var(--brand-dark);
+  border: 2rpx solid var(--brand-light);
+}

@@ -18,26 +18,26 @@
   <!-- 筛选 -->
   <scroll-view scroll-x class="filter-scroll" wx:if="{{tab === 'cat'}}">
     <view class="filter-row">
-      <text
+      <view
         class="chip {{filters.status === '' ? 'on' : ''}}"
-        data-key="status" data-value="" bindtap="onFilter">全部状态</text>
+        data-key="status" data-value="" bindtap="onFilter" hover-class="pressed">全部状态</view>
       <block wx:for="{{statusOptions}}" wx:key="value">
-        <text
+        <view
           class="chip {{filters.status === item.value ? 'on' : ''}}"
-          data-key="status" data-value="{{item.value}}" bindtap="onFilter">{{item.label}}</text>
+          data-key="status" data-value="{{item.value}}" bindtap="onFilter" hover-class="pressed">{{item.label}}</view>
       </block>
     </view>
   </scroll-view>
 
   <scroll-view scroll-x class="filter-scroll" wx:if="{{tab === 'cat'}}">
     <view class="filter-row">
-      <text class="chip {{filters.sterilized === 'no' ? 'on' : ''}}"
-        data-key="sterilized" data-value="no" bindtap="onFilter">未绝育优先</text>
-      <text class="chip {{filters.sterilized === 'yes' ? 'on' : ''}}"
-        data-key="sterilized" data-value="yes" bindtap="onFilter">已绝育</text>
+      <view class="chip {{filters.sterilized === 'no' ? 'on' : ''}}"
+        data-key="sterilized" data-value="no" bindtap="onFilter" hover-class="pressed">未绝育优先</view>
+      <view class="chip {{filters.sterilized === 'yes' ? 'on' : ''}}"
+        data-key="sterilized" data-value="yes" bindtap="onFilter" hover-class="pressed">已绝育</view>
       <block wx:for="{{patternOptions}}" wx:key="value">
-        <text class="chip {{filters.pattern === item.value ? 'on' : ''}}"
-          data-key="pattern" data-value="{{item.value}}" bindtap="onFilter">{{item.label}}</text>
+        <view class="chip {{filters.pattern === item.value ? 'on' : ''}}"
+          data-key="pattern" data-value="{{item.value}}" bindtap="onFilter" hover-class="pressed">{{item.label}}</view>
       </block>
     </view>
   </scroll-view>
@@ -61,24 +61,32 @@
     <view class="card" wx:for="{{sightings}}" wx:key="_id">
       <view class="flex-between">
         <view class="flex">
-          <text class="cat-name" wx:if="{{item.catId}}" bindtap="goDetail" data-id="{{item.catId}}">
+          <view class="cat-name" wx:if="{{item.catId}}" bindtap="goDetail" data-id="{{item.catId}}" hover-class="pressed">
             {{item.cat ? item.cat.name : '未知'}}
-          </text>
+          </view>
           <text class="cat-name muted" wx:else>{{item.catName}}</text>
-          <text class="tag warn small" wx:if="{{item.pending}}">待建档</text>
+          <view class="tag warn small" wx:if="{{item.pending}}">待建档</view>
+          <view class="tag ok small" wx:if="{{item.feedStatus === 'fed'}}">本人投喂</view>
+          <view class="tag info small" wx:if="{{item.feedStatus === 'fedByOther'}}">他人已喂</view>
         </view>
         <text class="small muted">{{item.timeText}}</text>
       </view>
       <view class="note" wx:if="{{item.note}}">{{item.note}}</view>
-      <view class="photo-row" wx:if="{{item.photos.length}}">
+      <view class="photo-row" wx:if="{{item.photosSmall.length}}">
+        <!-- 展示用缩略图（photosSmall 由 utils/photo.js 生成），点开预览仍是可直连的 https 原图 -->
         <image
-          wx:for="{{item.photos}}"
+          wx:for="{{item.photosSmall}}"
           wx:for-item="p"
+          wx:for-index="pi"
           wx:key="*this"
           src="{{p}}"
           mode="aspectFill"
-          data-url="{{p}}"
-          data-urls="{{item.photos}}"
+          lazy-load="{{true}}"
+          binderror="onSightPhotoErr"
+          data-i="{{index}}"
+          data-j="{{pi}}"
+          data-url="{{item.photosFull[pi]}}"
+          data-urls="{{item.photosFull}}"
           bindtap="previewPhoto"
         />
       </view>
@@ -92,8 +100,11 @@
     </view>
   </block>
 
-  <!-- 悬浮按钮：建档仅管理员以上；打卡对成员/管理员开放 -->
-  <view class="fab" bindtap="{{tab === 'cat' ? 'goAdd' : 'goSighting'}}"
+  <!-- 悬浮按钮：建档仅管理员以上；打卡对成员/管理员开放。
+       ⚠️ bindtap 必须是静态方法名：WXML 事件绑定在编译期解析，三元表达式
+       {{tab === 'cat' ? 'goAdd' : 'goSighting'}} 不会被求值，点击时报
+       "does not have a method" 或静默无响应（本页 FAB 主入口曾整个失效）。 -->
+  <view class="fab" bindtap="onFabTap"
     wx:if="{{(tab === 'cat' && canAdd) || (tab === 'sighting' && isMember)}}">
     {{tab === 'cat' ? '+ 建档' : '+ 打卡'}}
   </view>

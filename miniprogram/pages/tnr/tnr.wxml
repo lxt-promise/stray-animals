@@ -7,9 +7,9 @@
     </view>
     <scroll-view scroll-x class="filter-scroll">
       <view class="filter-row">
-        <text class="chip {{filter === item.value ? 'on' : ''}}"
+        <view class="chip {{filter === item.value ? 'on' : ''}}"
           wx:for="{{filters}}" wx:key="value"
-          data-value="{{item.value}}" bindtap="onFilter">{{item.label}}</text>
+          data-value="{{item.value}}" bindtap="onFilter" hover-class="pressed">{{item.label}}</view>
       </view>
     </scroll-view>
   </view>
@@ -18,7 +18,7 @@
     <view class="flex-between">
       <view class="flex">
         <text class="tnr-name">{{item.cat ? item.cat.name : item.catName}}</text>
-        <text class="tag {{item.statusItem.tag}}">{{item.statusItem.label}}</text>
+        <view class="tag {{item.statusItem.tag}}">{{item.statusItem.label}}</view>
       </view>
       <text class="small muted">{{item.surgeryDate || item.trapDate || '未排期'}}</text>
     </view>

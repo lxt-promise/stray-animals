@@ -14,7 +14,14 @@ Page({
     location: null,
     healthIndex: 7,
     healthOptions: C.HEALTH,
-    note: '',
+    // 投喂状态：路过 / 本人投喂 / 已被其他人投喂（选中「本人投喂」且有照片可获额外猫粮值）
+    feedIndex: 0,
+    feedOptions: C.FEED_STATUS,
+    feedValue: 'passed',
+    // 行为标签：结构化多选（替代原自由文本「描述」，合规要求见 const.js SIGHT_BEHAVIOR 注释）
+    behaviorOptions: C.SIGHT_BEHAVIOR.map(b => ({ value: b.value, label: b.label, on: false })),
+    behaviors: [],
+    note: '',      // 极短补充（≤20 字），非创作型文本
     count: 1,
     locating: false,
     submitting: false
@@ -54,6 +61,9 @@ Page({
       const res = await new Promise((resolve, reject) => {
         wx.getLocation({ type: 'gcj02', success: resolve, fail: reject })
       })
+      // 定位竞态防护：GPS 慢返回（冷启动/首次授权可能数秒）时，用户可能已经
+      // 用「选择位置」手选了点位 —— 后到的 GPS 结果不能覆盖手选值
+      if (this._manualLoc) return
       this.setData({ location: { lat: res.latitude, lng: res.longitude } })
     } catch (e) {
       // 未授权则留空，允许手动选点
@@ -76,8 +86,32 @@ Page({
     this.setData({ healthIndex: Number(e.detail.value) })
   },
 
+  // 投喂状态选择：同步 value 供 WXML 判断提示文案（不依赖表达式里的下标访问）
+  onFeedPick(e) {
+    const i = Number(e.detail.value)
+    this.setData({ feedIndex: i, feedValue: this.data.feedOptions[i].value })
+  },
+
   changeCount(e) {
     this.setData({ count: Number(e.detail.value) || 1 })
+  },
+
+  /**
+   * 行为标签多选切换（结构化，替代原自由文本「描述」）。
+   * ⚠️ 选中态必须在 JS 层预计算成 item.on —— WXML 的 mustache 是编译期白名单，
+   *    `indexOf()/includes()` 这类方法调用会被静默忽略、整段退化为 false
+   *    （本项目踩过的坑，见 MEMORY.md）。所以这里不写 `{{behaviors.indexOf(item.value)>=0}}`。
+   */
+  toggleBehavior(e) {
+    const v = e.currentTarget.dataset.value
+    if (!v) return
+    const opts = (this.data.behaviorOptions || []).map(o =>
+      o.value === v ? Object.assign({}, o, { on: !o.on }) : o
+    )
+    this.setData({
+      behaviorOptions: opts,
+      behaviors: opts.filter(o => o.on).map(o => o.value)
+    })
   },
 
   async choosePhotos() {
@@ -111,6 +145,8 @@ Page({
   async chooseLocation() {
     const res = await wx.chooseLocation({}).catch(() => null)
     if (!res || !res.latitude) return
+    // 标记为手选：后续 locate() 的 GPS 慢回调不再覆盖（见 locate 里的 _manualLoc）
+    this._manualLoc = true
     this.setData({
       location: { lat: res.latitude, lng: res.longitude },
       locationName: res.name || res.address || ''
@@ -132,7 +168,11 @@ Page({
         location: this.data.location,
         locationName: this.data.locationName,
         health: this.data.healthOptions[this.data.healthIndex].value,
-        note: this.data.note,
+        feedStatus: this.data.feedValue,
+        // 结构化行为标签（合规：替代原自由文本描述）
+        behaviors: this.data.behaviors,
+        // 补充限 20 字（模板已 maxlength 限制，这里再兜一层）
+        note: String(this.data.note || '').slice(0, 20),
         count: this.data.count
       }
       const res = await app.callApi('addSighting', { data })
@@ -140,13 +180,22 @@ Page({
       // 否则「我的」页猫粮值/打卡次数一直停留在登录时的旧值
       await app.refreshUser().catch(() => {})
       hideBusy()
+      // 积分明细：数额全部取自云端 pointsDetail（前端不重复配置规则，改奖励只改云端）
+      const det = res.pointsDetail || {}
+      const parts = []
+      if (det.base) parts.push('打卡 +' + det.base)
+      if (det.firstMeet) parts.push('首次遇见 +' + det.firstMeet)
+      if (det.newCat) parts.push('上报新猫 +' + det.newCat)
+      if (det.feed) parts.push('本人投喂 +' + det.feed)
+      if (det.feedPhoto) parts.push('照片佐证 +' + det.feedPhoto)
+      const detail = parts.length ? '\n' + parts.join(' · ') : ''
       // +0 时给出原因：每日猫粮上限（60）已用完，而非静默的 0
       const capped = res.dailyCapped && !res.pointsGained
       wx.showModal({
         title: '打卡成功',
         content: capped
           ? '今日猫粮已达上限（60），明天再来赚～打卡本身已记录成功'
-          : '获得猫粮值 +' + res.pointsGained + (this.data.catId ? '' : '，社团会核实后为它建档'),
+          : '获得猫粮值 +' + res.pointsGained + detail + (this.data.catId ? '' : '\n社团会核实后为它建档'),
         showCancel: false,
         success: () => {
           if (this.data.catId) {

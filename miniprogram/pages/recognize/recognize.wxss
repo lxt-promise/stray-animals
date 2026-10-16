@@ -98,17 +98,6 @@
   border-radius: 8rpx;
   transition: width .35s;
 }
-.stage-log {
-  background: rgba(146, 88, 32, .8);
-  border: 2rpx solid var(--card-line);
-  border-radius: var(--radius-sm);
-  padding: 18rpx 20rpx;
-}
-.log-line {
-  color: rgba(249, 115, 22, .75);
-  line-height: 1.9;
-  font-size: 22rpx;
-}
 
 /* 特征摘要 */
 .feat-row { display: flex; flex-wrap: wrap; margin: 0 -8rpx; }

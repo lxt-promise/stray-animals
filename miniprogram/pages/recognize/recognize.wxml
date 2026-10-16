@@ -42,20 +42,15 @@
       <view class="bar" style="width: {{progress}}%"></view>
     </view>
     <view class="small muted" style="margin-top:16rpx">{{stageText}}</view>
-    <view class="stage-log mt">
-      <view class="log-line mono small">[vision] detect → cat_face_roi</view>
-      <view class="log-line mono small">[vision] embedding → 512d_vector</view>
-      <view class="log-line mono small">[search] knn → campus_index</view>
-    </view>
   </view>
 
   <!-- 结果 -->
   <block wx:if="{{stage === 'done' && !error && result}}">
-    <!-- 特征摘要 -->
+    <!-- 特征摘要（合规：不展示占位引擎说明与 request_id 等内部信息） -->
     <view class="card card-glow">
       <view class="card-title">
         识别特征
-        <text class="more mono">{{result.provider === 'custom' ? 'CUSTOM API' : 'LOCAL ENGINE'}} · {{result.latency}}ms</text>
+        <text class="more mono">{{result.latency}}ms</text>
       </view>
       <view class="feat-row">
         <block wx:for="{{result.features.tags}}" wx:key="k">
@@ -65,9 +60,6 @@
           </view>
         </block>
       </view>
-      <view class="divider"></view>
-      <view class="notice small" wx:if="{{result.notice}}">ⓘ {{result.notice}}</view>
-      <view class="small muted mono" style="margin-top:10rpx">request_id: {{result.requestId}}</view>
     </view>
 
     <!-- 候选列表 -->
@@ -79,7 +71,8 @@
       <block wx:for="{{result.candidates}}" wx:key="catId">
         <view class="cand" bindtap="goCat" data-id="{{item.catId}}">
           <view class="cand-avatar">
-            <image wx:if="{{item.avatar}}" src="{{item.avatar}}" mode="aspectFill" />
+            <image wx:if="{{item.avatar}}" src="{{item.avatar}}" mode="aspectFill"
+                   lazy-load="{{true}}" data-i="{{index}}" binderror="onCandAvatarErr" />
             <text wx:else>🐱</text>
           </view>
           <view class="cand-main">
@@ -109,7 +102,7 @@
         <text class="more small">让系统越用越准</text>
       </view>
       <view class="small muted">
-        确认后本次特征会写入该猫档案作为比对样本；攒够样本想微调模型时，训练集已经自动备好了。
+        你的确认会作为一条标注样本记录下来，帮系统越用越准，并解锁这只猫的图鉴。
       </view>
       <view class="act-row mt">
         <block wx:if="{{!confirmedId}}">
@@ -155,7 +148,7 @@
   <view class="card" wx:if="{{stage === 'idle' && history.length}}">
     <view class="card-title">
       历史识别记录
-      <text class="more hist-clear" bindtap="clearHistory">清空</text>
+      <view class="more hist-clear" bindtap="clearHistory" hover-class="pressed">清空</view>
     </view>
     <view class="hist-item" wx:for="{{history}}" wx:key="ts" bindtap="tapHistory" data-index="{{index}}">
       <view class="hist-ico">{{item.mode === 'video' ? '🎬' : '📷'}}</view>

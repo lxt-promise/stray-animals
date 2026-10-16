@@ -66,6 +66,42 @@ public class VisionService {
     /** 每次识别最多带多少只猫过去（云函数侧也是这个量级） */
     private static final int MAX_CATS = 200;
 
+    /**
+     * SSRF 防护：识别服务会去下载 imageUrl，该参数历史上无校验直达 Python 侧
+     * httpx.get(follow_redirects=True) —— 未登录攻击者可让服务端请求内网地址、
+     * 云元数据（169.254.169.254）、localhost 服务做盲探测。
+     *
+     * 策略：允许同源相对路径（/uploads/...，前端正常用法）；完整 URL 则
+     * host 必须与配置的 assetBaseUrl 一致（照片本就由本后端托管，正常流程必然同源）。
+     * 本地部署时 assetBaseUrl 是 127.0.0.1，也不会被误伤。
+     */
+    private void assertAllowedImageUrl(String imageUrl) {
+        URI uri;
+        try {
+            uri = URI.create(imageUrl);
+        } catch (Exception e) {
+            throw new BizException("图片地址格式错误");
+        }
+        // 相对路径：同源引用，放行
+        if (uri.getScheme() == null && uri.getHost() == null) return;
+        String scheme = uri.getScheme();
+        if (scheme == null || (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https"))) {
+            throw new BizException("图片地址必须是 http/https");
+        }
+        String host = uri.getHost();
+        if (host == null) throw new BizException("图片地址缺少主机名");
+        String allowHost;
+        try {
+            allowHost = URI.create(assetBaseUrl).getHost();
+        } catch (Exception e) {
+            allowHost = null;
+        }
+        if (allowHost == null || !allowHost.equalsIgnoreCase(host)) {
+            log.warn("[catcampus] 拒绝非白域名图片地址：host={}", host);
+            throw new BizException("图片地址不在允许的域名内");
+        }
+    }
+
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
@@ -97,6 +133,7 @@ public class VisionService {
      */
     public Map<String, Object> recognize(String imageUrl) {
         if (imageUrl == null || imageUrl.isBlank()) throw new BizException("缺少图片地址");
+        assertAllowedImageUrl(imageUrl);
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("url", imageUrl);

@@ -26,10 +26,12 @@
   color: var(--text-sub);
   font-size: 26rpx;
 }
+/* 选中态：实心品牌橙 + 白字 + 光晕，和未选中的浅底色形成强对比 */
 .chip.on {
-  background: var(--brand-light);
-  color: var(--brand-dark);
+  background: var(--brand);
+  color: #FFFFFF;
   font-weight: 600;
+  box-shadow: var(--glow);
 }
 
 .upload-row {

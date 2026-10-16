@@ -1,7 +1,7 @@
 const app = getApp()
-const { C, itemOf, requireMember, toast, money, showBusy, hideBusy } = require('../../utils/util.js')
+const { C, itemOf, requireMember, toast, showBusy, hideBusy, shareBehavior } = require('../../utils/util.js')
 
-Page({
+Page(Object.assign({
   data: {
     list: [],
     summary: { income: '0.00', expense: '0.00', balance: '0.00' },
@@ -85,4 +85,15 @@ Page({
       toast(e.message)
     }
   }
-})
+// ↓ 资金公示是**公开透明**的核心证明，分享传播价值高（让捐赠人看到钱花在哪）。
+//   落地页直接回到资金页 —— 这一页本来就需要给外部看，无需登录态拦截。
+}, shareBehavior(function () {
+  const s = this.data.summary || {}
+  const bal = s.balance || '0.00'
+  const s0 = app.globalData.school
+  const who = s0 && s0.name ? s0.name : '校园'
+  return {
+    title: who + '流浪猫基金公示 · 当前结余 ¥' + bal,
+    path: '/pages/fund/fund'
+  }
+})))

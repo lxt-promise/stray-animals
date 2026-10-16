@@ -1,104 +1,33 @@
-"""本地特征库：把每只猫的照片变成向量后持久化，避免每次识别都重新下载、重新算。
+"""特征库门面：按 config.INDEX_BACKEND 分发到具体后端，对外接口六个方法保持不变。
 
-用标准库 sqlite 即可 —— 几百只猫 × 每条 4KB 向量，全表也就几 MB，
-全量载入内存做矩阵乘比接一套向量数据库划算得多。
+    INDEX_BACKEND=sqlite   本地 SQLite 文件（默认，开发/测试/单机用）
+    INDEX_BACKEND=cos      腾讯云 COS 对象存储（云托管等无持久盘环境用）
+
+main.py 只依赖本模块的 put/get/ids/load/count/clear，
+换后端、甚至换存储格式，上层零改动。
 """
 from __future__ import annotations
 
-import sqlite3
-import time
-from typing import Dict, List, Optional
-
-import numpy as np
-
 from . import config
 
+_backend_name = (config.INDEX_BACKEND or "sqlite").strip().lower()
 
-def _conn() -> sqlite3.Connection:
-    config.INDEX_DB.parent.mkdir(parents=True, exist_ok=True)
-    c = sqlite3.connect(str(config.INDEX_DB), timeout=10)
-    c.execute("PRAGMA journal_mode=WAL")
-    c.execute(
-        """CREATE TABLE IF NOT EXISTS cat_index (
-             cat_id     TEXT PRIMARY KEY,
-             school_id  TEXT,
-             dim        INTEGER,
-             embedding  BLOB,
-             source     TEXT,
-             updated_at REAL
-           )"""
+if _backend_name == "sqlite":
+    from . import sqlite_store as _backend
+elif _backend_name == "cos":
+    from . import cos_store as _backend
+else:
+    raise RuntimeError(
+        f"未知 INDEX_BACKEND={config.INDEX_BACKEND!r}（可选值：sqlite / cos）"
     )
-    return c
 
+put = _backend.put
+get = _backend.get
+ids = _backend.ids
+load = _backend.load
+count = _backend.count
+clear = _backend.clear
 
-def put(cat_id: str, school_id: str, emb: np.ndarray, source: str = "recognize") -> None:
-    c = _conn()
-    try:
-        c.execute(
-            "INSERT INTO cat_index(cat_id,school_id,dim,embedding,source,updated_at) "
-            "VALUES(?,?,?,?,?,?) ON CONFLICT(cat_id) DO UPDATE SET "
-            "school_id=excluded.school_id,dim=excluded.dim,embedding=excluded.embedding,"
-            "source=excluded.source,updated_at=excluded.updated_at",
-            (cat_id, school_id or "", int(emb.shape[0]), emb.astype(np.float32).tobytes(), source, time.time()),
-        )
-        c.commit()
-    finally:
-        c.close()
-
-
-def get(cat_id: str) -> Optional[np.ndarray]:
-    c = _conn()
-    try:
-        r = c.execute("SELECT embedding FROM cat_index WHERE cat_id=?", (cat_id,)).fetchone()
-        return np.frombuffer(r[0], dtype=np.float32) if r else None
-    finally:
-        c.close()
-
-
-def ids(school_id: str = "") -> List[str]:
-    c = _conn()
-    try:
-        if school_id:
-            rows = c.execute("SELECT cat_id FROM cat_index WHERE school_id=?", (school_id,)).fetchall()
-        else:
-            rows = c.execute("SELECT cat_id FROM cat_index").fetchall()
-        return [r[0] for r in rows]
-    finally:
-        c.close()
-
-
-def load(school_id: str = "") -> Dict[str, np.ndarray]:
-    """一次性取出某校区全部向量，供 numpy 批量矩阵乘。"""
-    c = _conn()
-    try:
-        if school_id:
-            rows = c.execute(
-                "SELECT cat_id,embedding FROM cat_index WHERE school_id=?", (school_id,)
-            ).fetchall()
-        else:
-            rows = c.execute("SELECT cat_id,embedding FROM cat_index").fetchall()
-        return {r[0]: np.frombuffer(r[1], dtype=np.float32) for r in rows}
-    finally:
-        c.close()
-
-
-def count(school_id: str = "") -> int:
-    return len(ids(school_id))
-
-
-def clear(school_id: str = "") -> int:
-    """清空特征库。
-
-    school_id 为空时清空全部（用于「档案库即真相来源」的整体重建）；
-    否则只清该校区。返回被删除的条数。
-    """
-    c = _conn()
-    try:
-        if school_id:
-            cur = c.execute("DELETE FROM cat_index WHERE school_id=?", (school_id,))
-        else:
-            cur = c.execute("DELETE FROM cat_index")
-        c.commit()
-        return cur.rowcount
-    finally:
-        c.close()
+# 当前生效的后端名（cos_store / sqlite_store），/health 会带出去 ——
+# 部署后一眼确认「到底切没切到 COS」，避免以为在用 COS 实际还是本地文件
+BACKEND_NAME = _backend.__name__.rsplit(".", 1)[-1]

@@ -52,13 +52,23 @@ public class TaskService {
     @Transactional
     public TaskItem claim(Long id, boolean cancel) {
         CurrentUser.requireLogin();
+        Long uid = CurrentUser.id();
         TaskItem t = taskRepository.findById(id).orElseThrow(() -> new BizException("任务不存在"));
         if (cancel) {
+            // 归属校验：早期不校验 assigneeId，任何登录用户可以取消别人的认领（越权）
+            if (t.getAssigneeId() == null || !t.getAssigneeId().equals(uid)) {
+                throw new BizException("只能取消自己认领的任务");
+            }
             t.setStatus("open");
             t.setAssigneeId(null);
             t.setAssigneeName(null);
         } else {
-            User me = userRepository.findById(CurrentUser.id()).orElseThrow(() -> new BizException("用户不存在"));
+            // 状态校验：并发抢单时两个请求都读到 open，后写者静默覆盖先写者，
+            // 两人都看到「认领成功」而任务只属于最后写入的人
+            if (!"open".equals(t.getStatus())) {
+                throw new BizException("任务已被认领");
+            }
+            User me = userRepository.findById(uid).orElseThrow(() -> new BizException("用户不存在"));
             t.setStatus("claimed");
             t.setAssigneeId(me.getId());
             t.setAssigneeName(me.getNickName());

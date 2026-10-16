@@ -40,16 +40,16 @@ function formatTime(date) {
   return d.getFullYear() + '/' + p(d.getMonth() + 1) + '/' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
 }
 
-/** 相对时间：刚刚 / 5分钟前 / 3天前 */
+/** 相对时间：1 小时内「xx 分钟前」，超过 1 小时直接给具体时间点（2026/10/13 18:40）。
+ *  为什么超过 1 小时就不用「x 小时前」：跨天后「3 小时前」有歧义（是今天 3 小时前还是昨天？），
+ *  打卡/巡护记录需要可核对的具体时刻，直接给时间点最稳妥。 */
 function fromNow(date) {
   const d = toDate(date)
   if (!d) return ''
   const diff = Date.now() - d.getTime()
   if (diff < 60 * 1000) return '刚刚'
   if (diff < 3600 * 1000) return Math.floor(diff / 60000) + '分钟前'
-  if (diff < 86400 * 1000) return Math.floor(diff / 3600000) + '小时前'
-  if (diff < 30 * 86400 * 1000) return Math.floor(diff / 86400000) + '天前'
-  return formatTime(d).split(' ')[0]
+  return formatTime(d)
 }
 
 /** 日期：09-22 */
@@ -60,9 +60,10 @@ function shortDate(date) {
   return p(d.getMonth() + 1) + '-' + p(d.getDate())
 }
 
-/** 两点间距离（米），Haversine */
+/** 两点间距离（米），Haversine。
+ *  校验用 Number.isFinite：isNaN 不挡 Infinity（距离会算成 Infinity 显示 "Infinitykm"） */
 function distance(lat1, lng1, lat2, lng2) {
-  if ([lat1, lng1, lat2, lng2].some(v => typeof v !== 'number' || isNaN(v))) return null
+  if ([lat1, lng1, lat2, lng2].some(v => !Number.isFinite(v))) return null
   const R = 6371000
   const rad = d => d * Math.PI / 180
   const dLat = rad(lat2 - lat1)
@@ -156,9 +157,90 @@ function hideBusy() {
   if (_loadingCount === 0) wx.hideLoading()
 }
 
+/**
+ * 分享能力 mixin。
+ *
+ * ⚠️ **微信小程序默认是不能分享的**：页面里没定义 `onShareAppMessage` 时，
+ * 右上角「···」菜单里的「转发给朋友」是灰色不可点状态。这是框架约定而非 bug ——
+ * 每个希望被转发的页面都必须显式声明，没有全局开关。
+ * 「分享到朋友圈」（`onShareTimeline`）更进一步，**必须先有 onShareAppMessage** 才生效。
+ *
+ * 用法：
+ *   Page(Object.assign({}, shareBehavior({ title, path }), { data: {...}, ... }))
+ *
+ * @param {Object|Function} opt 配置；传函数则以 this 为上下文、拿 Wes 回调入参动态生成
+ * @param {string} [opt.title] 卡片标题
+ * @param {string} [opt.path]  打开路径，必须 /pages/... 开头并带齐参数
+ * @param {string} [opt.imageUrl] 卡片图（建议 5:4）
+ * @param {string} [opt.query] 朋友圈的参数串（不带 ?）
+ * @param {boolean} [opt.timeline=true] 是否允许分享到朋友圈
+ * @returns {Object} 可直接并进 Page options 的对象
+ */
+function shareBehavior(opt) {
+  const DEF_TITLE = '喵园 · 校园流浪猫档案'
+
+  // opt 允许传函数：需要拿 this.data 拼标题/路径时用（比如猫详情页要带上猫名）
+  function cfgOf(ctx) {
+    let o = {}
+    if (typeof opt === 'function') {
+      // 用 call 绑定页面实例，opt 里就能直接 this.data.xxx
+      try { o = opt.call(ctx) || {} } catch (e) { o = {} }
+    } else {
+      o = opt || {}
+    }
+    return o
+  }
+  // 函数式取值：this 绑定到页面实例，入参是微信给的分享回调对象，
+  // 于是 title: function() { return this.data.cat.name } 这类写法可用
+  function value(v, arg, ctx) {
+    if (typeof v === 'function') {
+      try { return v.call(ctx, arg) } catch (e) { return '' }
+    }
+    return v
+  }
+
+  const behavior = {
+    onShareAppMessage(res) {
+      const page = this
+      const o = cfgOf(page)
+      const out = {
+        title: value(o.title, res, page) || DEF_TITLE,
+        path: value(o.path, res, page) || '/pages/index/index'
+      }
+      // 不传 imageUrl 时微信自动截页面当封面；这里只在页面显式给了才覆盖
+      const img = value(o.imageUrl, res, page)
+      if (img) out.imageUrl = img
+      return out
+    }
+  }
+
+  const cfg0 = typeof opt === 'function' ? {} : (opt || {})
+  if (cfg0.timeline !== false) {
+    behavior.onShareTimeline = function () {
+      const page = this
+      const o = cfgOf(page)
+      // 朋友圈不支持自定义 path，只能往「当前页路径」上追加 query
+      return {
+        title: value(o.timelineTitle || o.title, null, page) || DEF_TITLE,
+        query: value(o.query, null, page) || ''
+      }
+    }
+  }
+  // 收藏（基础库 2.19+）；老版本自动忽略
+  behavior.onAddToFavorites = function () {
+    const page = this
+    const o = cfgOf(page)
+    return {
+      title: value(o.title, null, page) || DEF_TITLE,
+      query: value(o.query, null, page) || ''
+    }
+  }
+  return behavior
+}
+
 module.exports = {
   C, labelOf, itemOf, toDate, formatTime, fromNow, shortDate,
   distance, distanceText, money, rarityOf, initialOf, toast,
   requireMember, requireAdmin, requireRole, isAdminPlus,
-  showBusy, hideBusy
+  showBusy, hideBusy, shareBehavior
 }

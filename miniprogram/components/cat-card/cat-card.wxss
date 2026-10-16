@@ -41,5 +41,13 @@
   font-weight: 600;
   max-width: 300rpx;
 }
+/* 性别符号：粉♀ / 蓝♂，与绝育 tag 并列在名字后 */
+.name-row .sex {
+  font-size: 30rpx;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.name-row .sex.male { color: #3B82F6; }
+.name-row .sex.female { color: #EC4899; }
 .meta { margin: 8rpx 0 12rpx; }
 .tag-row { display: flex; flex-wrap: wrap; }

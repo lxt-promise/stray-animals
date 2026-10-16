@@ -1,22 +1,23 @@
 <view class="cat-card" wx:if="{{cat}}" bindtap="onTap">
   <view class="avatar">
-    <image wx:if="{{avatar}}" src="{{avatar}}" mode="aspectFill" binderror="onAvatarError" />
+    <image wx:if="{{avatar}}" src="{{avatar}}" mode="aspectFill" lazy-load="{{true}}" binderror="onAvatarError" />
     <text wx:else>🐱</text>
     <view class="rarity-dot" style="background: {{rarityItem.color}}"></view>
   </view>
   <view class="info">
     <view class="name-row">
       <text class="name ellipsis">{{cat.name}}</text>
-      <text class="tag {{statusItem.tag}}">{{statusItem.label}}</text>
+      <!-- 性别符号：♀ 粉 / ♂ 蓝，unknown 不显示（和参考样式一致） -->
+      <text class="sex {{cat.sex}}" wx:if="{{cat.sex === 'male' || cat.sex === 'female'}}">{{cat.sex === 'male' ? '♂' : '♀'}}</text>
+      <view class="tag {{statusItem.tag}}">{{statusItem.label}}</view>
     </view>
     <view class="meta small muted ellipsis">
-      {{patternLabel}} · {{cat.sex === 'male' ? '公' : (cat.sex === 'female' ? '母' : '性别未知')}}
-      <text wx:if="{{showSpot && cat.location && cat.location.name}}"> · {{cat.location.name}}</text>
+      {{patternLabel}}<text wx:if="{{showSpot && cat.location && cat.location.name}}"> · {{cat.location.name}}</text>
     </view>
     <view class="tag-row">
-      <text class="tag {{sterItem.tag}}">{{sterItem.label}}</text>
-      <text class="tag purple">{{rarityItem.label}}</text>
-      <text class="tag gray" wx:if="{{cat.sightingCount}}">目击 {{cat.sightingCount}}</text>
+      <view class="tag {{sterItem.tag}}">{{sterItem.label}}</view>
+      <view class="tag purple">{{rarityItem.label}}</view>
+      <view class="tag gray" wx:if="{{cat.sightingCount}}">目击 {{cat.sightingCount}}</view>
     </view>
   </view>
 </view>

@@ -35,10 +35,12 @@ public class JwtInterceptor implements HandlerInterceptor {
             "/api/stat/recent",
             "/api/schools",
             "/api/schools/*",
-            // 识别测试台：本地调试用的工具页，不需要登录（部署到公网前建议移除这三条）
+            // 识别服务健康检查：探活用，必须匿名
             "/api/vision/health",
-            "/api/vision/recognize",
-            "/api/vision/build-index",
+            // ⚠️ /api/vision/recognize 与 /api/vision/build-index 绝不能匿名：
+            //   recognize 的 url 参数直达识别服务无校验下载（未登录即可 SSRF 打内网/云元数据），
+            //   build-index 会清空并重建特征库（未登录即可破坏识别功能）。
+            //   两者改为登录后可用，更细的成员校验由 Service 层 CurrentUser 控制。
             "/uploads/**"
     );
 

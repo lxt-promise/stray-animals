@@ -99,6 +99,7 @@
 }
 
 .menu-item {
+  position: relative;      /* 给意见反馈的透明覆盖按钮做定位锚点 */
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -107,7 +108,30 @@
   font-size: 30rpx;
 }
 .menu-item:last-child { border-bottom: none; }
-.menu-item .arrow { color: var(--text-weak); font-size: 36rpx; }
+.menu-item .arrow { color: var(--text-weak); font-size: 36rpx; transition: transform .25s; }
+/* 展开态（我的打卡）：箭头旋转 90° 指向下方，并点色提示 */
+.menu-item .arrow.open { transform: rotate(90deg); color: var(--brand); }
+/* 我的打卡菜单项右侧：「共 N 次」+ 箭头 */
+.menu-right { display: flex; align-items: center; gap: 12rpx; }
+.my-count { font-size: 22rpx; color: var(--text-weak); }
+
+/* 客服会话按钮（open-type=contact）：视觉层由上面的 view 菜单项负责，
+   这里只留一个透明覆盖层 —— button 是原生组件，自身对齐行为不可控
+   （UA text-align:center 等），绝不能直接拿它当菜单项用。 */
+.contact-hit {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: transparent;
+  color: transparent;        /* 隐藏 button 自带文字，视觉走 view 里的文本 */
+  margin: 0;
+  padding: 0;
+  line-height: inherit;
+  font-size: 30rpx;
+}
+.contact-hit::after { border: none; }
 
 .tip {
   padding: 24rpx;

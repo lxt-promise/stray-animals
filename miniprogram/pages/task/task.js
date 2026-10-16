@@ -1,7 +1,7 @@
 const app = getApp()
-const { C, itemOf, requireMember, toast, showBusy, hideBusy } = require('../../utils/util.js')
+const { C, itemOf, requireMember, toast, showBusy, hideBusy, shareBehavior } = require('../../utils/util.js')
 
-Page({
+Page(Object.assign({
   data: {
     list: [],
     filter: 'open',
@@ -114,4 +114,11 @@ Page({
       toast(err.message)
     }
   }
-})
+// ↓ 任务页是**招募**入口：分享目标是「喊人来认领任务」，落地页回任务页。
+}, shareBehavior(function () {
+  const open = (this.data.list || []).filter(t => t.status === 'open').length
+  return {
+    title: open ? ('喵园有 ' + open + ' 个任务等人认领 🐾') : '喵园 · 校园猫互助任务',
+    path: '/pages/task/task'
+  }
+})))

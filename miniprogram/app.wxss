@@ -135,6 +135,16 @@ view, text, button, input, textarea, picker, image, scroll-view {
   box-shadow: var(--glow);
   letter-spacing: 1rpx;
 }
+
+/* <button class="btn">：微信 button 自带 14px 左右内边距等 UA 样式，会把文字顶偏。
+   统一改 flex 居中，保证任意场景（footer-bar、独立按钮）文字都在正中央。 */
+button.btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
 .btn::after { border: none; }
 .btn.btn-ghost {
   background: var(--brand-light);
@@ -165,10 +175,17 @@ view, text, button, input, textarea, picker, image, scroll-view {
 .btn[disabled] { opacity: .45; }
 
 /* ===================== 标签 ===================== */
+/* 不用 inline-flex：胶囊里是裸文本节点，匿名 flex item 的居中
+   在部分渲染器下不可靠（表现就是文字偏上/偏下）。
+   改 inline-block + line-height 撑满内容高度，文字垂直居中由行高保证。 */
+/* 状态胶囊：必须用在 <view> 上（<text> 是行内元素，盒模型样式不生效，
+   会出现在文字跑出背景条之外的现象）。居中靠 line-height 撑满内容区，
+   flex 行内靠 align-self + flex-shrink:0 + nowrap 防压缩防换行。 */
 .tag {
-  display: inline-flex;
-  align-items: center;
+  display: inline-block;
+  box-sizing: border-box;
   height: 42rpx;
+  line-height: 38rpx;      /* 高度 - 上下各 2rpx 边框 */
   padding: 0 16rpx;
   border-radius: 21rpx;
   font-size: 22rpx;
@@ -176,6 +193,11 @@ view, text, button, input, textarea, picker, image, scroll-view {
   color: var(--brand-dark);
   border: 2rpx solid rgba(249, 115, 22, .22);
   margin-right: 12rpx;
+  vertical-align: middle;
+  text-align: center;
+  white-space: nowrap;
+  flex-shrink: 0;          /* flex 行内不被压缩 */
+  align-self: center;      /* flex 行内垂直居中 */
 }
 .tag.ok     { background: rgba(47, 163, 107, .12);  color: var(--ok);     border-color: rgba(47, 163, 107, .24); }
 .tag.warn   { background: rgba(224, 72, 60, .12);   color: var(--warn);   border-color: rgba(224, 72, 60, .24); }
@@ -183,6 +205,10 @@ view, text, button, input, textarea, picker, image, scroll-view {
 .tag.gray   { background: rgba(146, 88, 32, .07);   color: var(--text-sub); border-color: var(--card-line); }
 .tag.purple { background: rgba(168, 85, 247, .12);  color: var(--purple); border-color: rgba(168, 85, 247, .24); }
 .tag.gold   { background: rgba(234, 179, 8, .14);   color: #A16207;       border-color: rgba(234, 179, 8, .28); }
+
+/* 投喂状态标签：橙 = 欠投喂（需要行动），绿 = 近期已投喂 */
+.tag.feed-warn { background: rgba(245, 158, 11, .16); color: #B45309; border-color: rgba(245, 158, 11, .38); }
+.tag.feed-ok   { background: rgba(34, 197, 94, .14);  color: #15803D; border-color: rgba(34, 197, 94, .3); }
 
 /* ===================== 空状态 ===================== */
 .empty {
@@ -317,6 +343,9 @@ view, text, button, input, textarea, picker, image, scroll-view {
 .muted { color: var(--text-sub); }
 .small { font-size: 24rpx; }
 .bold { font-weight: 600; }
+/* 按压反馈：可点击胶囊/链接统一挂 hover-class="pressed"。
+   <text> 不是交互宿主（无 hover 态、点击热区不稳定），可点元素一律用 <view>。 */
+.pressed { opacity: .68; }
 .mt { margin-top: 24rpx; }
 .mb { margin-bottom: 24rpx; }
 .flex { display: flex; align-items: center; }

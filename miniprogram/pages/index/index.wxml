@@ -42,7 +42,7 @@
         </view>
       </view>
       <view class="ai-meta">
-        <text class="mono">档案库 {{overview ? overview.catCount : 0}} 只</text>
+        <text class="mono">档案库 {{overview ? overview.catCount : (loading ? '…' : 0)}} 只</text>
         <view class="sep"></view>
         <text class="mono">平均响应 0.8s</text>
         <view class="sep"></view>
@@ -100,6 +100,15 @@
       </view>
     </view>
   </view>
+  <!-- 统计骨架：数据在路上时先占住位置，避免统计卡到时把下方内容整块往下推 -->
+  <view class="stat-grid" wx:elif="{{loading}}">
+    <view class="item"><view class="stat-card skeleton"><view class="num sk"></view><view class="lbl sk"></view></view></view>
+    <view class="item"><view class="stat-card skeleton"><view class="num sk"></view><view class="lbl sk"></view></view></view>
+    <view class="item"><view class="stat-card skeleton"><view class="num sk"></view><view class="lbl sk"></view></view></view>
+    <view class="item"><view class="stat-card skeleton"><view class="num sk"></view><view class="lbl sk"></view></view></view>
+    <view class="item"><view class="stat-card skeleton"><view class="num sk"></view><view class="lbl sk"></view></view></view>
+    <view class="item"><view class="stat-card skeleton"><view class="num sk"></view><view class="lbl sk"></view></view></view>
+  </view>
 
   <!-- 快捷操作 -->
   <view class="quick-row mt">
@@ -131,12 +140,13 @@
   <view class="card mt" wx:if="{{overview && overview.recent.length}}">
     <view class="card-title">
       最新目击
-      <text class="more" bindtap="goSightingList">查看全部 ›</text>
+      <view class="more" bindtap="goSightingList" hover-class="pressed">查看全部 ›</view>
     </view>
     <block wx:for="{{overview.recent}}" wx:key="_id">
       <view class="feed-item" bindtap="goCat" data-id="{{item.catId}}" wx:if="{{item.catId}}">
         <view class="feed-avatar">
-          <image wx:if="{{item.photos[0]}}" src="{{item.photos[0]}}" mode="aspectFill" />
+          <image wx:if="{{item.photosSmall[0]}}" src="{{item.photosSmall[0]}}" mode="aspectFill"
+                 lazy-load="{{true}}" data-i="{{index}}" binderror="onPhotoErr" />
           <text wx:else>🐱</text>
         </view>
         <view class="feed-main">

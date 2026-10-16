@@ -5,8 +5,10 @@ ffmpeg 是自建服务相对云函数的最大优势 —— 微信云函数的 N
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import shutil
+import socket
 import subprocess
 import tempfile
 from pathlib import Path
@@ -21,6 +23,9 @@ log = logging.getLogger("catcampus.media")
 
 _client: Optional[httpx.Client] = None
 
+# 云元数据地址 / 主机名：无论配置如何都拒绝（SSRF 的头号目标）
+_METADATA_HOSTS = {"metadata.google.internal", "metadata.goog", "instance-data"}
+
 
 def _http() -> httpx.Client:
     global _client
@@ -29,16 +34,78 @@ def _http() -> httpx.Client:
     return _client
 
 
+def _assert_safe_url(url: str) -> None:
+    """SSRF 纵深防御（Java 侧已有同源校验，这里是第二道闸）。
+
+    - 只允许 http/https（挡 file://、gopher:// 等）
+    - 始终拒绝云元数据地址（169.254.0.0/16 与已知元数据主机名）
+    - BLOCK_PRIVATE_URLS=true 时额外拒绝全部私有/回环/链路本地地址
+      （默认关：本地部署的 asset-base-url 常是 127.0.0.1，开了会误伤）
+    """
+    from urllib.parse import urlparse
+
+    u = urlparse(url)
+    if u.scheme not in ("http", "https"):
+        raise ValueError(f"不允许的 URL 协议: {u.scheme!r}")
+    host = (u.hostname or "").lower()
+    if not host:
+        raise ValueError("URL 缺少主机名")
+    if host in _METADATA_HOSTS:
+        raise ValueError("不允许访问云元数据地址")
+
+    def _reject(ip_text: str) -> bool:
+        try:
+            ip = ipaddress.ip_address(ip_text)
+        except ValueError:
+            return False
+        if ip.is_link_local:
+            return True
+        if config.BLOCK_PRIVATE_URLS and (ip.is_private or ip.is_loopback):
+            return True
+        return False
+
+    # 字面量 IP 直接判断；域名做一次解析（生产可换 DoH/固定 Egress）
+    if _reject(host):
+        raise ValueError(f"不允许的内网地址: {host}")
+    try:
+        ip_text = socket.gethostbyname(host)
+    except Exception:
+        return   # 解析失败交给下载环节报错，不在这里硬拦
+    if _reject(ip_text):
+        raise ValueError(f"不允许的内网地址: {host} -> {ip_text}")
+
+
+def _download(url: str, max_bytes: int) -> bytes:
+    """带大小上限的下载。历史上 r.content 一次性全量入内存，
+    一个几百 MB 的 URL 就能打爆容器内存限额。"""
+    _assert_safe_url(url)
+    with _http().stream("GET", url) as r:
+        r.raise_for_status()
+        length = r.headers.get("content-length")
+        if length and int(length) > max_bytes:
+            raise ValueError(f"素材超过大小上限（{int(length)} > {max_bytes} 字节）")
+        chunks = []
+        total = 0
+        for chunk in r.iter_bytes():
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError(f"素材超过大小上限（>{max_bytes} 字节）")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+
 def fetch_image(url: str) -> Optional[Image.Image]:
     """下载一张图。失败返回 None（调用方负责降级），不抛异常打断主流程。"""
     if not url:
         return None
     try:
-        r = _http().get(url)
-        r.raise_for_status()
-        im = Image.open(io_bytes(r.content))
-        im.load()
-        return im.convert("RGB")
+        data = _download(url, config.MAX_IMAGE_BYTES)
+        # with 保证文件句柄关闭：convert 产生新图后原图 fp 不会泄漏
+        # （Linux 下能删打开中的文件但 inode 不释放，反复调视频识别会累积）
+        import io
+
+        with Image.open(io.BytesIO(data)) as im:
+            return im.convert("RGB")
     except Exception as e:  # noqa: BLE001
         log.warning("下载失败 %s：%s", url[:80], e)
         return None
@@ -67,9 +134,7 @@ def extract_frames(video_url: str, n: int) -> List[Image.Image]:
     tmp = Path(tempfile.mkdtemp(prefix="catcampus_"))
     src = tmp / "v.bin"
     try:
-        r = _http().get(video_url)
-        r.raise_for_status()
-        src.write_bytes(r.content)
+        src.write_bytes(_download(video_url, config.MAX_VIDEO_BYTES))
 
         # 先问出视频时长，再按「总时长 / 目标帧数」定抽帧速率，保证均匀覆盖全片
         fps_cmd = [
@@ -100,9 +165,9 @@ def extract_frames(video_url: str, n: int) -> List[Image.Image]:
         imgs = []
         for p in sorted(out_dir.glob("f_*.jpg")):
             try:
-                im = Image.open(p)
-                im.load()
-                imgs.append(im.convert("RGB"))
+                # with 关句柄：convert 后原图 fp 不泄漏（见 fetch_image 注释）
+                with Image.open(p) as im:
+                    imgs.append(im.convert("RGB"))
             except Exception:  # noqa: BLE001
                 continue
         return imgs

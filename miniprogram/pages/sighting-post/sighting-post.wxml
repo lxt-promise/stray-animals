@@ -31,7 +31,7 @@
       </view>
     </view>
     <view class="small muted" style="margin-top:12rpx">
-      照片是核实猫只身份的关键（也用于图鉴），最多 6 张
+      照片用于社团核实猫只身份与健康状况，最多 6 张
     </view>
   </view>
 
@@ -52,6 +52,22 @@
   <view class="card">
     <view class="card-title">状况</view>
     <view class="form-item">
+      <text class="label">投喂状态</text>
+      <picker mode="selector" range="{{feedOptions}}" range-key="label" value="{{feedIndex}}" bindchange="onFeedPick">
+        <view>{{feedOptions[feedIndex].label}} ›</view>
+      </picker>
+    </view>
+    <!-- 投喂状态动态提示：选中「本人投喂」时说明照片佐证奖励，避免用户不知道有图能多赚 -->
+    <view class="feed-hint" wx:if="{{feedValue === 'fed' && !photos.length}}">
+      上传照片作为投喂佐证，可额外获得猫粮值；不上传则只有基础投喂奖励
+    </view>
+    <view class="feed-hint" wx:if="{{feedValue === 'fed' && photos.length}}">
+      已选 {{photos.length}} 张照片，提交后「投喂照片」奖励自动生效
+    </view>
+    <view class="feed-hint" wx:if="{{feedValue === 'fedByOther'}}">
+      记录「已被其他人投喂」，提醒其他同学避免重复投喂
+    </view>
+    <view class="form-item">
       <text class="label">健康观察</text>
       <picker mode="selector" range="{{healthOptions}}" range-key="label" value="{{healthIndex}}" bindchange="onHealthPick">
         <view>{{healthOptions[healthIndex].label}} ›</view>
@@ -61,9 +77,26 @@
       <text class="label">数量</text>
       <input type="number" value="{{count}}" bindinput="changeCount" style="width:120rpx" />
     </view>
+    <!-- ⚠️ 合规改造（2026-10-16 审核驳回）：原「描述」自由文本框已移除。
+         审核认定「用户自行生成文字 + 图片 + 公开可见」＝ 社交-笔记（个人主体未开放类目）。
+         改为**结构化行为标签多选**：用户只能从预设项里挑，不再自由创作文字。
+         形态从「写笔记」变成「登记猫况」，与「工具-信息查询」类目相符。
+         如需补充，仅保留极短（≤20字）的备注且默认不公开。 -->
     <view class="form-item col">
-      <text class="label">描述</text>
-      <textarea placeholder="它在做什么？精神状态如何？" value="{{note}}" data-key="note" bindinput="onInput" />
+      <text class="label">见到它在做什么</text>
+      <view class="tag-picker">
+        <view
+          wx:for="{{behaviorOptions}}"
+          wx:key="value"
+          class="tag-chip {{item.on ? 'on' : ''}}"
+          data-value="{{item.value}}"
+          bindtap="toggleBehavior"
+        >{{item.label}}</view>
+      </view>
+    </view>
+    <view class="form-item col">
+      <text class="label">补充（选填，最多 20 字）</text>
+      <input placeholder="如：右前腿有伤" maxlength="20" value="{{note}}" data-key="note" bindinput="onInput" />
     </view>
   </view>
 

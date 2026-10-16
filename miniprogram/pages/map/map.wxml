@@ -36,27 +36,49 @@
     <text wx:else>还没有绑定学校，地图展示全部点位</text>
   </view>
 
-  <!-- 右侧悬浮按钮组 -->
+  <!-- 右侧悬浮按钮组（图例入口已改为左下角「图例说明」胶囊，不再放这里） -->
   <view class="fab-col">
     <view class="float-btn" bindtap="resetView">🏫</view>
     <view class="float-btn" bindtap="locateMe">◎</view>
-    <view class="float-btn" bindtap="toggleLegend">ℹ️</view>
   </view>
 
-  <!-- 点位说明 -->
-  <view class="legend-card" wx:if="{{showLegend}}" bindtap="toggleLegend">
-    <view class="lg-title bold">点位说明</view>
-    <view class="lg-line">
-      <text class="tag ok">已绝育</text>
-      <text class="small muted">健康可控</text>
-      <text class="tag warn" style="margin-left:24rpx">未绝育</text>
-      <text class="small muted">待关注 / 待抓捕</text>
+  <!-- 图例入口（左下角白底胶囊；底部「附近猫咪」列表展开时整体上移避开面板） -->
+  <view class="legend-entry {{showList ? 'above-sheet' : ''}}" bindtap="toggleLegend">
+    <view class="le-dot done"></view>
+    <text class="le-txt">图例说明</text>
+  </view>
+
+  <!-- 点位图例说明（紧凑小卡，左下角；点击任意处关闭） -->
+  <view class="legend-card {{showList ? 'above-sheet' : ''}}" wx:if="{{showLegend}}" bindtap="toggleLegend">
+    <view class="lg-head">
+      <view class="lg-title bold">点位图例说明</view>
+      <view class="lg-x">✕</view>
+    </view>
+    <view class="lg-row">
+      <image class="lg-icon" src="/images/marker-cartoon-tabby-done.png" mode="aspectFit" />
+      <image class="lg-icon" src="/images/marker-cartoon-calico-todo.png" mode="aspectFit" />
+      <view class="lg-txt"><text class="bold">花色头像</text>：按猫咪毛色绘制，与猫谱花色一一对应</view>
+    </view>
+    <view class="lg-row">
+      <view class="le-dot done"></view>
+      <view class="lg-txt"><text class="bold">绿点</text>：已绝育 · 健康可控</view>
+    </view>
+    <view class="lg-row">
+      <view class="le-dot todo"></view>
+      <view class="lg-txt"><text class="bold">橙点</text>：未绝育 · 待关注 / 待抓捕</view>
+    </view>
+    <view class="lg-row multi">
+      <text class="lg-emoji">🍚</text>
+      <view class="lg-txt"><text class="bold">投喂气泡</text>：超过 {{feedAlertHours}} 小时没投喂的猫，
+        头像旁<text class="bold">常显</text>橙色「未投喂」气泡；{{feedAlertHours}} 小时内已投喂的不显示，点击才出气泡</view>
+    </view>
+    <view class="lg-row">
+      <text class="lg-emoji">👆</text>
+      <view class="lg-txt"><text class="bold">点击头像</text>：查看档案、最近投喂与巡护记录</view>
     </view>
     <view class="lg-note small muted">
-      地图默认只展示当前校园范围；幼猫与病猫的精确坐标对非社团成员做模糊化处理 ——
-      吸取街猫直播被虐猫者利用的教训，避免聚集点被别有用心的人定位。
+      注：幼猫 / 病猫坐标对非成员模糊处理，保护猫咪安全；寄养 / 休学 / 毕业 / 失踪的猫不参与投喂提醒。
     </view>
-    <view class="lg-close small muted">点击任意处关闭</view>
   </view>
 
   <!-- 底部猫点位列表 -->
@@ -66,29 +88,123 @@
       <text class="handle-arrow">{{showList ? '收起' : '展开'}}</text>
     </view>
     <scroll-view scroll-y class="sheet-list" wx:if="{{showList}}">
+      <!-- 单一列表渲染，靠下标决定显隐：前 2 只始终显示，其余仅展开时显示。
+           为什么不在 WXML 里 slice：mustache 编译期白名单不支持方法调用。
+           为什么不用 <template>：模板内拿不到外层 wx:for 的 index，
+           而 onSheetAvatarErr 需要精确下标回查 cats（错位会兜错图）。 -->
       <view
         class="sheet-item {{activeId === item._id ? 'on' : ''}}"
         wx:for="{{cats}}"
         wx:key="_id"
+        wx:if="{{index < NEAR_TOP_N || listExpanded}}"
         data-id="{{item._id}}"
         bindtap="goDetail"
       >
         <view class="sheet-avatar">
-          <image wx:if="{{item.avatar}}" src="{{item.avatar}}" mode="aspectFill" />
+          <image wx:if="{{item.avatar}}" src="{{item.avatar}}" mode="aspectFill"
+                 lazy-load="{{true}}" data-i="{{index}}" binderror="onSheetAvatarErr" />
           <text wx:else>🐱</text>
         </view>
         <view class="sheet-info">
           <view class="flex">
             <text class="bold">{{item.name}}</text>
-            <text class="tag {{item.sterilized === 'yes' ? 'ok' : 'warn'}}">
+            <view class="tag {{item.sterilized === 'yes' ? 'ok' : 'warn'}}">
               {{item.sterilized === 'yes' ? '已绝育' : '未绝育'}}
-            </text>
+            </view>
+            <view class="tag {{item.feedPending ? 'feed-warn' : 'feed-ok'}}" wx:if="{{item.feedLabel}}">
+              🍚 {{item.feedLabel}}
+            </view>
           </view>
           <view class="small muted">{{item.spot || '校园内'}}<text wx:if="{{item.dist}}"> · {{item.dist}}</text></view>
         </view>
+      </view>
+
+      <!-- 折叠开关：还有更多时显示「查看更多」，已展开显示「收起」 -->
+      <view class="sheet-more" wx:if="{{cats.length > NEAR_TOP_N && !listExpanded}}" bindtap="toggleExpandNear">
+        查看更多（还有 {{cats.length - NEAR_TOP_N}} 只）⌄
+      </view>
+      <view class="sheet-more" wx:if="{{cats.length > NEAR_TOP_N && listExpanded}}" bindtap="toggleExpandNear">
+        收起 ⌃
       </view>
     </scroll-view>
   </view>
 
   <view class="fab-small" bindtap="goSighting">打卡</view>
+
+  <!-- 猫咪信息弹窗：点地图上的卡通头像弹出（档案 + 投喂/巡护记录） -->
+  <view class="popup-mask" wx:if="{{popupOpen}}" bindtap="closePopup"></view>
+  <view class="cat-popup" wx:if="{{popupOpen}}" catchtap="noop">
+    <view class="popup-grip" bindtap="closePopup"></view>
+
+    <!-- 加载中 -->
+    <view class="popup-loading" wx:if="{{popupLoading}}">
+      <text class="emoji">🐾</text>正在打开档案…
+    </view>
+
+    <!-- 加载失败 -->
+    <view class="popup-loading" wx:if="{{!popupLoading && popupError}}">
+      <text class="emoji">😿</text>{{popupError}}
+      <view class="popup-btn plain" bindtap="closePopup">关闭</view>
+    </view>
+
+    <block wx:if="{{!popupLoading && !popupError && popupCat}}">
+      <!-- 头部：头像 + 名字 + 状态 -->
+      <view class="popup-head">
+        <view class="popup-avatar">
+          <image wx:if="{{popupCat.avatar}}" src="{{popupCat.avatar}}" mode="aspectFill"
+                 binderror="onPopupAvatarErr" />
+          <text wx:else>🐱</text>
+        </view>
+        <view class="popup-headinfo">
+          <view class="name-row">
+            <text class="p-name ellipsis">{{popupCat.name}}</text>
+            <text class="sex {{popupCat.sex}}"
+              wx:if="{{popupCat.sex === 'male' || popupCat.sex === 'female'}}">{{popupCat.sex === 'male' ? '♂' : '♀'}}</text>
+          </view>
+          <view class="tag-row">
+            <view class="tag {{popupCat.sterTag}}">{{popupCat.sterLabel}}</view>
+            <view class="tag gray">{{popupCat.statusLabel}}</view>
+            <view class="tag gray" wx:if="{{popupCat.sightingCount}}">目击 {{popupCat.sightingCount}}</view>
+          </view>
+        </view>
+      </view>
+
+      <!-- 常驻信息：花纹 / 性格 / 位置 -->
+      <view class="popup-section">
+        <view class="sec-title">常驻信息</view>
+        <view class="tag-row">
+          <view class="tag purple">{{popupCat.patternLabel}}</view>
+          <view class="tag info" wx:for="{{popupCat.charLabels}}" wx:key="*this">{{item}}</view>
+          <view class="tag gray" wx:if="{{popupCat.spot}}">📍 {{popupCat.spot}}</view>
+        </view>
+        <view class="small muted last-fed" wx:if="{{popupCat.lastFedText}}">
+          🍚 最近投喂：{{popupCat.lastFedText}}<text wx:if="{{popupCat.lastFedBy}}">（{{popupCat.lastFedBy}}）</text>
+        </view>
+      </view>
+
+      <!-- 巡护记录 -->
+      <view class="popup-section">
+        <view class="flex-between">
+          <view class="sec-title">最近巡护记录</view>
+          <text class="small muted">共 {{popupTotal}} 条</text>
+        </view>
+        <view class="empty small muted" wx:if="{{!popupRecords.length}}">还没有巡护记录，来打卡当第一个吧</view>
+        <view class="rec" wx:for="{{popupRecords}}" wx:key="_id">
+          <view class="flex-between">
+            <text class="small muted">{{item.timeText}}</text>
+            <view class="tag {{item.feedTag}} small">{{item.feedLabel}}</view>
+          </view>
+          <view class="small muted" wx:if="{{item.note}}">{{item.note}}</view>
+          <image class="rec-photo" wx:if="{{item.photo}}" src="{{item.photo}}" mode="aspectFill" />
+        </view>
+        <view class="more-link" bindtap="goDetailFromPopup">查看完整档案与全部记录 ›</view>
+      </view>
+
+      <!-- 底部操作 -->
+      <view class="popup-actions">
+        <view class="popup-btn plain" bindtap="goNavFromPopup">📍 导航到这儿</view>
+        <view class="popup-btn primary" bindtap="goDetailFromPopup">查看档案</view>
+      </view>
+    </block>
+  </view>
 </view>

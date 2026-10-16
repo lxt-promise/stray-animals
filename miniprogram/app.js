@@ -8,6 +8,8 @@ App({
     openid: '',
     user: null,       // { _id, role, schoolId, nickName, avatarUrl, points, catCount }
     school: null,     // { _id, name, campus, center: {lat,lng}, bounds }
+    /** 启动时由 homeInit 一并带回来的首页概览；首页直接消费，省掉一次云调用 */
+    homeOverview: null,
     ready: false
   },
 
@@ -26,7 +28,7 @@ App({
       // 仍放行页面渲染（否则 ensureReady 永远 pending，整页按钮都会“没反应”）；
       // 云调用会明确抛错并 toast，方便定位，而不是静默卡死。
       this.globalData.ready = true
-      if (this._readyCallback) this._readyCallback()
+      this._flushReady()
       return
     }
     wx.cloud.init({ env: ENV_ID, traceUser: true })
@@ -35,22 +37,35 @@ App({
 
   async _boot() {
     try {
-      const user = await this.login()
-      this.globalData.user = user
-      this.globalData.openid = user.openid
-      if (user.schoolId) {
-        const school = await this.callApi('getSchool', { schoolId: user.schoolId })
-        this.globalData.school = school
-      }
+      // 快路径：一次云调用拿齐 user + school + 首页概览。
+      // 旧链路是 login → getSchool → getOverview 三次串行，冷启动首页统计要等三轮。
+      const pack = await this.callApi('homeInit', {})
+      this.globalData.user = pack.user
+      this.globalData.openid = (pack.user && pack.user.openid) || ''
+      this.globalData.school = pack.school
+      this.globalData.homeOverview = pack.overview
     } catch (e) {
-      console.error('[boot] 初始化失败', e)
-      wx.showToast({ title: '登录失败：' + (e.message || '未知错误'), icon: 'none' })
+      // 回落：老链路逐项拉。homeInit 是新接口，线上云函数还没部署时走这里，
+      // 不至于因为「后端没更新」就登录不上。
+      console.warn('[boot] homeInit 失败，回落逐项登录', e && e.message)
+      try {
+        const user = await this.login()
+        this.globalData.user = user
+        this.globalData.openid = user.openid
+        if (user.schoolId) {
+          const school = await this.callApi('getSchool', { schoolId: user.schoolId })
+          this.globalData.school = school
+        }
+      } catch (e2) {
+        console.error('[boot] 初始化失败', e2)
+        wx.showToast({ title: '登录失败：' + ((e2 && e2.message) || '未知错误'), icon: 'none' })
+      }
     } finally {
       // 必须保证 ready 一定被置位：否则 ensureReady() 永远 pending，
       // 各页面 await 卡死、user 拿不到，表现为「变成爱猫同学 + 数据像全没了」。
       // 因此这里不再调用任何可抛错的副作用（tabBar 由 custom-tab-bar 自行同步）。
       this.globalData.ready = true
-      if (this._readyCallback) this._readyCallback()
+      this._flushReady()
     }
   },
 
@@ -82,9 +97,22 @@ App({
   },
 
   // 等待全局初始化完成（页面 onLoad 里 await）
+  // ⚠️ 必须用回调数组：早期写法 `this._readyCallback = cb` 是覆盖语义——
+  // 冷启动时两个页面并发 await（首页 onLoad + 用户 1~2 秒内切到猫谱/地图），
+  // 第二次调用会覆盖第一次的回调，先 await 的那个 promise 永远 pending，
+  // 页面卡在加载态直到手动下拉刷新。慢网络下必现。
   ensureReady() {
     if (this.globalData.ready) return Promise.resolve(this.globalData.user)
-    return new Promise(resolve => { this._readyCallback = () => resolve(this.globalData.user) })
+    return new Promise(resolve => {
+      if (!this._readyCbs) this._readyCbs = []
+      this._readyCbs.push(resolve)
+    })
+  },
+
+  _flushReady() {
+    const cbs = this._readyCbs || []
+    this._readyCbs = []
+    cbs.forEach(cb => cb(this.globalData.user))
   },
 
   isMember() {

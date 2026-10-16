@@ -3,7 +3,9 @@ server:
 
 spring:
   profiles:
-    active: mysql
+    # 默认 H2 开箱即跑（与 README 承诺一致）；上生产用 --spring.profiles.active=mysql
+    # 或设环境变量 CAMPUS_DB_PROFILE=mysql。早期写死 mysql 会导致没装 MySQL 的机器启动即失败。
+    active: ${CAMPUS_DB_PROFILE:h2}
   servlet:
     multipart:
       max-file-size: 10MB
@@ -17,8 +19,9 @@ spring:
         format_sql: false
 
 catcampus:
-  # JWT 签名密钥，生产环境务必修改（可用环境变量 CAMPUS_JWT_SECRET 覆盖）
-  jwt-secret: catcampus-dev-secret-change-me-2026
+  # JWT 签名密钥，生产环境务必用环境变量 CAMPUS_JWT_SECRET 覆盖
+  # （仓库里的默认值人人可见，忘改等于 JWT 可被离线伪造 admin）
+  jwt-secret: ${CAMPUS_JWT_SECRET:catcampus-dev-secret-change-me-2026}
   jwt-expire-hours: 720
   # 图片上传目录（相对路径则位于项目根目录）
   upload-dir: ./uploads
@@ -54,14 +57,15 @@ spring:
 
 ---
 # MySQL：java -jar app.jar --spring.profiles.active=mysql
+# 凭证一律走环境变量注入，仓库内不落明文
 spring:
   config:
     activate:
       on-profile: mysql
   datasource:
-    url: jdbc:mysql://127.0.0.1:3306/catcampus?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    url: ${CAMPUS_DB_URL:jdbc:mysql://127.0.0.1:3306/catcampus?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
     driver-class-name: com.mysql.cj.jdbc.Driver
-    username: root
-    password: 123456
+    username: ${CAMPUS_DB_USER:root}
+    password: ${CAMPUS_DB_PASSWORD:123456}
   jpa:
     database-platform: org.hibernate.dialect.MySQLDialect

@@ -1,7 +1,8 @@
 const app = getApp()
-const { C, fromNow, showBusy, hideBusy, isAdminPlus } = require('../../utils/util.js')
+const { C, fromNow, showBusy, hideBusy, isAdminPlus, shareBehavior } = require('../../utils/util.js')
+const photo = require('../../utils/photo.js')
 
-Page({
+Page(Object.assign({
   data: {
     user: null,
     school: null,
@@ -20,6 +21,8 @@ Page({
     schools: [],
     // 工作台（仅超管）：从底部 tab 迁移到「我的」页
     wbOpen: false,
+    // 我的打卡：从独立卡片迁移为菜单项，点击菜单项后才展开记录（默认收起）
+    myCheckinOpen: false,
     wb: { pendingSighting: 0, todoTnr: 0, openTask: 0, balance: '0.00' },
     // 地图范围：缩放级别（越大越近，校园可视范围越小）
     schoolScale: 16,
@@ -43,6 +46,8 @@ Page({
   },
 
   onShow() {
+    // tabBar 选中态兜底（见 index.js onShow 注释）
+    if (typeof this.getTabBar === 'function' && this.getTabBar()) this.getTabBar().refresh()
     if (app.globalData.ready) this.load()
   },
 
@@ -56,18 +61,6 @@ Page({
       await app.ensureReady()
       const user = app.globalData.user
       let school = app.globalData.school
-      // 学校信息以云端为准：globalData 只在启动/创建/绑定时更新，
-      // 可能落后于「刚在别处（或本端）改过的地图范围」。这里按 id 拉最新，
-      // 避免 picker 显示旧 scale、地图页读到旧 bounds 造成「改了又变回去」。
-      if (school && school._id) {
-        try {
-          const fresh = await app.callApi('getSchool', { schoolId: school._id })
-          if (fresh) {
-            school = fresh
-            app.globalData.school = fresh
-          }
-        } catch (e) { /* 拉取失败则用缓存 */ }
-      }
       this.setData({
         user,
         school,
@@ -76,29 +69,58 @@ Page({
         isSuper: !!(user && user.isSuper),
         isAdminPlus: isAdminPlus(app)
       })
-      // 同步学校的地图缩放级别到 picker
-      if (school && school.scale) {
-        const idx = this.data.scaleOptions.map(o => o.value).indexOf(school.scale)
-        this.setData({
-          schoolScale: school.scale,
-          scaleIndex: idx >= 0 ? idx : 2
-        })
+      this.syncUserAvatar()
+      // 学校信息以云端为准：globalData 只在启动/创建/绑定时更新，
+      // 可能落后于「刚在别处（或本端）改过的地图范围」。这里按 id 拉最新，
+      // 避免 picker 显示旧 scale、地图页读到旧 bounds 造成「改了又变回去」。
+      //
+      // 下面四件事互不依赖（listDex 只用 user.catSeen，同步可取），一次性并行：
+      // 原来是 getSchool → listSightings → loadDex → loadWorkbench 四次串行往返，
+      // 「我的」页要等 3~4 个 RTT 才出全；并行后约等于单次 RTT。
+      const jobs = []
+      if (school && school._id) {
+        jobs.push(
+          app.callApi('getSchool', { schoolId: school._id })
+            .then(fresh => {
+              if (fresh) {
+                school = fresh
+                app.globalData.school = fresh
+              }
+            })
+            .catch(() => { /* 拉取失败则用缓存 */ })
+        )
       }
       if (user) {
-        const res = await app.callApi('listSightings', { mine: true, size: 20 })
         const seenIds = user.catSeen || []
-        this.setData({
-          mySightings: res.list.map(s => Object.assign({}, s, { timeText: fromNow(s.createdAt) })),
-          stats: {
-            points: user.points || 0,
-            sightingCount: user.sightingCount || 0,
-            catSeen: seenIds.length
-          }
-        })
-        await this.loadDex(seenIds)
+        jobs.push(
+          app.callApi('listSightings', { mine: true, size: 20 }).then(res => {
+            const raw = res.list.map(s => Object.assign({}, s, { timeText: fromNow(s.createdAt) }))
+            this.setData({
+              // 打卡照片同样走 https 缩略（原图慢 + cloud:// 在开发者工具里解析不了）
+              mySightings: photo.hydrateCats(raw, { photoPx: 320, full: true },
+                view => this.setData({ mySightings: view })),
+              stats: {
+                points: user.points || 0,
+                sightingCount: user.sightingCount || 0,
+                catSeen: seenIds.length
+              }
+            })
+          })
+        )
+        jobs.push(this.loadDex(seenIds))
+        // 管理员及以上才拉工作台概览；失败不影响页面主体
+        if (isAdminPlus(app)) jobs.push(this.loadWorkbench())
       }
-      // 管理员及以上才拉工作台概览；失败不影响页面主体
-      if (user && this.data.isAdminPlus) await this.loadWorkbench()
+      await Promise.all(jobs)
+      // getSchool 可能带回更新的学校信息（含范围/缩放），与 picker 一起同步
+      const patch = {}
+      if (school !== this.data.school) patch.school = school
+      if (school && school.scale) {
+        const idx = this.data.scaleOptions.map(o => o.value).indexOf(school.scale)
+        patch.schoolScale = school.scale
+        patch.scaleIndex = idx >= 0 ? idx : 2
+      }
+      if (Object.keys(patch).length) this.setData(patch)
     } catch (e) {
       console.error(e)
       // 不再静默吞错：数据加载失败要让用户看到原因，否则表现为“数据全没了”
@@ -140,6 +162,11 @@ Page({
 
   toggleWb() {
     this.setData({ wbOpen: !this.data.wbOpen })
+  },
+
+  // 我的打卡：菜单项点击 → 展开/收起记录卡片（数据在 load() 时已拉好，展开无延迟）
+  toggleMyCheckin() {
+    this.setData({ myCheckinOpen: !this.data.myCheckinOpen })
   },
 
   onInput(e) {
@@ -295,7 +322,23 @@ Page({
   },
 
   go(e) {
-    wx.navigateTo({ url: e.currentTarget.dataset.url })
+    const url = e.currentTarget.dataset.url
+    // 纵深防御：tabBar 页（index/cats/map/mine）用 navigateTo 会被微信静默拒绝，
+    // 表现为「点了没反应」。命中 tabBar 页自动改走 switchTab。
+    const TAB_PAGES = ['/pages/index/index', '/pages/cats/cats', '/pages/map/map', '/pages/mine/mine']
+    const bare = (url || '').split('?')[0]
+    if (TAB_PAGES.indexOf(bare) >= 0) {
+      wx.switchTab({ url: bare })
+      return
+    }
+    wx.navigateTo({ url })
+  },
+
+  // 目击建档入口：cats 是 tabBar 页，且要带 tab 参数 —— switchTab 不支持 query，
+  // 与首页「最新动态」同一模式：先写 globalData，由 cats 页 onShow 消费
+  goCatsSighting() {
+    app.globalData.catsTab = 'sighting'
+    wx.switchTab({ url: '/pages/cats/cats' })
   },
 
   goCat(e) {
@@ -308,11 +351,21 @@ Page({
       const res = await app.callApi('listCats', { size: 8 })
       const list = res.list || []
       const dexTotal = res.total || list.length
-      const dex = list.slice(0, 8).map(c => ({
+      // 图鉴头像必须先换 https 再渲染：直接把 cloud:// fileID 塞进 <image>，
+      // 开发者工具会报 pageframe 加载失败、他人上传的私有文件也读不出来
+      //（表现：同一排里自己的猫有图、别人的猫是空框）。
+      const raw = list.slice(0, 8).map(c => ({
         id: c._id,
         name: c.name,
         avatar: c.avatar,
         unlocked: seenIds.indexOf(c._id) >= 0
+      }))
+      const view = await photo.hydrateCatsAsync(raw, { px: 200 })
+      const dex = view.map(v => ({
+        id: v.id,
+        name: v.name,
+        avatar: v.avatar || '',
+        unlocked: v.unlocked
       }))
       this.setData({
         dex,
@@ -330,20 +383,63 @@ Page({
     wx.previewImage({ current: e.currentTarget.dataset.url, urls: e.currentTarget.dataset.urls })
   },
 
+  /** 我的头像：user.avatarUrl 是 cloud:// fileID（提交/回滚都要用原始值，
+   *  所以另开 avatarView 只作展示）。直接塞进 <image> 在开发者工具会报
+   *  pageframe 加载失败，先换 https 再渲染。 */
+  async syncUserAvatar() {
+    const raw = ((this.data.user || {}).avatarUrl) || ''
+    if (photo.isFileId(raw)) await photo.warm([raw])
+    this.setData({ avatarView: photo.display(raw, 200) })
+  },
+
+  /** 图鉴头像加载失败：去参数重试 → 置空退 🐱 占位（不触发整页重载） */
+  onDexAvatarErr(e) {
+    const i = Number((e.currentTarget.dataset || {}).i || 0)
+    const item = (this.data.dex || [])[i]
+    if (!item || !item.avatar) return
+    const key = 'dex[' + i + '].avatar'
+    if (photo.hasProcess(item.avatar)) this.setData({ [key]: photo.stripProcess(item.avatar) })
+    else this.setData({ [key]: '' })
+  },
+
+  /** 打卡缩略图加载失败：去参数重试 → 换临时链接 → 隐藏（不触发整页重载） */
+  async onMyPhotoErr(e) {
+    const ds = e.currentTarget.dataset || {}
+    const i = Number(ds.i || 0)
+    const j = Number(ds.j || 0)
+    const key = 'mySightings[' + i + '].photosSmall[' + j + ']'
+    const item = (this.data.mySightings || [])[i]
+    const cur = ((item && item.photosSmall) || [])[j]
+    if (!cur) return
+    if (photo.hasProcess(cur)) { this.setData({ [key]: photo.stripProcess(cur) }); return }
+    const rid = ((item && item.photos) || [])[j]
+    if (photo.isFileId(rid)) {
+      const u = await photo.resolve(rid)
+      if (u) { this.setData({ [key]: photo.thumb(u, 320) }); return }
+    }
+    this.setData({ [key]: '' })
+  },
+
   // 选择头像（微信 chooseAvatar，返回临时路径 → 上传云存储拿 fileID 入库）
   async onChooseAvatar(e) {
     const { avatarUrl } = e.detail
     if (!avatarUrl) return
+    // 先落库再 setData：早期写法先 setData 后调用，失败时界面已是新头像、
+    // 云端还是旧的，toast 报失败但用户看到的是成功态（账实不符）
+    const prev = this.data.user.avatarUrl
     showBusy({ title: '上传中' })
     try {
       const cloudPath = `avatar/${Date.now()}_${Math.floor(Math.random() * 1e6)}.png`
       const up = await wx.cloud.uploadFile({ cloudPath, filePath: avatarUrl })
       const fileID = up.fileID
-      this.setData({ 'user.avatarUrl': fileID })
       await app.callApi('updateProfile', { avatarUrl: fileID })
+      this.setData({ 'user.avatarUrl': fileID })
       if (app.globalData.user) app.globalData.user.avatarUrl = fileID
+      this.syncUserAvatar()
       wx.showToast({ title: '头像已更新', icon: 'success' })
     } catch (err) {
+      this.setData({ 'user.avatarUrl': prev })   // 回滚到云端现值
+      this.syncUserAvatar()
       wx.showToast({ title: (err && err.message) || '上传失败', icon: 'none' })
     } finally {
       hideBusy()
@@ -354,9 +450,20 @@ Page({
   onNickName(e) {
     const nickName = (e.detail.value || '').trim()
     if (!nickName) return
-    this.setData({ 'user.nickName': nickName })
+    const prev = this.data.user.nickName
     app.callApi('updateProfile', { nickName })
-      .then(() => { if (app.globalData.user) app.globalData.user.nickName = nickName })
-      .catch(err => wx.showToast({ title: (err && err.message) || '保存失败', icon: 'none' }))
+      .then(() => {
+        this.setData({ 'user.nickName': nickName })
+        if (app.globalData.user) app.globalData.user.nickName = nickName
+      })
+      .catch(err => {
+        this.setData({ 'user.nickName': prev })   // 保存失败不改变界面
+        wx.showToast({ title: (err && err.message) || '保存失败', icon: 'none' })
+      })
   }
-})
+// 「我的」页本身没什么可看，转发统一落到首页：既不失分享能力，也避免把
+// 个人信息页丢给别人打开后被登录态拦下的尴尬。
+}, shareBehavior({
+  title: '喵园 · 一起照顾校园里的流浪猫',
+  path: '/pages/index/index'
+})))

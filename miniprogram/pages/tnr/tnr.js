@@ -1,5 +1,5 @@
 const app = getApp()
-const { C, requireMember, itemOf, toast } = require('../../utils/util.js')
+const { C, requireMember, itemOf, toast, shareBehavior } = require('../../utils/util.js')
 
 const STATUS_FILTERS = [
   { value: '', label: '全部' },
@@ -10,7 +10,7 @@ const STATUS_FILTERS = [
   { value: 'adopted', label: '转领养' }
 ]
 
-Page({
+Page(Object.assign({
   data: {
     list: [],
     filter: '',
@@ -73,4 +73,14 @@ Page({
   goEdit(e) {
     wx.navigateTo({ url: '/pages/tnr-edit/tnr-edit?id=' + e.currentTarget.dataset.id })
   }
-})
+// ↓ TNR 记录是公益成果展示（绝育了多少只），适合对外传播。
+}, shareBehavior(function () {
+  const s = this.data.summary || {}
+  const done = Number(s.done) || 0
+  const s0 = app.globalData.school
+  const who = s0 && s0.name ? s0.name : '校园'
+  return {
+    title: done ? (who + '已为 ' + done + ' 只猫完成 TNR 🏥') : (who + '流浪猫 TNR 记录 · 喵园'),
+    path: '/pages/tnr/tnr'
+  }
+})))

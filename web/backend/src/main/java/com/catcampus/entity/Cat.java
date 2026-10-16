@@ -1,6 +1,6 @@
 package com.catcampus.entity;
 
-import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import lombok.Data;
 import java.time.LocalDateTime;
@@ -60,11 +60,15 @@ public class Cat {
     @Column(length = 2000)
     private String note;
 
-    @JsonIgnore
+    /** 内部备注 / 医疗备注：只允许写入（管理端提交），永不读出。
+     *  ⚠️ 不能用 @JsonIgnore —— 它同时阻断序列化和反序列化，
+     *  前端 save() 提交的这两个字段会被 Jackson 静默丢弃（功能整体失效且无报错）。
+     *  不读出的语义由 CatService.sanitize 置 null + 这里的 WRITE_ONLY 双保险。 */
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     @Column(length = 2000)
     private String internalNote;
 
-    @JsonIgnore
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     @Column(length = 2000)
     private String medicalNote;
 
