@@ -3,6 +3,18 @@ node_modules/
 web/frontend/dist/
 web/backend/target/
 
+# 识别服务部署包（scripts/package_vision.py 产物，单包 ~80MB）
+# 交付靠 dist/ 目录本身 / 云托管后台上传，不进版本库
+dist/
+
+# 页面设计稿与截图（过程产物，非构建输入）
+preview/
+
+# 调试散落文件（仓库根目录的历史临时输出）
+_*.txt
+_shot*.png
+_shot*.log
+
 # 本地数据库文件
 web/backend/data/
 
