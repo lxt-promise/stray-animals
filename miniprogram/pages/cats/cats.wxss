@@ -1,6 +1,12 @@
+/* 列表底部留白：悬浮按钮高 96rpx、底距 150rpx，会压住最后一张卡
+   （全局 .page 只留了 160rpx），这里补到 240rpx 把它让出来 */
+.page { padding-bottom: 240rpx; }
+
+/* ===================== 分类切换 ===================== */
 .tabs {
   display: flex;
   background: var(--card);
+  border: 2rpx solid var(--card-line);
   border-radius: 40rpx;
   padding: 8rpx;
   margin-bottom: 20rpx;
@@ -9,63 +15,120 @@
 .tabs .tab {
   flex: 1;
   text-align: center;
-  height: 64rpx;
-  line-height: 64rpx;
+  height: 68rpx;
+  line-height: 68rpx;
   font-size: 28rpx;
   color: var(--text-sub);
-  border-radius: 32rpx;
+  border-radius: 34rpx;
+  transition: color .2s;
 }
 .tabs .tab.on {
-  background: var(--brand);
+  background: var(--brand-grad);
   color: #fff;
   font-weight: 600;
+  box-shadow: 0 8rpx 20rpx rgba(249, 115, 22, .28);
 }
 
-.search-bar {
+/* ===================== 搜索 + 筛选面板 =====================
+   合成一张卡片：搜索框在上，两行 chip 在下。原来是「搜索卡 + 两行裸 chip」，
+   三块各自带背景/阴影，列表被压到屏幕很下面。 */
+.filter-panel {
   background: var(--card);
+  border: 2rpx solid var(--card-line);
   border-radius: var(--radius);
-  padding: 0 24rpx;
-  margin-bottom: 16rpx;
   box-shadow: var(--shadow);
+  padding: 16rpx 22rpx 18rpx;
+  margin-bottom: 22rpx;
 }
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  height: 72rpx;
+  padding: 0 20rpx;
+  background: var(--bg);
+  border-radius: 20rpx;
+}
+.search-ico { font-size: 26rpx; opacity: .6; flex-shrink: 0; }
 .search-input {
-  height: 80rpx;
-  font-size: 28rpx;
+  flex: 1;
+  min-width: 0;
+  height: 72rpx;
+  font-size: 27rpx;
+}
+.search-clear {
+  width: 40rpx;
+  height: 40rpx;
+  line-height: 38rpx;
+  text-align: center;
+  border-radius: 50%;
+  background: rgba(146, 88, 32, .12);
+  color: var(--text-sub);
+  font-size: 20rpx;
+  flex-shrink: 0;
 }
 
+/* chip 行：横向滚动，允许溢出到面板边缘（负 margin 抵掉面板内边距） */
 .filter-scroll {
   white-space: nowrap;
-  margin-bottom: 12rpx;
+  margin: 14rpx -22rpx 0;
+  padding: 0 22rpx;
 }
+.filter-scroll:last-child { margin-bottom: 0; }
 .filter-row {
   display: inline-flex;
   gap: 12rpx;
-  padding: 4rpx 0;
+  padding: 2rpx 0;
 }
+/* 未选中：白底 + 细描边（去掉原来那层 8rpx 的投影，滚动时不再"抖"） */
 .chip {
   display: inline-block;
   padding: 10rpx 24rpx;
-  border-radius: 28rpx;
-  background: var(--card);
+  border-radius: 26rpx;
+  background: #fff;
+  border: 2rpx solid var(--card-line);
   color: var(--text-sub);
   font-size: 24rpx;
-  box-shadow: 0 2rpx 8rpx rgba(146, 88, 32, .18);
+  line-height: 1.4;
 }
 .chip.on {
-  background: var(--brand-light);
-  color: var(--brand-dark);
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
   font-weight: 600;
+  box-shadow: 0 6rpx 16rpx rgba(249, 115, 22, .26);
 }
 
+/* ===================== 打卡记录卡 ===================== */
+.sight-card { padding: 22rpx 24rpx 20rpx; }
+.sight-head { display: flex; align-items: center; gap: 12rpx; }
+.sight-cat {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+/* 名称与标签都是"内容多宽就多宽"，不允许被 flex 拉伸/压缩成一条横杠 */
+.sight-cat .cat-name,
+.sight-cat .tag { flex: none; }
 .cat-name {
   font-size: 30rpx;
   font-weight: 600;
   color: var(--brand-dark);
 }
-
-/* 列表头样式已随「手动录入」入口移除而废弃（建档统一走右下角悬浮按钮） */
+.cat-name.muted { color: var(--text-sub); font-weight: 500; }
+/* 时间贴右上，和猫名同一行：原来是右侧一行小字，扫读时抓不到 */
+.sight-time {
+  font-size: 20rpx;
+  color: var(--text-weak);
+  flex-shrink: 0;
+  margin-left: auto;
+}
 .note {
-  margin-top: 12rpx;
+  margin-top: 10rpx;
+  font-size: 25rpx;
   line-height: 1.6;
   color: var(--text);
 }
@@ -76,11 +139,27 @@
   flex-wrap: wrap;
 }
 .photo-row image {
-  width: 200rpx;
-  height: 200rpx;
-  border-radius: 16rpx;
+  width: 184rpx;
+  height: 184rpx;
+  border-radius: 18rpx;
+  background: rgba(146, 88, 32, .05);
 }
+/* 底部位置/上报人：小图标 + 位置（可省略号）+ 分隔点 */
+.sight-foot {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  margin-top: 14rpx;
+  padding-top: 14rpx;
+  border-top: 2rpx solid var(--line);
+  font-size: 22rpx;
+  color: var(--text-sub);
+}
+.sight-foot .foot-ico { font-size: 20rpx; }
+.sight-foot .ellipsis { max-width: 380rpx; }
+.sight-foot .foot-sep { color: var(--text-weak); }
 
+/* ===================== 悬浮建档/打卡按钮 ===================== */
 .fab {
   position: fixed;
   right: 32rpx;
@@ -88,12 +167,31 @@
      否则按钮下半截被盖住 —— 表现就是「建档按钮显示不全」。 */
   bottom: calc(150rpx + env(safe-area-inset-bottom));
   height: 96rpx;
-  padding: 0 36rpx;
-  line-height: 96rpx;
+  padding: 0 34rpx;
+  display: flex;
+  align-items: center;
+  gap: 6rpx;
   border-radius: 48rpx;
-  background: var(--brand);
+  background: var(--brand-grad);
   color: #fff;
   font-size: 30rpx;
   font-weight: 600;
-  box-shadow: 0 10rpx 30rpx rgba(249, 115, 22, .4);
+  box-shadow: 0 12rpx 30rpx rgba(249, 115, 22, .42);
+}
+.fab-plus { font-size: 34rpx; font-weight: 400; line-height: 1; }
+
+/* 未绑定学校空态（与 dex 页同款：说清「看不到」的原因，不给假空列表） */
+.state-card { text-align: center; padding: 56rpx 32rpx; }
+.state-ico { font-size: 64rpx; line-height: 1.2; }
+.state-title {
+  font-size: 32rpx;
+  font-weight: 700;
+  color: var(--text);
+  margin-top: 14rpx;
+}
+.state-desc {
+  font-size: 24rpx;
+  color: var(--text-sub);
+  line-height: 1.7;
+  margin-top: 10rpx;
 }

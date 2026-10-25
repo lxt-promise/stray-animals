@@ -206,8 +206,10 @@ SHARE_EXEMPT.forEach(p => {
 // app.json 里声明的每个页面文件都必须存在（分享路径失效常常源于路径拼错）
 // ⚠️ app.json 的 pages 条目本身就是完整路径（"pages/index/index"），
 //    拼 URL 时加的是前导斜杠，不是再补一个 "pages/" —— 这里踩过一次。
+// 只锁「不许少页」，不锁具体数量：新增页面（图鉴收集）不该让这条断言误报，
+// 但删掉页面必须被挡住（分享 path 失效最常见的成因就是页面被漏注册）。
 const appJson = JSON.parse(fs.readFileSync(path.join(MP, 'app.json'), 'utf8'))
-assert('app.json 声明了 15 个页面', appJson.pages.length === 15, appJson.pages.length)
+assert('app.json 声明的页面不少于 15 个', appJson.pages.length >= 15, appJson.pages.length)
 appJson.pages.forEach(pg => {
   assert('app.json 的 ' + pg + ' 文件存在', fs.existsSync(path.join(MP, pg + '.js')))
 })

@@ -75,29 +75,67 @@ def _assert_safe_url(url: str) -> None:
         raise ValueError(f"不允许的内网地址: {host} -> {ip_text}")
 
 
+class DownloadError(Exception):
+    """下载失败，携带**可判读的原因码**。
+
+    为什么要有：2026-10-24「重建特征库部分失败」的现场里，日志只有
+    `下载失败 <url>: Client error '403 Forbidden'`，看不出这是「临时链接过期」，
+    也分不出是 403（过期/无权限）还是 404（文件已删）。而这两者的处置完全不同：
+    403 换一条链接就好（文件还在），404 只能让用户重传。
+    所以把状态码提炼成 reason 码（http403 / http404 / http40x / timeout / tooLarge …），
+    让它一路传到 /v1/index/build 的 reasons 里。
+    """
+
+    def __init__(self, reason: str, detail: str = ""):
+        self.reason = reason
+        self.detail = detail
+        super().__init__(detail or reason)
+
+
 def _download(url: str, max_bytes: int) -> bytes:
     """带大小上限的下载。历史上 r.content 一次性全量入内存，
     一个几百 MB 的 URL 就能打爆容器内存限额。"""
     _assert_safe_url(url)
-    with _http().stream("GET", url) as r:
-        r.raise_for_status()
-        length = r.headers.get("content-length")
-        if length and int(length) > max_bytes:
-            raise ValueError(f"素材超过大小上限（{int(length)} > {max_bytes} 字节）")
-        chunks = []
-        total = 0
-        for chunk in r.iter_bytes():
-            total += len(chunk)
-            if total > max_bytes:
-                raise ValueError(f"素材超过大小上限（>{max_bytes} 字节）")
-            chunks.append(chunk)
-        return b"".join(chunks)
+    try:
+        with _http().stream("GET", url) as r:
+            if r.status_code != 200:
+                # 403 大概率是云开发临时链接过期（sign 有时效），404 是文件已删 ——
+                # 状态码必须带出去，否则建库失败原因全是同一个「downloadFailed」。
+                if r.status_code in (401, 403):
+                    raise DownloadError("http403", f"HTTP {r.status_code}（多为临时链接已过期）")
+                if r.status_code == 404:
+                    raise DownloadError("http404", f"HTTP 404（文件已不存在）")
+                raise DownloadError("http%d" % r.status_code, "HTTP %d" % r.status_code)
+            length = r.headers.get("content-length")
+            if length and int(length) > max_bytes:
+                raise DownloadError(
+                    "tooLarge", f"素材超过大小上限（{int(length)} > {max_bytes} 字节）")
+            chunks = []
+            total = 0
+            for chunk in r.iter_bytes():
+                total += len(chunk)
+                if total > max_bytes:
+                    raise DownloadError("tooLarge", f"素材超过大小上限（>{max_bytes} 字节）")
+                chunks.append(chunk)
+            return b"".join(chunks)
+    except httpx.TimeoutException as e:
+        raise DownloadError("timeout", str(e)) from e
+    except httpx.HTTPError as e:
+        raise DownloadError("network", "%s: %s" % (type(e).__name__, e)) from e
 
 
-def fetch_image(url: str) -> Optional[Image.Image]:
-    """下载一张图。失败返回 None（调用方负责降级），不抛异常打断主流程。"""
+def fetch_image_ex(url: str):
+    """下载一张图，**带失败原因码**。
+
+    @returns {(Image|None, str)} 成功时 reason 为空串；失败时 img 为 None，
+      reason ∈ http403 / http404 / http4xx / timeout / network / tooLarge / badImage /
+      unsafeUrl / emptyUrl。
+
+    保留 `fetch_image`（见下）是因为它已经在大量调用点与测试里作为「签名」存在，
+    这里不去动它，新增一个能要诊断信息的版本。
+    """
     if not url:
-        return None
+        return None, "emptyUrl"
     try:
         data = _download(url, config.MAX_IMAGE_BYTES)
         # with 保证文件句柄关闭：convert 产生新图后原图 fp 不会泄漏
@@ -105,10 +143,22 @@ def fetch_image(url: str) -> Optional[Image.Image]:
         import io
 
         with Image.open(io.BytesIO(data)) as im:
-            return im.convert("RGB")
-    except Exception as e:  # noqa: BLE001
+            return im.convert("RGB"), ""
+    except DownloadError as e:
+        log.warning("下载失败 %s：%s", url[:80], e.detail or e.reason)
+        return None, e.reason
+    except ValueError as e:  # SSRF 拦截等在 members 合法性阶段抛出
         log.warning("下载失败 %s：%s", url[:80], e)
-        return None
+        return None, "unsafeUrl"
+    except Exception as e:  # noqa: BLE001 —— 图片本身坏掉不该让建库整批中断
+        log.warning("下载失败 %s：%s", url[:80], e)
+        return None, "badImage"
+
+
+def fetch_image(url: str) -> Optional[Image.Image]:
+    """下载一张图。失败返回 None（调用方负责降级），不抛异常打断主流程。"""
+    im, _ = fetch_image_ex(url)
+    return im
 
 
 def io_bytes(b: bytes):

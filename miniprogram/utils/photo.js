@@ -147,6 +147,49 @@ function refresh(fileId) {
   }).catch(() => '')
 }
 
+/**
+ * fileID → **本地临时文件路径**（wx.cloud.downloadFile）。
+ *
+ * 为什么预览要它（2026-10-24 现场「点相册黑屏、换链也没用」）：
+ *   `wx.previewImage` 内部走的是「下载」链路 —— 它吃的是**完整原图**，
+ *   而且受下载合法域名与临时链接签名有效期两道约束。相册格子里的缩略图
+ *   （`imageMogr2/thumbnail/480x`，几十 KB）当然秒开，同一张原图（1~8 MB）
+ *   交给 previewImage 就变成「黑屏转圈」；域名没进白名单时更是直接不加载。
+ *   云 SDK 的 downloadFile 走云通道（不受域名白名单限制），拿到的是
+ *   **本地文件路径**，`previewImage` 打开本地文件不需要任何网络请求。
+ *
+ * 失败返回 ''（调用方退回临时链接），不抛错。
+ */
+function download(fileId) {
+  const id = String(fileId || '')
+  if (!isFileId(id)) return Promise.resolve('')
+  if (typeof wx === 'undefined' || !wx.cloud || !wx.cloud.downloadFile) return Promise.resolve('')
+  return Promise.resolve(wx.cloud.downloadFile({ fileID: id }))
+    .then(r => (r && (r.tempFilePath || r.filePath)) || '')
+    .catch(() => '')
+}
+
+/**
+ * 从云存储的 https 临时链接**反推 fileID**（尽力而为）。
+ *
+ * 为什么需要（2026-10-24）：云函数 `attachCatMediaUrls` 会把 `photos` 换成临时链接，
+ * 而编辑页把表单原样提交回去 —— 数据库里的 fileID 就这样被**永久覆盖成两小时后失效的
+ * 链接**。之后相册、预览、建库全都拿不到可下载的地址，而且**再也换不回来**。
+ * 好在临时链接保留了存储路径：
+ *   https://<bucket>.tcb.qcloud.la/cats/123.jpg?sign=...
+ *   → cloud://<env>.<bucket>/cats/123.jpg
+ * 反推出的 fileID 仍然有效（文件本身没删），可以重新 getTempFileURL / downloadFile。
+ *
+ * @param {string} url   云存储 https 地址
+ * @param {string} envId 环境 ID（app.globalData.envId）
+ * @returns {string} fileID；不是云存储地址或缺少 envId 时返回 ''
+ */
+function fileIdFromUrl(url, envId) {
+  const m = String(url || '').match(/^https?:\/\/([a-z0-9-]+)\.tcb\.qcloud\.la\/([^?#]+)/i)
+  if (!m || !envId) return ''
+  return 'cloud://' + envId + '.' + m[1] + '/' + m[2]
+}
+
 function withTimeout(p, ms) {
   if (!ms) return p
   return Promise.race([p, new Promise(r => setTimeout(r, ms))])
@@ -225,6 +268,6 @@ function hydrateCats(list, opts, apply) {
 }
 
 module.exports = {
-  thumb, stripProcess, hasProcess, display, warm, resolve, refresh,
-  hydrateCats, hydrateCatsAsync, cachedUrl, isFileId, isDevtools
+  thumb, stripProcess, hasProcess, display, warm, resolve, refresh, download,
+  fileIdFromUrl, hydrateCats, hydrateCatsAsync, cachedUrl, isFileId, isDevtools, isHttp
 }

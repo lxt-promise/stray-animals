@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>「我的」页排版 · 三态对照</title>
+<style>
+  :root{
+    --bg:#FFF7ED; --card:#FFFFFF; --card-line:rgba(146,88,32,.12);
+    --text:#431407; --text-sub:#8C6A55; --text-weak:#B9A08C;
+    --brand:#F97316; --brand-dark:#C2410C; --brand-light:rgba(249,115,22,.12);
+    --line:rgba(146,88,32,.1); --radius:14px; --radius-sm:9px;
+    --ok:#2FA36B; --gold:#EAB308;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;padding:34px 20px 60px;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  .wrap{max-width:1240px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 6px}
+  .lead{font-size:13px;color:var(--text-sub);line-height:1.8;margin:0 0 26px}
+  .cases{display:grid;grid-template-columns:repeat(3,375px);gap:24px}
+  .case-hd{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  .badge{font-size:12px;padding:3px 10px;border-radius:999px;font-weight:600;background:var(--brand-light);color:var(--brand-dark)}
+  .case-hd .desc{font-size:12px;color:var(--text-sub)}
+  .phone{
+    width:375px;background:var(--bg);border:1px solid var(--card-line);border-radius:22px;
+    padding:12px 10px 22px;box-shadow:0 6px 26px rgba(146,88,32,.07);
+  }
+
+  /* ===== 通用卡片 ===== */
+  .card{
+    position:relative;background:var(--card);border:1px solid var(--card-line);
+    border-radius:var(--radius);box-shadow:0 5px 15px rgba(146,88,32,.06);
+    padding:13px 14px;margin-bottom:12px;overflow:hidden;
+  }
+  .card::before{
+    content:"";position:absolute;left:0;top:12px;width:3px;height:14px;border-radius:0 3px 3px 0;
+    background:linear-gradient(135deg,#FBBF24,#F97316);
+  }
+  .card-title{font-size:15px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between}
+  .card-title .more{font-size:12px;color:var(--text-sub);font-weight:500}
+  .tag{display:inline-flex;align-items:center;gap:2px;font-size:11px;font-weight:600;padding:3px 8px;border-radius:8px;border:1px solid transparent}
+  .tag.gold{background:rgba(234,179,8,.14);color:#A16207;border-color:rgba(234,179,8,.28)}
+  .tag.ok{background:rgba(47,163,107,.12);color:var(--ok);border-color:rgba(47,163,107,.24)}
+  .tag.gray{background:rgba(146,88,32,.07);color:var(--text-sub);border-color:var(--card-line)}
+
+  /* ===== 资料卡 ===== */
+  .profile{display:flex;align-items:center;padding:15px 14px}
+  .profile-glow{
+    position:absolute;right:-30px;top:-40px;width:130px;height:130px;border-radius:50%;
+    background:radial-gradient(circle,rgba(251,191,36,.38) 0%,rgba(249,115,22,.12) 55%,transparent 72%);
+  }
+  .avatar{
+    width:59px;height:59px;border-radius:50%;background:var(--brand-light);
+    display:flex;align-items:center;justify-content:center;font-size:26px;
+    margin-right:13px;flex-shrink:0;position:relative;z-index:1;
+    box-shadow:0 0 0 3px #fff,0 4px 12px rgba(249,115,22,.22);
+  }
+  .p-info{flex:1;min-width:0;position:relative;z-index:1}
+  .p-name{font-size:18px;font-weight:700;line-height:1.35}
+  .p-role{margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .p-school{display:inline-flex;align-items:center;gap:5px;margin-top:7px;font-size:12px;color:var(--text-sub)}
+  .p-school-dot{width:5px;height:5px;border-radius:50%;background:var(--brand);flex-shrink:0}
+  .edit-hint{display:block;margin:6px 4px 0;font-size:11px;color:var(--text-weak)}
+
+  /* ===== 三格统计 ===== */
+  .stat-grid{display:flex;margin:10px -4px 0}
+  .stat-grid .item{width:33.33%;padding:4px}
+  .stat-card{
+    display:flex;align-items:center;gap:6px;
+    background:#FEF2E7;border:1px solid rgba(249,115,22,.18);border-radius:var(--radius-sm);
+    padding:10px 6px;text-align:left;box-shadow:0 3px 8px rgba(249,115,22,.08);
+  }
+  .stat-ico{
+    flex:none;width:28px;height:28px;line-height:28px;border-radius:9px;
+    background:rgba(249,115,22,.20);border:1px solid rgba(249,115,22,.26);font-size:14px;text-align:center;
+  }
+  .stat-body{flex:1;min-width:0}
+  .stat-card .num{font-size:19px;font-weight:700;line-height:1.15;color:var(--brand-dark)}
+  .stat-card .num-sub{font-size:12px;font-weight:600;color:var(--text-weak);margin-left:1px}
+  .stat-card .num.dim{color:var(--text-weak);font-weight:600}
+  .stat-card .lbl{font-size:10.5px;color:var(--text-sub);line-height:1.2;margin-bottom:2px;white-space:nowrap}
+  .stat-go{font-size:10px;color:var(--text-weak);margin-left:2px}
+
+  /* ===== 学校卡 ===== */
+  .school-hero{display:flex;align-items:center;gap:10px;padding:2px 0 3px}
+  .school-logo{
+    width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center;
+    font-size:18px;flex-shrink:0;
+    background:linear-gradient(135deg,rgba(251,191,36,.22) 0%,rgba(249,115,22,.18) 100%);
+  }
+  .school-hero-main{flex:1;min-width:0}
+  .school-name{font-size:16px;font-weight:700;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .school-chips{display:flex;align-items:center;gap:5px;margin-top:4px;flex-wrap:wrap}
+  .chip{
+    font-size:10.5px;line-height:1;padding:4px 7px;border-radius:999px;color:var(--text-sub);
+    background:rgba(146,88,32,.06);border:1px solid var(--card-line);
+  }
+  .chip.solid{background:var(--brand-light);border-color:rgba(249,115,22,.26);color:var(--brand-dark);font-weight:600}
+  .school-intro{
+    margin-top:8px;padding:8px 10px;background:var(--bg);border-radius:7px;
+    font-size:12.5px;color:var(--text-sub);line-height:1.7;
+  }
+  .school-empty{padding:1px 0 3px}
+  .school-empty-title{font-size:14px;font-weight:600;margin-bottom:4px}
+  .school-empty .small{font-size:12px;color:var(--text-sub);line-height:1.7}
+
+  .school-pick{
+    display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:11px;
+    padding:10px 11px;background:var(--bg);border:1px dashed rgba(249,115,22,.35);border-radius:9px;
+  }
+  .school-pick-left{display:flex;align-items:center;gap:8px;min-width:0}
+  .school-pick-ico{
+    width:26px;height:26px;line-height:24px;text-align:center;border-radius:50%;
+    background:#fff;color:var(--brand);font-size:13px;flex-shrink:0;
+  }
+  .school-pick-main{font-size:14.5px;font-weight:600;color:var(--brand-dark);line-height:1.3}
+  .school-pick-sub{font-size:10.5px;color:var(--text-weak);margin-top:2px}
+  .school-pick-side{font-size:11.5px;color:var(--text-weak);flex-shrink:0}
+
+  /* ===== 菜单 ===== */
+  .menu-item{
+    display:flex;align-items:center;gap:10px;padding:12px 0;
+    border-bottom:1px solid var(--line);font-size:15px;
+  }
+  .menu-item:last-child{border-bottom:none}
+  .mi-ico{
+    width:28px;height:28px;border-radius:8px;background:var(--bg);
+    display:flex;align-items:center;justify-content:center;font-size:13.5px;flex-shrink:0;
+  }
+  .mi-txt{flex:1;min-width:0}
+  .arrow{color:var(--text-weak);font-size:18px;line-height:1}
+  .menu-right{display:flex;align-items:center;gap:6px}
+  .my-count{font-size:11px;color:var(--text-weak)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>「我的」页排版 · 三态对照</h1>
+  <p class="lead">
+    本轮改动：学校卡去掉「地图中心 / 地图范围」配置（已迁到超级管理后台 → 校园管理），
+    改为「校徽 + 校名 + 校区/城市标签 + 简介 + 换校条」四层结构；资料卡加柔光与学校归属行；
+    三格统计改为横排（图标在左、标签与数值在右）；菜单加统一图标块。下方依次是超管 / 普通成员 / 未绑定三种状态。
+  </p>
+
+  <div class="cases">
+
+    <!-- ============ 1. 超管 · 已绑定 ============ -->
+    <div class="case">
+      <div class="case-hd"><span class="badge">A · 超管</span><span class="desc">已绑定，标题右侧给后台入口</span></div>
+      <div class="phone">
+        <div class="card profile">
+          <div class="profile-glow"></div>
+          <div class="avatar">🐱</div>
+          <div class="p-info">
+            <div class="p-name">猫猫侠</div>
+            <div class="p-role">
+              <span class="tag gold">Lv.6 猫园守护者 ›</span>
+              <span class="tag gold">超级管理员</span>
+            </div>
+            <div class="p-school"><span class="p-school-dot"></span>东南大学 · 九龙湖校区</div>
+          </div>
+        </div>
+        <div class="edit-hint">点头像换图 · 点昵称可改 · 点等级看积分</div>
+
+        <div class="stat-grid">
+          <div class="item"><div class="stat-card"><div class="stat-ico">🍚</div><div class="stat-body"><div class="lbl">猫粮值<span class="stat-go">›</span></div><div class="num">500</div></div></div></div>
+          <div class="item"><div class="stat-card"><div class="stat-ico">📷</div><div class="stat-body"><div class="lbl">打卡次数<span class="stat-go">›</span></div><div class="num">28</div></div></div></div>
+          <div class="item"><div class="stat-card"><div class="stat-ico">📖</div><div class="stat-body"><div class="lbl">图鉴数<span class="stat-go">›</span></div><div class="num">3<span class="num-sub">/4</span></div></div></div></div>
+        </div>
+
+        <div class="card" style="margin-top:12px">
+          <div class="card-title">我的学校<span class="more">校园管理 ›</span></div>
+          <div class="school-hero">
+            <div class="school-logo">🏫</div>
+            <div class="school-hero-main">
+              <div class="school-name">东南大学</div>
+              <div class="school-chips"><span class="chip solid">九龙湖校区</span><span class="chip">南京</span></div>
+            </div>
+          </div>
+          <div class="school-intro">车大SEU · 校园流浪猫互助社团</div>
+          <div class="school-pick">
+            <div class="school-pick-left">
+              <span class="school-pick-ico">⇄</span>
+              <div>
+                <div class="school-pick-main">切换学校</div>
+                <div class="school-pick-sub">换校后图鉴 · 打卡 · 地图都按新学校统计</div>
+              </div>
+            </div>
+            <span class="school-pick-side">共 2 所 ›</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="menu-item"><div class="mi-ico">🍚</div><span class="mi-txt">猫粮明细</span><span class="arrow">›</span></div>
+          <div class="menu-item"><div class="mi-ico">📖</div><span class="mi-txt">图鉴收集</span><div class="menu-right"><span class="my-count">12 / 19</span><span class="arrow">›</span></div></div>
+          <div class="menu-item"><div class="mi-ico">📷</div><span class="mi-txt">我的打卡</span><div class="menu-right"><span class="my-count">共 28 次</span><span class="arrow">›</span></div></div>
+          <div class="menu-item"><div class="mi-ico">🛠</div><span class="mi-txt">超级管理后台</span><span class="arrow">›</span></div>
+          <div class="menu-item"><div class="mi-ico">🎫</div><span class="mi-txt">身份与入社申请</span><span class="arrow">›</span></div>
+          <div class="menu-item"><div class="mi-ico">💰</div><span class="mi-txt">资金公示</span><span class="arrow">›</span></div>
+          <div class="menu-item"><div class="mi-ico">📋</div><span class="mi-txt">规则说明</span><div class="menu-right"><span class="my-count">积分 · 猫粮</span><span class="arrow">›</span></div></div>
+          <div class="menu-item"><div class="mi-ico">💬</div><span class="mi-txt">意见反馈</span><span class="arrow">›</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 2. 普通成员 ============ -->
+    <div class="case">
+      <div class="case-hd"><span class="badge">B · 社团成员</span><span class="desc">无后台入口，地图配置完全不可见</span></div>
+      <div class="phone">
+        <div class="card profile">
+          <div class="profile-glow"></div>
+          <div class="avatar">🐱</div>
+          <div class="p-info">
+            <div class="p-name">喂猫的小林</div>
+            <div class="p-role">
+              <span class="tag gold">Lv.3 猫语学徒 ›</span>
+              <span class="tag ok">社团成员</span>
+            </div>
+            <div class="p-school"><span class="p-school-dot"></span>东南大学 · 九龙湖校区</div>
+          </div>
+        </div>
+        <div class="edit-hint">点头像换图 · 点昵称可改 · 点等级看积分</div>
+
+        <div class="stat-grid">
+          <div class="item"><div class="stat-card"><div class="stat-ico">🍚</div><div class="stat-body"><div class="lbl">猫粮值<span class="stat-go">›</span></div><div class="num">37</div></div></div></div>
+          <div class="item"><div class="stat-card"><div class="stat-ico">📷</div><div class="stat-body"><div class="lbl">打卡次数<span class="stat-go">›</span></div><div class="num">9</div></div></div></div>
+          <div class="item"><div class="stat-card"><div class="stat-ico">📖</div><div class="stat-body"><div class="lbl">图鉴数<span class="stat-go">›</span></div><div class="num">4<span class="num-sub">/19</span></div></div></div></div>
+        </div>
+
+        <div class="card" style="margin-top:12px">
+          <div class="card-title">我的学校</div>
+          <div class="school-hero">
+            <div class="school-logo">🏫</div>
+            <div class="school-hero-main">
+              <div class="school-name">东南大学</div>
+              <div class="school-chips"><span class="chip solid">九龙湖校区</span><span class="chip">南京</span></div>
+            </div>
+          </div>
+          <div class="school-intro">车大SEU · 校园流浪猫互助社团</div>
+          <div class="school-pick">
+            <div class="school-pick-left">
+              <span class="school-pick-ico">⇄</span>
+              <div>
+                <div class="school-pick-main">切换学校</div>
+                <div class="school-pick-sub">换校后图鉴 · 打卡 · 地图都按新学校统计</div>
+              </div>
+            </div>
+            <span class="school-pick-side">共 2 所 ›</span>
+          </div>
+          <div class="menu-item" style="margin-top:2px"><span class="mi-txt" style="color:var(--brand-dark);font-size:13.5px">没有我的学校？申请新建</span><span class="arrow">›</span></div>
+        </div>
+
+        <div class="card">
+          <div class="menu-item"><div class="mi-ico">🍚</div><span class="mi-txt">猫粮明细</span><span class="arrow">›</span></div>
+          <div class="menu-item"><div class="mi-ico">📖</div><span class="mi-txt">图鉴收集</span><div class="menu-right"><span class="my-count">4 / 19</span><span class="arrow">›</span></div></div>
+          <div class="menu-item"><div class="mi-ico">📷</div><span class="mi-txt">我的打卡</span><div class="menu-right"><span class="my-count">共 9 次</span><span class="arrow">›</span></div></div>
+          <div class="menu-item"><div class="mi-ico">🎫</div><span class="mi-txt">身份与入社申请</span><span class="arrow">›</span></div>
+          <div class="menu-item"><div class="mi-ico">💰</div><span class="mi-txt">资金公示</span><span class="arrow">›</span></div>
+          <div class="menu-item"><div class="mi-ico">📋</div><span class="mi-txt">规则说明</span><div class="menu-right"><span class="my-count">积分 · 猫粮</span><span class="arrow">›</span></div></div>
+          <div class="menu-item"><div class="mi-ico">💬</div><span class="mi-txt">意见反馈</span><span class="arrow">›</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 3. 未绑定学校 ============ -->
+    <div class="case">
+      <div class="case-hd"><span class="badge">C · 未绑定</span><span class="desc">空态要说清"为什么图鉴是空的"</span></div>
+      <div class="phone">
+        <div class="card profile">
+          <div class="profile-glow"></div>
+          <div class="avatar">🐱</div>
+          <div class="p-info">
+            <div class="p-name">路过的同学</div>
+            <div class="p-role">
+              <span class="tag gold">Lv.1 猫语新手 ›</span>
+              <span class="tag gray">爱猫同学</span>
+            </div>
+          </div>
+        </div>
+        <div class="edit-hint">点头像换图 · 点昵称可改 · 点等级看积分</div>
+
+        <div class="stat-grid">
+          <div class="item"><div class="stat-card"><div class="stat-ico">🍚</div><div class="stat-body"><div class="lbl">猫粮值<span class="stat-go">›</span></div><div class="num">0</div></div></div></div>
+          <div class="item"><div class="stat-card"><div class="stat-ico">📷</div><div class="stat-body"><div class="lbl">打卡次数<span class="stat-go">›</span></div><div class="num">0</div></div></div></div>
+          <div class="item"><div class="stat-card"><div class="stat-ico">📖</div><div class="stat-body"><div class="lbl">图鉴数<span class="stat-go">›</span></div><div class="num dim">—</div></div></div></div>
+        </div>
+
+        <div class="card" style="margin-top:12px">
+          <div class="card-title">我的学校</div>
+          <div class="school-empty">
+            <div class="school-empty-title">还没绑定学校</div>
+            <div class="small">图鉴、打卡与地图都按学校统计，先选一所本校吧。</div>
+          </div>
+          <div class="school-pick">
+            <div class="school-pick-left">
+              <span class="school-pick-ico">⇄</span>
+              <div>
+                <div class="school-pick-main">选择学校</div>
+                <div class="school-pick-sub">选中即绑定，无需审核</div>
+              </div>
+            </div>
+            <span class="school-pick-side">共 2 所 ›</span>
+          </div>
+          <div class="menu-item" style="margin-top:2px"><span class="mi-txt" style="color:var(--brand-dark);font-size:13.5px">没有我的学校？申请新建</span><span class="arrow">›</span></div>
+        </div>
+
+        <div class="card">
+          <div class="menu-item"><div class="mi-ico">🍚</div><span class="mi-txt">猫粮明细</span><span class="arrow">›</span></div>
+          <div class="menu-item"><div class="mi-ico">📖</div><span class="mi-txt">图鉴收集</span><div class="menu-right"><span class="my-count">未绑定学校</span><span class="arrow">›</span></div></div>
+          <div class="menu-item"><div class="mi-ico">📷</div><span class="mi-txt">我的打卡</span><span class="arrow">›</span></div>
+          <div class="menu-item"><div class="mi-ico">🎫</div><span class="mi-txt">身份与入社申请</span><span class="arrow">›</span></div>
+          <div class="menu-item"><div class="mi-ico">📋</div><span class="mi-txt">规则说明</span><div class="menu-right"><span class="my-count">积分 · 猫粮</span><span class="arrow">›</span></div></div>
+          <div class="menu-item"><div class="mi-ico">💬</div><span class="mi-txt">意见反馈</span><span class="arrow">›</span></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>

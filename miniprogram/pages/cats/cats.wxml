@@ -2,65 +2,86 @@
 
   <view class="tabs">
     <view class="tab {{tab === 'cat' ? 'on' : ''}}" data-tab="cat" bindtap="switchTab">猫谱</view>
-    <view class="tab {{tab === 'sighting' ? 'on' : ''}}" data-tab="sighting" bindtap="switchTab">目击动态</view>
+    <view class="tab {{tab === 'sighting' ? 'on' : ''}}" data-tab="sighting" bindtap="switchTab">打卡记录</view>
   </view>
 
-  <view class="search-bar">
-    <input
-      class="search-input"
-      placeholder="搜索猫咪名字 / 花色"
-      value="{{keyword}}"
-      bindinput="onSearch"
-      confirm-type="search"
-    />
+  <!-- 搜索 + 筛选合成一张面板：原来是「一张搜索卡 + 两行裸 chip」，
+       卡片堆叠把列表往下推得很低，且 chip 的投影太重、看着吵。 -->
+  <view class="filter-panel">
+    <view class="search-row">
+      <text class="search-ico">🔍</text>
+      <input
+        class="search-input"
+        placeholder="搜索猫咪名字 / 花色"
+        value="{{keyword}}"
+        bindinput="onSearch"
+        confirm-type="search"
+      />
+      <!-- 有输入才出现清除键：原生 input 的清除按钮在部分机型不显示 -->
+      <view class="search-clear" wx:if="{{keyword}}" bindtap="clearKeyword" hover-class="pressed">✕</view>
+    </view>
+
+    <block wx:if="{{tab === 'cat'}}">
+      <scroll-view scroll-x class="filter-scroll">
+        <view class="filter-row">
+          <view
+            class="chip {{filters.status === '' ? 'on' : ''}}"
+            data-key="status" data-value="" bindtap="onFilter" hover-class="pressed">全部状态</view>
+          <block wx:for="{{statusOptions}}" wx:key="value">
+            <view
+              class="chip {{filters.status === item.value ? 'on' : ''}}"
+              data-key="status" data-value="{{item.value}}" bindtap="onFilter" hover-class="pressed">{{item.label}}</view>
+          </block>
+        </view>
+      </scroll-view>
+
+      <scroll-view scroll-x class="filter-scroll">
+        <view class="filter-row">
+          <view class="chip {{filters.sterilized === 'no' ? 'on' : ''}}"
+            data-key="sterilized" data-value="no" bindtap="onFilter" hover-class="pressed">未绝育优先</view>
+          <view class="chip {{filters.sterilized === 'yes' ? 'on' : ''}}"
+            data-key="sterilized" data-value="yes" bindtap="onFilter" hover-class="pressed">已绝育</view>
+          <block wx:for="{{patternOptions}}" wx:key="value">
+            <view class="chip {{filters.pattern === item.value ? 'on' : ''}}"
+              data-key="pattern" data-value="{{item.value}}" bindtap="onFilter" hover-class="pressed">{{item.label}}</view>
+          </block>
+        </view>
+      </scroll-view>
+    </block>
   </view>
-
-  <!-- 筛选 -->
-  <scroll-view scroll-x class="filter-scroll" wx:if="{{tab === 'cat'}}">
-    <view class="filter-row">
-      <view
-        class="chip {{filters.status === '' ? 'on' : ''}}"
-        data-key="status" data-value="" bindtap="onFilter" hover-class="pressed">全部状态</view>
-      <block wx:for="{{statusOptions}}" wx:key="value">
-        <view
-          class="chip {{filters.status === item.value ? 'on' : ''}}"
-          data-key="status" data-value="{{item.value}}" bindtap="onFilter" hover-class="pressed">{{item.label}}</view>
-      </block>
-    </view>
-  </scroll-view>
-
-  <scroll-view scroll-x class="filter-scroll" wx:if="{{tab === 'cat'}}">
-    <view class="filter-row">
-      <view class="chip {{filters.sterilized === 'no' ? 'on' : ''}}"
-        data-key="sterilized" data-value="no" bindtap="onFilter" hover-class="pressed">未绝育优先</view>
-      <view class="chip {{filters.sterilized === 'yes' ? 'on' : ''}}"
-        data-key="sterilized" data-value="yes" bindtap="onFilter" hover-class="pressed">已绝育</view>
-      <block wx:for="{{patternOptions}}" wx:key="value">
-        <view class="chip {{filters.pattern === item.value ? 'on' : ''}}"
-          data-key="pattern" data-value="{{item.value}}" bindtap="onFilter" hover-class="pressed">{{item.label}}</view>
-      </block>
-    </view>
-  </scroll-view>
 
   <!-- 猫谱列表（建档入口 = 右下角悬浮按钮，避免与列表头重复） -->
   <block wx:if="{{tab === 'cat'}}">
-    <cat-card
-      wx:for="{{list}}"
-      wx:key="_id"
-      cat="{{item}}"
-      bind:tap="goDetail"
-    />
-    <view class="empty" wx:if="{{!loading && !list.length}}">
-      <text class="emoji">🐈</text>
-      没有符合条件的猫咪
+    <!-- 未绑定学校：猫档案按校运营，看不到任何档案（不是「本校没有猫」） -->
+    <view class="card state-card" wx:if="{{needSchool}}">
+      <view class="state-ico">🎒</view>
+      <view class="state-title">还没有绑定学校</view>
+      <view class="state-desc">猫谱按学校划分：绑定后，才能查看本校同学们的猫咪档案。</view>
+      <button class="btn mt" bindtap="goBindSchool">去绑定学校</button>
     </view>
+    <block wx:else>
+      <cat-card
+        wx:for="{{list}}"
+        wx:key="_id"
+        cat="{{item}}"
+        bind:tap="goDetail"
+      />
+      <view class="empty" wx:if="{{!loading && !list.length}}">
+        <text class="emoji">🐈</text>
+        <view wx:if="{{hasFilter}}">没有符合筛选条件的猫咪</view>
+        <view wx:else>本校还没有猫咪档案</view>
+        <!-- 回显筛选条件：否则「查不到」会被当成功能坏了 -->
+        <view class="small muted mt" wx:if="{{filterDesc}}">{{filterDesc}}</view>
+        <button class="btn mt" wx:if="{{hasFilter}}" bindtap="clearFilters">清除筛选条件</button>
+      </view>
+    </block>
   </block>
 
-  <!-- 目击动态 -->
+  <!-- 打卡记录（本人） -->
   <block wx:else>
-    <view class="card" wx:for="{{sightings}}" wx:key="_id">
-      <view class="flex-between">
-        <view class="flex">
+    <view class="card sight-card" wx:for="{{sightings}}" wx:key="_id">
+      <view class="sight-head">
+        <view class="sight-cat">
           <view class="cat-name" wx:if="{{item.catId}}" bindtap="goDetail" data-id="{{item.catId}}" hover-class="pressed">
             {{item.cat ? item.cat.name : '未知'}}
           </view>
@@ -69,9 +90,11 @@
           <view class="tag ok small" wx:if="{{item.feedStatus === 'fed'}}">本人投喂</view>
           <view class="tag info small" wx:if="{{item.feedStatus === 'fedByOther'}}">他人已喂</view>
         </view>
-        <text class="small muted">{{item.timeText}}</text>
+        <text class="sight-time">{{item.timeText}}</text>
       </view>
-      <view class="note" wx:if="{{item.note}}">{{item.note}}</view>
+      <!-- 结构化标签（合规改造：替代原自由文本 note）——用户输入只有枚举值，这里只是把枚举翻成中文 -->
+      <view class="note" wx:if="{{item.tagText}}">{{item.tagText}}</view>
+      <view class="small muted" wx:elif="{{item.visibility !== 'public'}}">仅自己可见</view>
       <view class="photo-row" wx:if="{{item.photosSmall.length}}">
         <!-- 展示用缩略图（photosSmall 由 utils/photo.js 生成），点开预览仍是可直连的 https 原图 -->
         <image
@@ -90,8 +113,11 @@
           bindtap="previewPhoto"
         />
       </view>
-      <view class="small muted" style="margin-top:12rpx">
-        📍 {{item.locationName || '未记录位置'}} · 上报人 {{item.reporterName}}
+      <view class="sight-foot">
+        <text class="foot-ico">📍</text>
+        <text class="ellipsis">{{item.locationName || '未记录位置'}}</text>
+        <text class="foot-sep">·</text>
+        <text>{{item.reporterName}}</text>
       </view>
     </view>
     <view class="empty" wx:if="{{!loading && !sightings.length}}">
@@ -106,7 +132,7 @@
        "does not have a method" 或静默无响应（本页 FAB 主入口曾整个失效）。 -->
   <view class="fab" bindtap="onFabTap"
     wx:if="{{(tab === 'cat' && canAdd) || (tab === 'sighting' && isMember)}}">
-    {{tab === 'cat' ? '+ 建档' : '+ 打卡'}}
+    <text class="fab-plus">＋</text><text>{{tab === 'cat' ? '建档' : '打卡'}}</text>
   </view>
 
 </view>

@@ -1,4 +1,4 @@
-<view class="cat-card" wx:if="{{cat}}" bindtap="onTap">
+<view class="cat-card" wx:if="{{cat}}" bindtap="onTap" hover-class="card-press">
   <view class="avatar">
     <image wx:if="{{avatar}}" src="{{avatar}}" mode="aspectFill" lazy-load="{{true}}" binderror="onAvatarError" />
     <text wx:else>🐱</text>
@@ -20,4 +20,5 @@
       <view class="tag gray" wx:if="{{cat.sightingCount}}">目击 {{cat.sightingCount}}</view>
     </view>
   </view>
+  <text class="go">›</text>
 </view>

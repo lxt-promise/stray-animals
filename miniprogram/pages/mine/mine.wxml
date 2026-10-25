@@ -2,6 +2,7 @@
 
   <!-- 用户信息 -->
   <view class="card profile">
+    <view class="profile-glow"></view>
     <button class="avatar avatar-btn" open-type="chooseAvatar" bindchooseavatar="onChooseAvatar">
       <image wx:if="{{avatarView}}" src="{{avatarView}}" mode="aspectFill" />
       <text wx:else>🐱</text>
@@ -10,98 +11,119 @@
       <input class="p-name-input" type="nickname" value="{{user.nickName}}" placeholder="点此设置昵称"
         bindblur="onNickName" bindconfirm="onNickName" confirm-type="done" />
       <view class="p-role">
+        <!-- 等级称号：贴在头像/昵称旁，一眼能看到自己的段位。
+             点击进入「等级与积分」—— 这里刻意只留称号，不放积分/进度，
+             否则「我的」页又变成账本页了。 -->
+        <view class="tag gold lv-tag" bindtap="goLevelPoints" hover-class="pressed">
+          <text>{{wallet.levelText}}</text><text class="lv-arrow">›</text>
+        </view>
         <view class="tag {{isSuper ? 'gold' : (isMember ? 'ok' : 'gray')}}">{{isSuper ? '超级管理员' : (isMember ? (isAdmin ? '管理员' : '社团成员') : '爱猫同学')}}</view>
-        <text class="small muted" wx:if="{{school}}">{{school.name}}</text>
       </view>
-      <text class="small muted edit-hint">点击头像换图 · 点昵称可改</text>
+      <view class="p-school" wx:if="{{school}}">
+        <text class="p-school-dot"></text>
+        <text>{{school.name}}</text>
+      </view>
     </view>
   </view>
+  <view class="edit-hint">点头像换图 · 点昵称可改 · 点等级看积分</view>
 
-  <!-- 我的数据 -->
+  <!-- 我的数据：猫粮值 / 打卡次数 / 图鉴数（三格都可点，各自跳到明细页）
+       积分值不在这里显示 —— 它是等级的依据，点上方等级标签才进明细
+       版式：图标在左（浅橙圆角方块），右侧竖排「标签 / 数值」 -->
   <view class="stat-grid">
     <view class="item">
-      <view class="stat-card">
-        <view class="num">{{stats.points}}</view>
-        <view class="lbl">猫粮值</view>
+      <view class="stat-card" bindtap="goFoodDetail" hover-class="stat-hover">
+        <view class="stat-ico">🍚</view>
+        <view class="stat-body">
+          <view class="lbl">猫粮值<text class="stat-go">›</text></view>
+          <view class="num">{{stats.food}}</view>
+        </view>
       </view>
     </view>
     <view class="item">
-      <view class="stat-card">
-        <view class="num">{{stats.sightingCount}}</view>
-        <view class="lbl">打卡次数</view>
+      <view class="stat-card" bindtap="goCatsSighting" hover-class="stat-hover">
+        <view class="stat-ico">📷</view>
+        <view class="stat-body">
+          <view class="lbl">打卡次数<text class="stat-go">›</text></view>
+          <view class="num">{{stats.sightingCount}}</view>
+        </view>
       </view>
     </view>
     <view class="item">
-      <view class="stat-card">
-        <view class="num">{{stats.catSeen}}</view>
-        <view class="lbl">图鉴收集</view>
+      <view class="stat-card" bindtap="goDex" hover-class="stat-hover">
+        <view class="stat-ico">📖</view>
+        <view class="stat-body">
+          <!-- 图鉴是「已收集 / 本校总数」，只给 3 看不出还差几只。
+               分母单独一层 <text> 才能做小字号：WXML 的 mustache 不支持字符串拼接，
+               写 {{seen + '/' + total}} 会被静默忽略成空白。
+               total 为 0（未绑定学校 / 本校暂无档案）时不摆假分母，用「—」表示无数据。 -->
+          <view class="lbl">图鉴数<text class="stat-go">›</text></view>
+          <view class="num" wx:if="{{dexSummary.total}}">{{stats.catSeen}}<text class="num-sub">/{{dexSummary.total}}</text></view>
+          <view class="num dim" wx:else>—</view>
+        </view>
       </view>
     </view>
   </view>
 
-  <!-- 图鉴进度（对齐预览：进度条 + 解锁墙） -->
-  <view class="card mt" wx:if="{{dex.length}}">
-    <view class="card-title">
-      图鉴进度
-      <view class="more" bindtap="goCats" hover-class="pressed">去猫谱 ›</view>
-    </view>
-    <view class="flex-between small muted" style="margin-bottom:16rpx">
-      <text>已收集 {{stats.catSeen}} / {{dexTotal}}</text>
-      <text>{{dexPercent}}%</text>
-    </view>
-    <view class="progress">
-      <view class="bar" style="width: {{dexPercent}}%"></view>
-    </view>
-    <view class="dex-row">
-      <view class="dex-item {{item.unlocked ? '' : 'locked'}}" wx:for="{{dex}}" wx:key="id"
-        data-id="{{item.id}}" bindtap="goCat">
-        <image wx:if="{{item.avatar && item.unlocked}}" src="{{item.avatar}}" mode="aspectFill"
-               binderror="onDexAvatarErr" data-i="{{index}}" />
-        <text wx:elif="{{item.unlocked}}">🐱</text>
-        <text wx:else>?</text>
-      </view>
-    </view>
-    <view class="small muted" style="margin-top:16rpx;line-height:1.7">
-      每拍到一只没见过的猫，图鉴自动解锁；灰色的是还没遇到的同学。
-    </view>
-  </view>
+  <!-- 图鉴进度已挪到独立页面（pages/dex）：这里只留「图鉴收集」入口，
+       点进去看进度条与解锁墙。原来在这一页铺 8 格墙，把打卡与菜单挤到很下面。 -->
 
-  <!-- 学校设置 -->
-  <view class="card mt">
+  <!-- 学校：只做「身份归属」展示 + 换校。
+       地图中心 / 地图范围属于学校级配置，已全部迁到「超级管理后台 → 校园管理」，
+       普通用户（包括超管）在这里不再看到坐标与缩放 —— 个人页不该有基础设施配置。 -->
+  <view class="card mt school-card">
     <view class="card-title">
-      学校
-      <view class="more" bindtap="toggleSchoolForm" hover-class="pressed">{{showSchoolForm ? '收起' : '创建 / 切换'}}</view>
+      我的学校
+      <text class="more" wx:if="{{isSuper}}" data-url="/pages/admin/admin" bindtap="go">校园管理 ›</text>
     </view>
-    <view wx:if="{{!showSchoolForm && school}}">
-      <view class="row"><text class="label">当前</text><text class="value">{{school.name}} {{school.campus}}</text></view>
-      <view class="row" wx:if="{{school.intro}}"><text class="label">简介</text><text class="value">{{school.intro}}</text></view>
-      <view class="row">
-        <text class="label">地图中心</text>
-        <text class="value">{{school.center ? '已设置' : '未设置（用默认范围）'}}</text>
+
+    <!-- 已绑定：本校信息（未绑定时走下面的 wx:else —— 必须说清"为什么图鉴是空的"） -->
+    <block wx:if="{{school}}">
+      <view class="school-hero">
+        <view class="school-logo">🏫</view>
+        <view class="school-hero-main">
+          <view class="school-name">{{school.name}}</view>
+          <view class="school-chips">
+            <text class="chip solid" wx:if="{{school.campus}}">{{school.campus}}</text>
+            <text class="chip" wx:if="{{school.city}}">{{school.city}}</text>
+          </view>
+        </view>
       </view>
-      <block wx:if="{{isSuper}}">
-        <view class="form-item">
-          <text class="label">地图范围</text>
-          <picker mode="selector" range="{{scaleOptions}}" range-key="label"
-            value="{{scaleIndex}}" bindchange="onScaleChange">
-            <view class="picker-value">{{scaleOptions[scaleIndex].label}}</view>
-          </picker>
-        </view>
-        <view class="range-actions">
-          <button class="btn btn-ghost btn-sm" bindtap="setSchoolCenter">选择地图中心点</button>
-          <button class="btn btn-sm" bindtap="saveScale">保存范围</button>
-        </view>
-        <view class="small muted" style="margin-top:12rpx;line-height:1.7">
-          「选择地图中心点」会同时保存中心与当前范围；只想调整大小就改上面的级别后点「保存范围」。
-          保存后地图页只会展示这块校园区域内的猫咪点位。
-        </view>
-        <view class="small muted" style="margin-top:8rpx;line-height:1.7">
-          当前：中心 {{school.center ? school.center.lat : '未设置'}}<text wx:if="{{school.center}}">, {{school.center.lng}}</text>
-          · 缩放 {{school.scale || '未设置'}}
-        </view>
-      </block>
+      <view class="school-intro" wx:if="{{school.intro}}">{{school.intro}}</view>
+    </block>
+    <view wx:else class="school-empty">
+      <view class="school-empty-title">还没绑定学校</view>
+      <view class="small muted">图鉴、打卡与地图都按学校统计，先选一所本校吧。</view>
     </view>
-    <view wx:if="{{!showSchoolForm && !school}}" class="small muted">未绑定学校</view>
+
+    <!-- 选校下拉：原生 picker 就是小程序里的下拉框，选中即可绑定 -->
+    <picker mode="selector" range="{{schoolOptions}}" range-key="label" bindchange="onPickSchool">
+      <view class="school-pick" hover-class="pressed">
+        <view class="school-pick-left">
+          <text class="school-pick-ico">⇄</text>
+          <view class="school-pick-txt">
+            <view class="school-pick-main">{{school ? '切换学校' : '选择学校'}}</view>
+            <!-- 副文案在 JS 里拼好：WXML 的 mustache 对字符串拼接是**静默忽略**的 -->
+            <view class="school-pick-sub">{{schoolPickHint}}</view>
+          </view>
+        </view>
+        <text class="school-pick-side">{{schoolPickSide}} ›</text>
+      </view>
+    </picker>
+
+    <!-- 审核中 / 被驳回：状态必须可见，否则用户会以为提交没成功反复提交 -->
+    <view class="apply-state small mt" wx:if="{{schoolApply.pending}}">
+      ⏳「{{schoolApply.pending.name}}」的建校申请审核中，通过后会自动绑定。
+    </view>
+    <view class="apply-state rejected small mt" wx:if="{{schoolApply.rejected}}">
+      ✕「{{schoolApply.rejected.name}}」的申请未通过，可修改后重新提交。
+    </view>
+
+    <!-- 找不到本校 → 申请新建 -->
+    <view class="menu-item school-apply-toggle" bindtap="toggleSchoolForm" hover-class="pressed">
+      <text>{{showSchoolForm ? '收起新建申请' : '没有我的学校？申请新建'}}</text>
+      <text class="arrow {{showSchoolForm ? 'open' : ''}}">›</text>
+    </view>
 
     <block wx:if="{{showSchoolForm}}">
       <view class="form-item">
@@ -120,14 +142,9 @@
         <text class="label">简介</text>
         <input placeholder="一句话介绍" value="{{schoolForm.intro}}" data-key="intro" bindinput="onInput" />
       </view>
-      <button class="btn mt" bindtap="createSchool" wx:if="{{isSuper}}">创建并绑定</button>
-      <view class="small muted mt" wx:else>仅超级管理员可创建学校</view>
-
-      <view class="mt" wx:if="{{schools.length}}">
-        <view class="bold small" style="margin-bottom:12rpx">已有学校</view>
-        <view class="school-item" wx:for="{{schools}}" wx:key="_id" data-id="{{item._id}}" bindtap="bindSchool">
-          {{item.name}} {{item.campus}}
-        </view>
+      <button class="btn mt" bindtap="submitSchoolApply">{{isSuper ? '创建并绑定' : '提交审核'}}</button>
+      <view class="small muted mt" wx:if="{{!isSuper}}">
+        提交后由超级管理员审核，通过前不会创建学校；通过后自动绑定为你的学校。
       </view>
     </block>
   </view>
@@ -195,7 +212,7 @@
           <view class="entry-inner">
             <view class="ico">💰</view>
             <view class="txt">资金公示</view>
-            <view class="desc">捐赠与支出透明</view>
+            <view class="desc">收支公开透明</view>
           </view>
         </view>
         <view class="entry" data-url="/pages/member/member" bindtap="go">
@@ -207,7 +224,7 @@
         </view>
         <!-- 目击建档入口：cats 是 tabBar 页，navigateTo 会被微信静默拒绝
              （can not navigateTo a tabbar page，表现为「点了没反应」），
-             必须走 globalData + switchTab（与首页「最新动态」同一模式） -->
+             必须走 globalData + switchTab（与首页「我的打卡」同一模式） -->
         <view class="entry" bindtap="goCatsSighting">
           <view class="entry-inner">
             <view class="ico">📷</view>
@@ -221,32 +238,70 @@
 
   <!-- 入口 -->
   <view class="card mt">
-    <view class="menu-item" data-url="/pages/points/points" bindtap="go">
-      <text>猫粮明细</text><text class="arrow">›</text>
+    <!-- 只展示猫粮值的流水；积分总值从上方等级标签进入 -->
+    <view class="menu-item" data-url="/pages/points/points?type=food" bindtap="go" hover-class="pressed">
+      <view class="mi-ico">🍚</view>
+      <text class="mi-txt">猫粮明细</text>
+      <text class="arrow">›</text>
+    </view>
+    <!-- 图鉴收集：进度与解锁墙在独立页面（pages/dex），这里只显示本校的收集数 -->
+    <view class="menu-item" bindtap="goDex" hover-class="pressed">
+      <view class="mi-ico">📖</view>
+      <text class="mi-txt">图鉴收集</text>
+      <view class="menu-right">
+        <text class="my-count">{{dexSummary.text}}</text>
+        <text class="arrow">›</text>
+      </view>
     </view>
     <!-- 我的打卡：从独立卡片迁移为菜单项，点击后才展开下方记录（默认收起，页面更干净） -->
     <view class="menu-item" bindtap="toggleMyCheckin" hover-class="pressed">
-      <text>我的打卡</text>
+      <view class="mi-ico">📷</view>
+      <text class="mi-txt">我的打卡</text>
       <view class="menu-right">
         <text class="my-count" wx:if="{{stats.sightingCount}}">共 {{stats.sightingCount}} 次</text>
         <text class="arrow {{myCheckinOpen ? 'open' : ''}}">›</text>
       </view>
     </view>
-    <view class="menu-item" data-url="/pages/admin/admin" bindtap="go" wx:if="{{isSuper}}">
-      <text>超级管理后台</text><text class="arrow">›</text>
+    <view class="menu-item" data-url="/pages/admin/admin" bindtap="go" wx:if="{{isSuper}}" hover-class="pressed">
+      <view class="mi-ico">🛠</view>
+      <text class="mi-txt">超级管理后台</text>
+      <text class="arrow">›</text>
     </view>
-    <view class="menu-item" data-url="/pages/member/member" bindtap="go">
-      <text>身份与入社申请</text><text class="arrow">›</text>
+    <view class="menu-item" data-url="/pages/member/member" bindtap="go" hover-class="pressed">
+      <view class="mi-ico">🎫</view>
+      <text class="mi-txt">身份与入社申请</text>
+      <text class="arrow">›</text>
     </view>
-    <view class="menu-item" data-url="/pages/fund/fund" bindtap="go" wx:if="{{isMember}}">
-      <text>资金公示</text><text class="arrow">›</text>
+    <view class="menu-item" data-url="/pages/fund/fund" bindtap="go" wx:if="{{isMember}}" hover-class="pressed">
+      <view class="mi-ico">💰</view>
+      <text class="mi-txt">资金公示</text>
+      <text class="arrow">›</text>
+    </view>
+    <!-- 规则说明：原来常驻在页面底部，占屏且没人看；收进菜单点击展开 -->
+    <view class="menu-item" bindtap="toggleRules" hover-class="pressed">
+      <view class="mi-ico">📋</view>
+      <text class="mi-txt">规则说明</text>
+      <view class="menu-right">
+        <text class="my-count">积分 · 猫粮</text>
+        <text class="arrow {{rulesOpen ? 'open' : ''}}">›</text>
+      </view>
     </view>
     <!-- 意见反馈：视觉层用普通 view（与其他菜单项严格一致），
          button 透明覆盖整行只负责拉起客服会话 -->
     <view class="menu-item">
-      <text class="cb-label">意见反馈</text>
+      <view class="mi-ico">💬</view>
+      <text class="mi-txt cb-label">意见反馈</text>
       <text class="arrow">›</text>
       <button class="contact-hit" open-type="contact" session-from="feedback">意见反馈</button>
+    </view>
+  </view>
+
+  <!-- 规则说明：点击菜单项后展开。文案来自 const.RULES（与等级页共用一份） -->
+  <view class="card mt" wx:if="{{rulesOpen}}">
+    <view class="card-title">规则说明</view>
+    <view class="rule-block" wx:for="{{rules}}" wx:for-item="r" wx:key="title">
+      <view class="rule-title">{{r.title}}</view>
+      <view class="rule-line" wx:for="{{r.lines}}" wx:for-item="line" wx:for-index="li" wx:key="*this">{{line}}</view>
     </view>
   </view>
 
@@ -264,7 +319,8 @@
           </view>
           <text class="small muted">{{item.timeText}}</text>
         </view>
-        <view class="small muted ellipsis" wx:if="{{item.note}}">{{item.note}}</view>
+        <!-- 结构化标签（合规改造：替代原自由文本 note） -->
+        <view class="small muted ellipsis" wx:if="{{item.tagText}}">{{item.tagText}}</view>
         <view class="photo-row" wx:if="{{item.photosSmall.length}}">
           <image wx:for="{{item.photosSmall}}" wx:for-item="p" wx:for-index="pi" wx:key="*this"
             src="{{p}}" mode="aspectFill" lazy-load="{{true}}"
@@ -279,8 +335,6 @@
     </view>
   </view>
 
-  <view class="tip small muted">
-    猫粮值规则：目击打卡 +10，本人投喂 +10，投喂有照片 +15，上报新猫 +30，首次遇见某只猫 +20，参与 TNR 记录 +50。每日打卡积分上限 60，防止刷分。
-  </view>
+  <!-- 规则说明已收进「规则说明」菜单项（点击展开），页面底部不再常驻 -->
 
 </view>

@@ -1,5 +1,5 @@
 const app = getApp()
-const { C, itemOf, fromNow, distance, distanceText, shareBehavior } = require('../../utils/util.js')
+const { C, itemOf, fromNow, distance, distanceText, shareBehavior, sightTagText } = require('../../utils/util.js')
 const photo = require('../../utils/photo.js')
 
 /** 默认中心（无学校时的兜底）：南京·东南大学四牌楼校区 */
@@ -13,9 +13,11 @@ const CARTOON_ICON_MAP = {
   calico: 'calico', tortoiseshell: 'calico', siamese: 'gray',
   white: 'white', black: 'black', gray: 'gray', other: 'tabby'
 }
-/** marker 尺寸：96x132 等比缩小（40 宽 → 55 高） */
-const MARKER_W = 40
-const MARKER_H = 55
+/** marker 尺寸：96x132 等比缩小（32 宽 → 44 高）。
+ *  再大就会和相邻猫的气泡糊在一起 —— 校园里猫点常常只隔几十米，
+ *  缩放到 16 级时 40x55 的图钉 + 常显气泡会互相压住（真机截图反馈）。 */
+const MARKER_W = 32
+const MARKER_H = 44
 
 /** 投喂提醒阈值：超过这么多小时没投喂，就在地图上常显「未投喂」气泡 */
 const FEED_ALERT_HOURS = 12
@@ -105,10 +107,10 @@ Page(Object.assign({
   },
 
   onUnload() {
-    if (this._reassertTimer) { clearTimeout(this._reassertTimer); this._reassertTimer = null }
+    this.cancelReassert()
   },
   onHide() {
-    if (this._reassertTimer) { clearTimeout(this._reassertTimer); this._reassertTimer = null }
+    this.cancelReassert()
   },
 
   onShow() {
@@ -139,7 +141,7 @@ Page(Object.assign({
           const fresh = await app.callApi('getSchool', { schoolId: school._id })
           if (fresh) {
             school = fresh
-            app.globalData.school = fresh
+            app.setSchool(fresh)
           }
         } catch (e) { /* 拉取失败则用缓存 */ }
       }
@@ -148,23 +150,49 @@ Page(Object.assign({
       // 再做后续「取点位」的调用 —— 否则会出现「改了中心点但地图没动」的错觉。
       const patch = {}
       if (school) {
+        // 学校档里带来的「理想视角」。注意它不一定会落到 patch 上：
+        // 用户已经拖过图时不覆盖（见下方注释），所以先攒在一个临时对象里。
+        const next = {}
         // 中心点必须 isFinite：typeof 检查放 NaN 通过，会把 NaN center 带进
-        // bounds 让矩形全变 NaN、setBoundary 静默失效（「范围怎么改都不生效」）
-        if (school.center && Number.isFinite(school.center.lat) && Number.isFinite(school.center.lng)) patch.center = school.center
-        if (school.scale) patch.scale = school.scale
+        // bounds 让矩形全变 NaN、点位过滤静默失效（「范围怎么改都不生效」）
+        if (school.center && Number.isFinite(school.center.lat) && Number.isFinite(school.center.lng)) next.center = school.center
+        if (school.scale) next.scale = school.scale
         patch.school = school
-        // 少数历史学校档只有 center、没有 bounds —— 本地按 scale 补出可视矩形，
-        // 保证「区域聚焦」在云端数据补齐前也能生效，不会退化成全国范围。
-        const b = school.bounds && school.bounds.sw && school.bounds.ne
-          ? school.bounds
-          : (patch.center ? this.boundsFromCenter(patch.center, patch.scale || 16) : null)
+        // ⚠️ 只在学校档**显式存了 bounds** 时才做范围筛选，绝不本地按 center+scale 推导。
+        // 旧写法会补一个「视野大小」的矩形（scale 16 → ±0.003° ≈ ±330m），而真实校园
+        // 动辄一两公里 —— 于是在稍远处打的卡整只猫被判越界丢掉，
+        // 现场就是「最近几个目击都没显示在地图上」。
+        // 没存 bounds 时不过滤也安全：点位查询已经 where({schoolId}) 限定本校，
+        // 不会串到别的学校去。
+        const b = (school.bounds && school.bounds.sw && school.bounds.ne) ? school.bounds : null
         bounds = b
         patch.bounds = b
         this._schoolApplied = true   // 已拿到真实学校数据，onReady 之后才允许补居中
+        // 学校换了（或首次进入）才复位「用户拖过图」的标记：
+        // 同校 onShow 刷新不能复位 —— 否则切个 tab 回来，地图被拽回中心。
+        const pc = this._appliedCenter
+        if (next.center && (!pc || pc.lat !== next.center.lat || pc.lng !== next.center.lng)) {
+          this._userPanned = false
+          this._appliedCenter = next.center
+        }
+        // 用户已经自己拖过图时，**连 center/scale 数据都不写回学校默认值**。
+        // 只让 _userPanned 挡住 moveMapTo 是不够的：部分基础库下 `<map>` 的
+        // latitude/longitude 属性变更自己就会重新定位，于是「拖到别处 →
+        // 切个 tab 回来 → 视角又跳回校园中心」。点位范围照常更新，
+        // 只把镜头控制权留给用户。
+        if (!this._userPanned) {
+          if (next.center) patch.center = next.center
+          if (next.scale) patch.scale = next.scale
+        }
         this.setData(patch)
       }
 
-      const res = await app.callApi('listMapPoints', { zoom: patch.scale || this.data.scale })
+      // bounds 必须传给云端：点位裁决（打卡位置 vs 档案位置、是否越界）在服务端完成。
+      // 前端再过滤一次会和云端口径打架，且前端拿不到「档案位置」这个回退项。
+      const res = await app.callApi('listMapPoints', {
+        zoom: patch.scale || this.data.scale,
+        bounds: bounds || null
+      })
       const points = res.points || []
       const clusters = res.clusters || []
 
@@ -172,18 +200,13 @@ Page(Object.assign({
       const markerMap = {}
       let mid = 0
 
-      // 区域聚焦：丢弃明确落在校园范围外的点位（服务端 bounds 为空时不过滤）
-      let outside = 0
-      const keep = p => {
-        // 坐标必须 isFinite：typeof 检查放 NaN 通过，无 bounds 时更是直接放行，
-        // NaN  latitude 塞进 marker 会导致地图渲染异常/点位消失
-        if (!Number.isFinite(p.lat) || !Number.isFinite(p.lng)) return false
-        if (!bounds || !bounds.sw || !bounds.ne) return true
-        const ok = p.lat >= bounds.sw.lat && p.lat <= bounds.ne.lat &&
-                   p.lng >= bounds.sw.lng && p.lng <= bounds.ne.lng
-        if (!ok) outside++
-        return ok
-      }
+      // ⚠️ 这里**不再**按 bounds 过滤点位 —— 旧写法会在本地丢掉越界点位，
+      // 而「最新一次打卡在校外」时它已经是这只猫唯一的坐标，丢了猫就整只消失。
+      // 裁决移到服务端（有档案常驻位置可回退），这里只做渲染层安全校验：
+      // 坐标必须 isFinite —— typeof 检查放 NaN 通过，NaN 塞进 marker 会让整片点位消失。
+      const keep = p => Number.isFinite(p.lat) && Number.isFinite(p.lng)
+      // 越界数量由云端统计（它才知道有没有回退成功）
+      const outside = Number(res.outside) || 0
       const inPoints = points.filter(keep)
 
       inPoints.forEach(p => {
@@ -204,17 +227,18 @@ Page(Object.assign({
           latitude: c.lat,
           longitude: c.lng,
           title: c.count + ' 只猫',
-          width: 46,
-          height: 46,
+          // 聚合簇跟着猫头 marker 一起缩小（46 → 38），否则多点叠放时簇比猫还大
+          width: 38,
+          height: 38,
           label: {
             content: '🐾' + c.count,
             color: '#FFFFFF',
-            fontSize: 12,
+            fontSize: 11,
             bgColor: '#F97316',
             borderColor: '#FFFFFF',
-            borderWidth: 2,
-            borderRadius: 24,
-            padding: 7,
+            borderWidth: 1,
+            borderRadius: 19,
+            padding: 5,
             textAlign: 'center',
             anchorX: 0,
             anchorY: 0
@@ -253,6 +277,17 @@ Page(Object.assign({
       // applyNear 换成缩略链接。avatarId（原始 fileID）保留在列表项上，
       // 供 onSheetAvatarErr 在临时链接挂掉时回退渲染。
       const nearView = photo.hydrateCats(cats, { px: 240 }, applyNear)
+      // 打卡表查询失败时云端会回原因（缺索引 / 超时），别再让它只躺在云函数日志里
+      if (res.warn) console.warn('[map] ' + res.warn)
+      // 点位来源统计：排查「位置不对 / 某只猫没上图」时先看这一行 ——
+      // 它能直接区分「压根没拿到打卡」和「拿到了但被判越界」。
+      const allCats = inPoints.concat(
+        clusters.filter(c => keep(c)).reduce((acc, c) => acc.concat(c.cats || []), []))
+      const fromSight = allCats.filter(p => p.fromSighting).length
+      console.log('[map] 点位 单点' + inPoints.length + ' / 簇' + clusters.length +
+        ' · 猫共' + allCats.length + ' 只（打卡位置 ' + fromSight +
+        ' · 档案位置 ' + (allCats.length - fromSight) + '）· 越界 ' + outside +
+        ' · 云端总数 ' + (res.total || 0) + (res.warn ? ' · ⚠ ' + res.warn : ''))
       this.setData(Object.assign({
         markers, loading: false,
         clusters: clusters.length,
@@ -260,18 +295,19 @@ Page(Object.assign({
         scope: res.scope || 'public'
       }, this.nearListFields(nearView)))
       this._markerMap = markerMap
-      // 显式把地图挪到目标中心并套用范围限制（属性绑定不保证重新定位）。
-      // 用 patch.center 而不是 this.data.center：data 可能在 setData 回调里还没看到最新值。
-      const c = patch.center || (this._schoolApplied ? this.data.center : null)
-      console.log('[map] 应用校园范围 → center=', JSON.stringify(c),
-        'scale=', patch.scale || this.data.scale,
-        'bounds=', JSON.stringify(patch.bounds || this.data.bounds))
+      console.log('[map] 本校范围=', JSON.stringify(patch.bounds || this.data.bounds),
+        '（只用于筛选点位，不再限制镜头拖动）')
       if (!patch.bounds && !this.data.bounds) {
-        console.warn('[map] 学校缺少 bounds（云端未回补），当前不做区域约束。' +
+        console.warn('[map] 学校缺少 bounds（云端未回补），点位不做区域筛选。' +
           '若「范围怎么改都不生效」，先看这条：学校档里 center/bounds 是否为空。')
       }
-      if (c && typeof c.lat === 'number') {
-        this.scheduleReassert(c, patch.scale || this.data.scale)
+      // 用户已拖过图就彻底不动镜头（含不再重定位）；
+      // 否则显式把地图挪到目标中心（属性绑定不保证重新定位）。
+      if (!this._userPanned) {
+        const c = patch.center || (this._schoolApplied ? this.data.center : null)
+        if (c && Number.isFinite(c.lat) && Number.isFinite(c.lng)) {
+          this.scheduleReassert(c, patch.scale || this.data.scale)
+        }
       }
     } catch (e) {
       // 聚合接口不可用时退化为猫谱直读，保证页面不白屏
@@ -296,10 +332,12 @@ Page(Object.assign({
   },
 
   /**
-   * 把地图定位到目标中心 + 套用范围限制。
+   * 把地图居中到目标点。
    *
    * 为什么要显式调用而不是只靠属性绑定：
    *   `<map>` 的 latitude/longitude 属性变更在部分基础库下不会自动重新定位。
+   *   （反过来说，在另一些版本里属性变更又会触发重新定位 —— 所以 load() 里
+   *    用户拖过图之后连 center/scale 都不写回，避免两个机制互相打架。）
    *
    * 分两条路径（重要）：
    *  - 真机：moveToLocation 可用，直接把中心挪过去。
@@ -309,7 +347,7 @@ Page(Object.assign({
    *    padding 给足够大的边距 —— 效果等价于「居中」，且不会报错。
    *
    * 另：MapContext 没有 setScale（只有 getScale），缩放只能靠 scale 属性。
-   *     setBoundary 能从地图层面限制显示范围，正好实现「只展示这块校园」。
+   *     setBoundary 已于 2026-10-24 移除（它会禁止把边缘点位拖到屏幕中心）。
    */
   moveMapTo(center, scale) {
     try {
@@ -319,22 +357,14 @@ Page(Object.assign({
         return
       }
 
-      // 1) 限制可视范围（可选能力，老基础库或地图未就绪时静默跳过）
-      const b = this.data.bounds
-      if (this._mapReady && b && b.sw && b.ne && this._mapCtx.setBoundary) {
-        try {
-          this._mapCtx.setBoundary({
-            southwest: { latitude: b.sw.lat, longitude: b.sw.lng },
-            northeast: { latitude: b.ne.lat, longitude: b.ne.lng },
-            success: () => {},
-            fail: err => console.warn('[map] setBoundary 失败（可忽略）', err && err.errMsg)
-          })
-        } catch (e) {
-          console.warn('[map] setBoundary 抛错（可忽略）', e && e.message)
-        }
-      }
+      // ⚠️ 这里曾经用 setBoundary 把可视范围锁在校园矩形（外扩 60%）里。
+      // 2026-10-24 用户反馈「拖不到拐角」后**彻底移除**：只要设置了边界，
+      // 无论外扩多少，拖到边缘总会被拉回，屏幕角落的点位就永远无法居中 ——
+      // 而「把某个 marker 拖到屏幕中心看仔细」是地图最基本的操作。
+      // 校园范围约束保留在**数据层**（只展示本校点位，见 load 里的 keep），
+      // 不再约束镜头 —— 展示范围 ≠ 可视范围，这两件事必须分开。
 
-      // 2) 居中到目标点
+      // 居中到目标点
       const pt = [{ latitude: center.lat, longitude: center.lng }]
       if (this._isDevtools()) {
         // 工具：用 includePoints 居中（工具支持），两个相同点 + 大 padding ≈ 单纯平移不缩放
@@ -373,12 +403,36 @@ Page(Object.assign({
    * （期间用户若自己拖了地图，最多在 1.5s 内被拉回校园范围，属于预期行为）。
    */
   scheduleReassert(center, scale) {
+    // 用户已经自己拖过地图就别再抢了：数据晚到时把地图从用户手里拽回中心，
+    // 体感就是「地图拖不动」。
+    if (this._userPanned) return
     this.moveMapTo(center, scale)
     if (this._reassertTimer) clearTimeout(this._reassertTimer)
     this._reassertTimer = setTimeout(() => {
+      if (this._userPanned) return
       this.moveMapTo(center, scale)
-      setTimeout(() => this.moveMapTo(center, scale), 1250)
+      this._reassertTail = setTimeout(() => {
+        if (!this._userPanned) this.moveMapTo(center, scale)
+      }, 1250)
     }, 250)
+  },
+
+  /** 作废所有未执行的入场重定位（用户开始拖动时调用） */
+  cancelReassert() {
+    if (this._reassertTimer) { clearTimeout(this._reassertTimer); this._reassertTimer = null }
+    if (this._reassertTail) { clearTimeout(this._reassertTail); this._reassertTail = null }
+  },
+
+  /**
+   * 视野变化：只认「用户手势」这一种。
+   * includePoints / moveToLocation / setBoundary 触发的变化 causedBy 是
+   * 'update' / 'scale'，不能当成用户拖动，否则入场定位会被自己打断。
+   */
+  onRegionChange(e) {
+    if (e && e.type === 'begin' && e.causedBy === 'drag') {
+      this._userPanned = true
+      this.cancelReassert()
+    }
   },
 
   /** 是否运行在「微信开发者工具」中（真机返回 false） */
@@ -419,7 +473,9 @@ Page(Object.assign({
     let color = done ? '#2FA36B' : '#C2410C'
     let borderColor = done ? '#2FA36B' : '#F97316'
     if (feed.label) {
-      content = (feed.pending ? '🍚 ' : '✅ ') + (p.name || '猫咪') + ' · ' + feed.label
+      // 分隔符不留空格：气泡宽度直接决定相邻两点会不会互相覆盖，
+      // 「小灰灰·未投喂」比「小灰灰 · 未投喂」窄十来个像素，读起来一样。
+      content = (feed.pending ? '🍚 ' : '✅ ') + (p.name || '猫咪') + '·' + feed.label
       if (feed.pending) { color = '#B45309'; borderColor = '#F59E0B' }
       else { color = '#15803D'; borderColor = '#22C55E' }
     }
@@ -437,13 +493,16 @@ Page(Object.assign({
         // ⚠️ 只有「欠投喂」的猫常显气泡 —— 全部 ALWAYS 会在猫密集处糊成一片，
         // 反而看不清谁没喂。已投喂的保持点击才出，不抢视觉。
         display: feed.pending ? 'ALWAYS' : 'BYCLICK',
-        padding: 8,
-        borderRadius: 14,
-        borderWidth: 2,
+        // 尺寸整体紧一档（原来是 padding 8 / 字号 12 / 圆角 14 / 边框 2）：
+        // 常显气泡在两点相邻时会互相覆盖，字号 11 + 内边距 5 约窄 25%，
+        // 气泡高度也矮了 6px，上下相邻的两个才不容易叠在一起。
+        padding: 5,
+        borderRadius: 10,
+        borderWidth: 1,
         borderColor,
         bgColor: '#FFFFFF',
         color,
-        fontSize: 12,
+        fontSize: 11,
         textAlign: 'center'
       }
     }
@@ -536,6 +595,10 @@ Page(Object.assign({
     const id = e.detail.markerId || e.markerId
     const m = (this._markerMap || {})[id]
     if (!m) return
+    // 点 marker / 点定位都属于用户主动操作，镜头控制权暂时交回页面 ——
+    // 不清这个标记的话，load() 与 scheduleReassert 会因为「用户拖过图」
+    // 连 center 都不写，点谁都没反应。
+    this._userPanned = false
     if (m.type === 'cluster') {
       // 点聚合气泡 → 放大一级，展开成单点
       this.setData({
@@ -620,7 +683,7 @@ Page(Object.assign({
         timeText: fromNow(s.createdAt),
         feedLabel: feedOf(s.feedStatus).label,
         feedTag: feedOf(s.feedStatus).tag,
-        note: s.note || '',
+        tagText: sightTagText(s),
         photo: photo.display((s.photos && s.photos[0]) || '', 320),
         reporterName: s.reporterName || '匿名'
       }))
@@ -698,6 +761,9 @@ Page(Object.assign({
     const center = (school && school.center && typeof school.center.lat === 'number')
       ? school.center : DEFAULT_CENTER
     const scale = (school && school.scale) || 16
+    // 用户显式点了「回本校」，这里必须复位 panned 标记：
+    // 否则 load/scheduleReassert 会因为「用户拖过图」直接跳过定位，点按钮毫无反应。
+    this._userPanned = false
     // 先 setData 落定，再显式挪地图（属性绑定不保证重新定位）
     this.setData({ center, scale }, () => this.scheduleReassert(center, scale))
   },
@@ -708,6 +774,8 @@ Page(Object.assign({
       success: res => {
         const my = { lat: res.latitude, lng: res.longitude }
         app.globalData.myLocation = my
+        // 同理：定位是用户主动操作，镜头要让给他
+        this._userPanned = false
         this.setData({ myLocation: my, center: my }, () => this.load())
       },
       fail: () => wx.showToast({ title: '需要授权位置权限', icon: 'none' })

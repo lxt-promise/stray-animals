@@ -61,6 +61,9 @@ function runMap() {
     (p) => {
       if (p.endsWith('util.js')) return require(path.join(ROOT, 'utils/util.js'))
       if (p.endsWith('const.js')) return require(path.join(ROOT, 'utils/const.js'))
+      // 页面普遍通过 photo.js 把 cloud:// 换成 https 缩略图（2026-10-15 起）。
+      // 白名单漏了它，脚本会在 eval 里抛「unexpected require」，看起来像回归。
+      if (p.endsWith('photo.js')) return require(path.join(ROOT, 'utils/photo.js'))
       throw new Error('unexpected require ' + p)
     }
   )
@@ -132,6 +135,9 @@ function runCats() {
     (p) => {
       if (p.endsWith('util.js')) return require(path.join(ROOT, 'utils/util.js'))
       if (p.endsWith('const.js')) return require(path.join(ROOT, 'utils/const.js'))
+      // 页面普遍通过 photo.js 把 cloud:// 换成 https 缩略图（2026-10-15 起）。
+      // 白名单漏了它，脚本会在 eval 里抛「unexpected require」，看起来像回归。
+      if (p.endsWith('photo.js')) return require(path.join(ROOT, 'utils/photo.js'))
       throw new Error('unexpected require ' + p)
     }
   )
@@ -175,6 +181,11 @@ function runMine() {
     (p) => {
       if (p.endsWith('util.js')) return require(path.join(ROOT, 'utils/util.js'))
       if (p.endsWith('const.js')) return require(path.join(ROOT, 'utils/const.js'))
+      // 页面普遍通过 photo.js 把 cloud:// 换成 https 缩略图（2026-10-15 起）。
+      // 白名单漏了它，脚本会在 eval 里抛「unexpected require」，看起来像回归。
+      if (p.endsWith('photo.js')) return require(path.join(ROOT, 'utils/photo.js'))
+      // 「我的」页用本地等级表算称号（不依赖云端派生字段，见 utils/level.js 注释）
+      if (p.endsWith('level.js')) return require(path.join(ROOT, 'utils/level.js'))
       throw new Error('unexpected require ' + p)
     }
   )
@@ -200,8 +211,8 @@ function runMine() {
   const mineWxml = fs.readFileSync(path.join(ROOT, 'pages/mine/mine.wxml'), 'utf8')
   check('mine.wxml 无指向 cats 的 data-url（已改 goCatsSighting）', !/data-url="\/pages\/cats\/cats/.test(mineWxml))
   check('mine.wxml 含 goCatsSighting 入口', /bindtap="goCatsSighting"/.test(mineWxml))
-  const pointsWxml = fs.readFileSync(path.join(ROOT, 'pages/points/points.wxml'), 'utf8')
-  check('points.wxml delta 支持负号（删除退回流水）', /item\.delta > 0 \? '\+' : ''/.test(pointsWxml))
+  const pointsJs = fs.readFileSync(path.join(ROOT, 'pages/points/points.js'), 'utf8')
+  check('points 明细 delta 支持负号（删除退回流水）', /r\.delta > 0 \? '\+' : ''/.test(pointsJs))
 
   // WXML 标签配平（两个改动文件）
   for (const f of ['pages/cats/cats.wxml', 'pages/mine/mine.wxml', 'pages/points/points.wxml']) {

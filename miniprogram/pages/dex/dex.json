@@ -1,0 +1,6 @@
+{
+  "navigationBarTitleText": "图鉴收集",
+  "enablePullDownRefresh": true,
+  "backgroundTextStyle": "dark",
+  "usingComponents": {}
+}

@@ -162,8 +162,6 @@ body{
 .ai-btn.p{background:var(--grad);color:#FFFFFF;box-shadow:0 8px 20px rgba(249, 115, 22, .3)}
 .ai-btn.v{background:rgba(146, 88, 32, .08);border:1px solid rgba(67,20,7,.16);color:var(--text)}
 .ai-btn:active{transform:scale(.97)}
-.ai-meta{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:10px;color:rgba(67, 20, 7, .5)}
-.ai-meta i{width:1px;height:9px;background:rgba(255,255,255,.2);display:block}
 
 .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
 .stat{position:relative;overflow:hidden;text-align:center;padding:14px 6px;border-radius:var(--radius);
@@ -178,10 +176,12 @@ body{
 .qb{flex:1;text-align:center;padding:16px 0;border-radius:var(--radius);cursor:pointer;
   background:linear-gradient(180deg,#FFFFFF,#FFFBF6);
   border:1px solid var(--line);box-shadow:0 8px 20px rgba(146, 88, 32, .12)}
-.qb .ico{font-size:24px}
-.qb .t{font-size:12px;color:var(--sub);margin-top:5px}
+.qb .ico{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:17px;margin:0 auto;background:rgba(249,115,22,.09);border:1px solid rgba(249,115,22,.14)}
+.qb .t{font-size:12px;color:var(--sub);margin-top:6px}
 .qb.p{background:linear-gradient(135deg,rgba(251,146,60,.95),rgba(234,88,12,.95));border-color:transparent;
   box-shadow:0 10px 24px rgba(249, 115, 22, .28)}
+.qb.p .ico{background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.32)}
 .qb.p .t{color:#FFFFFF;font-weight:600}
 
 .prog{height:8px;background:rgba(146, 88, 32, .07);border-radius:4px;overflow:hidden;margin-top:10px}
@@ -475,11 +475,6 @@ function pageHome(){
         <div class="ai-btn p" data-act="rec" data-mode="image">📸 拍照识别</div>
         <div class="ai-btn v" data-act="rec" data-mode="video">🎬 视频识别</div>
       </div>
-      <div class="ai-meta">
-        <span class="mono">档案库 6 只</span><i></i>
-        <span class="mono">平均响应 0.8s</span><i></i>
-        <span class="mono">本地特征比对</span>
-      </div>
     </div>
   </div>
 
@@ -487,22 +482,11 @@ function pageHome(){
     <div class="stat"><div class="n">6</div><div class="l">在册猫咪</div></div>
     <div class="stat"><div class="n">67<u>%</u></div><div class="l">绝育率</div></div>
     <div class="stat"><div class="n">42</div><div class="l">本月目击</div></div>
-    <div class="stat"><div class="n">3</div><div class="l">待办任务</div></div>
-    <div class="stat"><div class="n">2</div><div class="l">本月 TNR</div></div>
-    <div class="stat"><div class="n">186</div><div class="l">我的猫粮值</div></div>
   </div>
 
   <div class="quick">
     <div class="qb p" data-act="rec" data-mode="image"><div class="ico">🐾</div><div class="t">目击打卡</div></div>
-    <div class="qb" data-jump="cats"><div class="ico">📷</div><div class="t">最新动态</div></div>
-  </div>
-
-  <div class="card">
-    <div class="fb"><span class="bold">TNR 进展</span><span class="small muted">已绝育 4 / 6</span></div>
-    <div class="prog"><i style="width:67%"></i></div>
-    <div class="small muted" style="margin-top:10px;line-height:1.6">
-      绝育率是衡量校园猫口是否可控的核心指标，国际通行做法是做到 70% 以上。
-    </div>
+    <div class="qb" data-jump="cats"><div class="ico">📷</div><div class="t">打卡记录</div></div>
   </div>
 
   <div class="card">

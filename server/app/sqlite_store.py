@@ -49,6 +49,17 @@ def put(cat_id: str, school_id: str, emb: np.ndarray, source: str = "recognize")
         c.close()
 
 
+def delete(cat_id: str) -> bool:
+    """删掉一只猫的向量（删档案时必须调用，否则留下幽灵残留）。"""
+    c = _conn()
+    try:
+        cur = c.execute("DELETE FROM cat_index WHERE cat_id=?", (cat_id,))
+        c.commit()
+        return cur.rowcount > 0
+    finally:
+        c.close()
+
+
 def get(cat_id: str) -> Optional[np.ndarray]:
     c = _conn()
     try:

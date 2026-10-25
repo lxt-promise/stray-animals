@@ -31,9 +31,62 @@ const { cloud, db, _, COL, AppError, distanceM, cosine, warmCollection } = requi
 const sec = require('./security')
 const points = require('./points')
 
-const TOP_N = 5
-/** 低于该分数视为低置信，只提示「可能是」，不硬判 */
-const LOW_CONF = 55
+/**
+ * 候选列表最多几条（2026-10-25 由 5 改成 2）。
+ *
+ * 必须与服务端 `config.TOP_N` 同值 —— 两边各写一个数字的后果是：
+ * 服务端返回 2 条、本地降级路径返回 5 条，界面上候选数量随引擎状态跳变，
+ * 排查时根本看不出是「库里猫多」还是「口径不一致」。
+ * 这里用注释锁定同源关系，改动时两边一起改。
+ *
+ * 为什么是 2 而不是 5：
+ *  - 候选是让用户**二选一**的。第 3 名往后的展示分基本是个位数（余弦已贴着
+ *    MIN_SIM 匹配线），「3% 的可能是它」对用户没有任何决策价值。
+ *  - 候选越多，Top1 越被稀释：领先幅度（lead）被低分候选拉平，
+ *    「为什么分这么低」反而更难诊断。
+ *  - 少了两条候选，每轮轮询的报文也小一点（候选要带 name/avatar/rawSim 等字段）。
+ */
+const TOP_N = 2
+/**
+ * 低于该分数视为低置信，只提示「可能是」，不硬判。
+ *
+ * 必须与服务端 `config.IDENTIFY_MIN` 同口径（同一把尺子量出来的分数）。
+ * 2026-10-24 校准改动后两者都定在 45：老的 55 配上老的线性窗口，
+ * 等价于「余弦 ≥ 0.83 才算认出来」，而现场同一只猫的另一张照片只有 0.763 ——
+ * 结果是**排序对了、分数 9%、还判定「没认出来」**（见服务端 SIM_MID 的推导）。
+ */
+const LOW_CONF = 45
+/**
+ * 每只猫参与建库的**最大视图数**（8 张）= 档案照 + 人工确认样本合并去重后的总上限。
+ *
+ * 为什么要把相册里的照片全用上：代表向量是「多张取 medoid + 内点平均」，同一只猫的
+ * 正面/侧面/不同光线会被抹平一部分。只用 1~2 张时，一张糊图或一张背影就足以决定
+ * 这只猫的全部特征 —— 表现就是「档案里明明有 5 张，识别却总匹配不上」。
+ *
+ * 为什么是 8 而不是 5 / 20：
+ *  - 收益曲线是明显递减的。1→3 张提升最大（覆盖正脸/侧脸/逆光三种常态）；
+ *    3→8 张继续小幅提升（补上少见角度）；>8 张基本不再涨。
+ *  - 服务端 `rep_vector` 只保留 ceil(n*0.7) 条内点：n=8 时取 6 条，已经足够让
+ *    medoid 稳定；再多也只是把同样的内点多平均几遍。
+ *  - 成本是线性的：每张图要下载 + 编码（实测 400~600ms），8 张 ≈ 4s/只。
+ *    建库是离线动作，但这直接决定一次云函数调用能建几只猫。
+ *  - 数量再多还有副作用：相册里混进「拍糊了 / 拍的是旁边另一只」的概率随张数上升，
+ *    medoid 能扛住 1~2 张离群点，扛不住一堆。
+ *
+ * 8 是「收益 / 耗时 / 污染风险」的折中。改这里只影响建库，不影响检索协议。
+ */
+const INDEX_PHOTOS = 8
+/**
+ * 建档 / 改档后**自动**入库的视图数（5 张）。
+ *
+ * 为什么比 INDEX_PHOTOS 小：那条路径挂在「保存档案」的主流程上，
+ * 云函数超时上限 2.2s、且必须永不抛错。8 张 × 500ms 必然超时，
+ * 而超时 = 本次一只都没建成（服务端没机会写盘），反而不如少带几张先落库，
+ * 剩下的交给后台「用确认样本建库」或每天凌晨的全量任务补齐。
+ */
+const INDEX_PHOTOS_AUTO = 5
+/** photosPerCat 的硬上限（防管理端传进离谱的值把建库拖死） */
+const INDEX_PHOTOS_MAX = 12
 /** 任务租约时长：超过则允许被其他轮询请求接管（防云函数被杀导致任务卡死） */
 const LEASE_MS = 10000
 /** 同步路径（runSync）的租约：一次调用要跑完整链路，给足但别太长 */
@@ -93,6 +146,45 @@ const MAX_AI_ATTEMPTS = 12
 /* ==================== 档案库 ==================== */
 
 /**
+ * 从云存储临时链接**反推 cloud fileID**（2026-10-24 重建特征库遇 403 的解法）。
+ *
+ * 现场：重建特征库时部分猫下载 403 —— 档案库里存的不是 `cloud://` fileID，
+ * 而是某个历史版本写进去的 https 临时链接（`?sign=...&t=...`，有效期若干小时）。
+ * 建库时 attachTempUrls 只对 `cloud://` 换链，这类链接被原样透传给服务端，
+ * 于是「当时存进去能看，几小时后全部 403」，而且**再也换不回来**。
+ *
+ * 好在临时链接保留了存储路径：
+ *   https://<bucket>.tcb.qcloud.la/cats/123.jpg?sign=...
+ *   其中 fileID 形如 cloud://<env>.<bucket>/cats/123.jpg
+ * 而 `<env>.<bucket>` 这一段可以直接从**同批数据里任何一个合法 fileID** 学到，
+ * 不需要读环境变量（也就不会因换环境而失效）。
+ *
+ * @param {string[]} authorities 形如 '<env>.<bucket>' 的候选（见 collectAuthorities）
+ */
+function fileIdFromTempUrl(url, authorities) {
+  const m = String(url || '').match(/^https?:\/\/([a-z0-9-]+)\.tcb\.qcloud\.la\/([^?#]+)/i)
+  if (!m || !authorities || !authorities.length) return ''
+  const host = m[1]
+  const path = m[2]
+  // 精确匹配 authority 的 bucket 段，避免跨环境串上去 —— 猜错也无害，
+  // 后面 getTempFileURL 会替我们验证（status !== 0 就当没修好，退回原值）。
+  const hit = authorities.filter(a => a.split('.')[1] === host)
+  if (!hit.length) return ''
+  return 'cloud://' + hit[0] + '/' + path
+}
+
+/** 从一批媒体值里收集所有合法的 '<env>.<bucket>' authority */
+function collectAuthorities(values) {
+  const set = Object.create(null)
+  const out = []
+  ;(values || []).forEach(v => {
+    const m = String(v || '').match(/^cloud:\/\/([^/]+)\//)
+    if (m && !set[m[1]]) { set[m[1]] = 1; out.push(m[1]) }
+  })
+  return out
+}
+
+/**
  * 批量把云存储 fileId 换成临时 https 链接。
  * 自建识别服务在外网，拿不到 cloud:// 协议的 fileId —— 必须先用临时链接喂给它。
  * 官方接口单次上限 50 个，这里自动分批**并行**发起（早期版本串行等 24 批 ≈ 7s，能把调用拖爆）。
@@ -103,9 +195,27 @@ async function attachTempUrls(list, per) {
   // ⚠️ 局部数组绝不能叫 cloud——会遮蔽模块顶部解构出的 wx cloud 对象，
   // 导致下面 cloud.getTempFileURL 抛 TypeError 又被 catch 吞掉、静默全空。
   const cloudIds = []
+  // 陈旧临时链接 → 反推出的 fileID。查换代成功后用这条映射取新链接。
+  const recovered = Object.create(null)
+
+  // authority 必须**先扫一遍全表**再决定：能反推的前提是这批数据里有至少一个
+  // 合法 fileID 当样本（同环境共用同一个 authority，只要有猫是干净的就够）。
+  const allMedia = []
+  list.forEach(item => {
+    const arr = ((item.photos && item.photos.length ? item.photos : (item.avatar ? [item.avatar] : [])) || [])
+    arr.forEach(p => { if (p) allMedia.push(String(p)) })
+  })
+  const authorities = collectAuthorities(allMedia)
+
   list.forEach(item => {
     const arr = ((item.photos && item.photos.length ? item.photos : (item.avatar ? [item.avatar] : [])) || []).slice(0, limit)
-    arr.forEach(p => { if (String(p).indexOf('cloud://') === 0) cloudIds.push(p) })
+    arr.forEach(p => {
+      const s = String(p || '')
+      if (s.indexOf('cloud://') === 0) { cloudIds.push(s); return }
+      const fid = fileIdFromTempUrl(s, authorities)
+      if (fid) { recovered[s] = fid; cloudIds.push(fid); return }
+      // 剩下的外部 http 图床链接保持原样透传（外链可能本来就可用）
+    })
   })
   const uniq = [...new Set(cloudIds)]
 
@@ -125,13 +235,34 @@ async function attachTempUrls(list, per) {
   if (failCount && failCount >= uniq.length) {
     console.error('[vision] 临时链接全部换取失败（共 ' + uniq.length + ' 个），特征库照片将不可用')
   }
+  // 初次换出+N Rescue 统计：修不好要留痕，否则「403 到底是过期还是文件没了」永远查不清
+  let ok = 0
+  let rescued = 0
+  let staleUnfixed = []
   list.forEach(item => {
     const arr = (item.photos && item.photos.length ? item.photos : (item.avatar ? [item.avatar] : [])) || []
-    item.photosUrl = arr.slice(0, limit)
-      .map(p => map[p] || (String(p).indexOf('http') === 0 ? p : ''))
-      .filter(Boolean)
+    item.photosUrl = arr.slice(0, limit).map(raw => {
+      const p = String(raw || '')
+      const fresh = map[p] || map[recovered[p] || '']
+      if (fresh) {
+        ok++
+        if (recovered[p]) rescued++
+        return fresh
+      }
+      // 反推过却仍然换不出链接 = 文件已被删除或没权限，这种只能让用户重传
+      if (recovered[p]) staleUnfixed.push(p.slice(0, 90))
+      return p.indexOf('http') === 0 ? p : ''
+    }).filter(Boolean)
     item.photoUrl = item.photosUrl[0] || ''
   })
+  if (rescued) {
+    console.warn('[vision] 修复陈旧链接 %d 张（档案里存的是过期的临时链接，已反推回 fileID 重新换链）。' +
+      '建议顺手在档案里重新保存一次，把真正的 fileID 写回数据库', rescued)
+  }
+  if (staleUnfixed.length) {
+    console.error('[vision] 有 %d 张照片反推出 fileID 但换链失败（文件已删除/无权限），这些猫建库必然失败：%s',
+      staleUnfixed.length, staleUnfixed.slice(0, 5).join(' , '))
+  }
 }
 
 function pickPhoto(c) {
@@ -224,6 +355,28 @@ function markIndexed(ids) {
     .where({ _id: _.in(ids) })
     .update({ data: { aiIndexAt: now } })
     .catch(e => console.warn('[vision] 标记入库状态失败', e && e.message))
+}
+
+/**
+ * 反向记账：把「被标记为已入库、但服务端特征库里其实没有」的猫打回待入库。
+ *
+ * 这是对历史脏数据的**自愈**。旧版 markIndexed 只要识别接口返回成功就无条件
+ * 把所有 pendingPhotos 标成已入库，而服务端 ensure_index 可能一只都没建成
+ * （照片下载失败 / 维度不符 / COS 写失败）。被误标的猫从此不再送照片，
+ * 向量永久缺失 —— 线上表现就是「档案里有 4 只猫，识别永远只认得其中 1 只」。
+ *
+ * 现在每轮识别都拿服务端的 indexedIds 对一遍：标了但库里没有的，清空标记，
+ * 下一轮 pickPendingIndexCats 就会重新带上它们的照片。存量脏数据无需人工修。
+ *
+ * 一次最多重置 100 只（云数据库 `in` 的上限），剩下的下一轮继续 —— 自愈会收敛。
+ */
+function resetIndexFlags(ids) {
+  if (!ids || !ids.length) return
+  const batch = ids.slice(0, 100)
+  db.collection(COL.cat)
+    .where({ _id: _.in(batch) })
+    .update({ data: { aiIndexAt: null } })
+    .catch(e => console.warn('[vision] 重置入库标记失败', e && e.message))
 }
 
 /**
@@ -349,35 +502,108 @@ function match(features, cats, loc) {
     .slice(0, TOP_N)
 }
 
+/**
+ * 候选行子文案：把「原始相似度」「展示分」「领先幅度」三个口径讲清楚。
+ *
+ * 为什么需要：识别服务的 `reason` 只有一句「特征相似度 76.3%」——那是**原始余弦**；
+ * 而列表右侧那个大数字是**展示分**：余弦经 logistic 校准后的「把握」（详见服务端
+ * config.SIM_MID）。两者本来就不是同一个数，中间的差值必须解释，否则用户只会
+ * 看到「原始 76.3% 配 9%」，以为是算错了（2026-10-24 就是这样被反馈上来的）。
+ * 端点处尤其明显：
+ *   原始 1.000 → 展示分封顶 99（只可能是同一张图，那次识别没有信息量）
+ *   原始低于匹配线 → 展示分 0
+ * 中段两者单调一致，只在 Top1 上补一句「领先次名」——
+ * 它回答的是另一个问题：**排第一说明什么**。领先 6.5% 时虽然只有 55 分，
+ * 但排序是清楚的；领先 0.5% 时两只猫在模型眼里就是同一只。
+ *
+ * @param {number} score   展示分（0~99）
+ * @param {number} rawSim  原始余弦相似度（0~1；老服务端没有这个字段）
+ * @param {string} reason  服务端原文
+ * @param {number} lead    Top1 领先次名的余弦差（仅 Top1 有；老服务端没有）
+ */
+function candidateReason(score, rawSim, reason, lead) {
+  const text = String(reason || '')
+  const raw = Number(rawSim)
+  // 没有 rawSim（老服务端）、或这行文案本来就不是相似度（本地兜底会拼「花纹一致」）→ 原样返回
+  if (!Number.isFinite(raw) || raw <= 0 || !/相似度/.test(text)) return text
+  const pct = (raw * 100).toFixed(1) + '%'
+  const s = Number(score) || 0
+  if (s >= 99) return '原始相似度 ' + pct + ' · 展示分封顶 99'
+  if (s <= 0) return '原始相似度 ' + pct + ' · 低于匹配线'
+  const gap = Number(lead)
+  // 只在「确实拉开了」时才说：0 或缺失（老服务端）一律不提，避免给假信息
+  if (Number.isFinite(gap) && gap > 0) {
+    return '原始相似度 ' + pct + ' · 领先次名 ' + (gap * 100).toFixed(1) + '%'
+  }
+  return '原始相似度 ' + pct
+}
+
 /* ==================== 特征提取 ==================== */
 
-/** 占位引擎：按 fileId 哈希生成稳定伪特征，保证同图结果一致（接入真模型后被旁路） */
+/**
+ * 本地兜底特征：**绝不伪造属性**。
+ *
+ * 历史版本按 fileId 哈希随机 pick 出毛色 / 花纹 / 体型 / 置信度，
+ * 返回的 tags 是「毛色 橘色 / 花纹 white / 体型 健壮 / 置信度 65%」这种
+ * 看起来完全像真结果的东西，界面上和真模型输出**长得一模一样**。
+ *
+ * 实测后果（2026-10-17）：用户上传一只被暖光染成黄色的白猫，
+ * 本地引擎随机到 pattern='white'，恰好撞上档案里「小白」的 pattern，
+ * 于是展示「匹配候选 小白 56%」。这不是识别，是随机数 + 文本匹配，
+ * 但用户没有任何线索能看出来 —— 比「识别失败」恶劣得多。
+ *
+ * 现在属性一律留空，用 degraded=true 让上层 UI 明说「识别服务不可用」。
+ * 也**不再生成 embedding**：伪向量会让 scoreCat 走余弦分支算出假相似度，
+ * 而且和真实向量同维不同义，混进任何比较都是污染。
+ */
 function localFeatures(fileId, type) {
-  const seed = hashCode(String(fileId || ''))
-  const rand = mulberry32(seed)
-  const pick = arr => arr[Math.floor(rand() * arr.length) % arr.length]
-
-  const colors = ['橘色', '黑白', '纯白', '狸花', '灰色', '三花', '玳瑁']
-  const patterns = ['tabby', 'cow', 'white', 'orange', 'calico', 'black', 'gray']
-  const sizes = ['偏瘦', '匀称', '健壮']
-
-  const color = pick(colors)
-  const pattern = pick(patterns)
-  const size = pick(sizes)
-  const confidence = 0.62 + rand() * 0.3
-
   return {
-    tags: [
-      { k: '毛色', v: color },
-      { k: '花纹', v: pattern },
-      { k: '体型', v: size },
-      { k: '置信度', v: (confidence * 100).toFixed(0) + '%' }
-    ],
-    pattern,
-    color,
-    size,
-    confidence
+    tags: [],
+    pattern: '',
+    color: '',
+    size: '',
+    confidence: 0,
+    degraded: true
   }
+}
+
+/**
+ * 把识别服务的原始候选整形成前端列表。
+ *
+ * 两道过滤（2026-10-24）：
+ * ① byId 里查不到的 catId 直接丢 —— 特征库是**按 catId 存向量**的，删除档案时
+ *   特征文件不跟着删（服务端也没有删除接口），被删的猫会以「幽灵候选」继续出现：
+ *   名字兜成「未知」、头像空。用户看到的就是「候选里有一只未知的猫」，
+ *   实际那是特征库残留（彻底清掉要靠管理端「重建特征库」，过滤后残留已无害）。
+ * ② 展示分 ≤0 的丢 —— 校准映射把匹配线以下压成 0 并标注「低于匹配线」，
+ *   这种行对用户没有任何信息量（0% 的「可能是它」不是答案），不进列表。
+ *
+ * @param {Array} raw  服务端返回的 candidates（可能缺字段/含幽灵 id）
+ * @param {Object} byId  本校猫档案 id → 猫（sanitizeCat 之后）
+ * @returns {Array} 最多 TOP_N 条，按分数降序
+ */
+function shapeCandidates(raw, byId) {
+  return (Array.isArray(raw) ? raw : [])
+    .filter(c => c && c.catId && byId[c.catId])
+    .map(c => {
+      const cat = byId[c.catId] || {}
+      const score = Math.max(0, Math.min(99, Math.round(Number(c.score) || 0)))
+      return {
+        catId: c.catId,
+        name: c.name || cat.name || '未知',
+        avatar: c.avatar || cat.photo || '',
+        score,
+        // 原始余弦值一并下发：前端子行要靠它解释「为什么 100% 配 99%」，
+        // 排查「识别不准」时也不用去翻日志。
+        rawSim: Number(c.rawSim) || 0,
+        // Top1 领先次名的余弦差（服务端只给 Top1；老服务端没有就留 0）
+        lead: Number(c.lead) || 0,
+        reason: candidateReason(score, c.rawSim, c.reason, c.lead)
+      }
+    })
+    .filter(c => c.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, TOP_N)
 }
 
 /** 归一化第三方返回的特征，缺失字段用占位补齐，保证前端渲染不炸 */
@@ -389,11 +615,22 @@ function normalizeFeatures(raw) {
     tags: Array.isArray(f.tags) ? f.tags : [],
     pattern,
     color,
+    // 花色类型（民间说的"品种"，如「橘狸花」「三花猫」）。服务端算好中文，
+    // 云函数不重复推断 —— 两份实现必然漂移。
+    breed: f.breed || '',
+    // 属性来源：clip / api / heuristic。排查「为什么判成灰色」时要能回答
+    // "这是模型判的还是数像素算的"。
+    attrSource: f.attrSource || '',
     size: f.size || '',
     confidence: Number(f.confidence) || 0.8
   }
   if (Array.isArray(f.embedding) && f.embedding.length) out.embedding = f.embedding
-  if (!out.tags.length) {
+  // 只在**确实有属性**时补标签。历史写法无条件补「毛色 未知 / 花纹 未知」，
+  // 属性识别未启用（CLIP 关掉）时界面上会多出两个「未知」占位，
+  // 看起来像识别失败，实际是根本没开这个能力 —— 前端改用 attrsReady 说明。
+  // ⚠️ 这段只在**老服务端 / 第三方**不返回 tags 时生效，此时 color/pattern
+  // 是枚举值（orange/tabby），不是给人看的中文 —— 只作兜底，不要指望它好看。
+  if (!out.tags.length && (color || pattern)) {
     out.tags = [
       { k: '毛色', v: color || '未知' },
       { k: '花纹', v: pattern || '未知' }
@@ -401,6 +638,354 @@ function normalizeFeatures(raw) {
   }
   return out
 }
+
+/**
+ * 身份是否认得出来。
+ *
+ * 服务端返回 `meta.identified`（Top1 分数 ≥ identifyMin，与服务端 config.IDENTIFY_MIN
+ * 同一把尺子，默认 45）；
+ * 老服务端没有这个字段时按 LOW_CONF 兜底 —— 两者语义一致，都是
+ * 「这个候选能不能当结论读」。
+ *
+ * 为 false 时前端把文案从"这是某某"改成"没认出是哪只，但看起来是……"，
+ * 花色属性照常展示。**不要用 candidates.length 判断**：低分候选也是候选，
+ * 把它当结论正是"上传白猫返回小黑"的用户体验来源。
+ */
+function identifiedFlag(meta, candidates) {
+  if (meta && typeof meta.identified === 'boolean') return meta.identified
+  return !!(candidates && candidates.length && candidates[0].score >= LOW_CONF)
+}
+
+/**
+ * 管理端「特征库体检」：档案总数 / 已录入 / 未录入清单。
+ *
+ * **以识别服务的特征库为准，不信云库的 `aiIndexAt`。**
+ * `aiIndexAt` 只是云函数侧的乐观记账：旧版只要接口返回 200 就全标，
+ * 服务端实际没建成的猫也会带着「已入库」标记，管理页照它显示就会骗自己
+ * （现场表现：档案 4 只、界面显示全已入库、实际只认得 1 只）。
+ *
+ * 特征库查不到时降级为记账口径，并在 `source` 里标出来，让管理页明确提示
+ * 「这是记账推测，未核实」—— 不给结论装成结论。
+ */
+async function indexStatus(user, event) {
+  const e = event || {}
+  const schoolId = e.schoolId || (user && user.schoolId) || ''
+  const where = {}
+  if (schoolId) where.schoolId = schoolId
+
+  // 500 是云开发服务端单次 limit 的安全值（上限 1000，但一次拉太多会挤爆响应体）
+  //
+  // ⚠️ 读取失败**必须与「没有档案」区分开**：旧写法把异常吞成 `{data: []}`，
+  // 管理页于是显示「档案 0 / 还没有猫咪档案」—— 管理员看到的是「库里真没猫」，
+  // 实际上是查询挂了。两者需要的处置完全不同，所以错误要原样带回去。
+  let catError = ''
+  let res = { data: [] }
+  try {
+    res = await db.collection(COL.cat).where(where).limit(500).get()
+  } catch (err) {
+    catError = (err && (err.errMsg || err.message)) || '档案读取失败'
+    console.error('[vision] 读取档案失败', catError)
+  }
+  const cats = (res.data || []).filter(c => c && c._id)
+  const nameById = {}
+  cats.forEach(c => { nameById[c._id] = c.name || '' })
+
+  // 「档案 0」有三种成因，界面上要能分清：
+  //   a) 云库真没有档案；
+  //   b) 有档案，但 `schoolId` 与当前绑定学校对不上（多校隔离上线前的老数据没有这个字段）
+  //      → 按学校过滤就是 0 条，而特征库里的向量还在；
+  //   c) 查询本身报错（见 catError）。
+  // 只在过滤结果为空时补一次 count()，正常情况零额外开销。
+  let dbTotal = null
+  if (!cats.length && schoolId && !catError) {
+    try {
+      const c = await db.collection(COL.cat).count()
+      dbTotal = Number(c && c.total) || 0
+    } catch (err) {
+      /* 统计失败不影响主流程，dbTotal 保持 null（界面显示「未知」而非 0） */
+    }
+  }
+
+  let bankIds = null
+  let bankTotal = 0
+  let bankError = ''
+  try {
+    const r = await fetchIndexIds(schoolId)
+    bankIds = r.ids
+    bankTotal = r.total
+  } catch (err) {
+    bankError = (err && err.message) || '特征库查询失败'
+    console.warn('[vision] 特征库 id 列表查询失败，降级为记账口径：', bankError)
+  }
+
+  const inBank = bankIds ? new Set(bankIds) : null
+  const list = cats.map(c => {
+    const photoCount = (Array.isArray(c.photos) && c.photos.length)
+      ? c.photos.length
+      : (c.avatar ? 1 : 0)
+    const ledger = !!c.aiIndexAt
+    return {
+      id: c._id,
+      name: c.name || '未命名',
+      pattern: c.pattern || '',
+      photoCount,
+      // indexed：真正在特征库里；source='ledger' 时只能用记账推测
+      indexed: inBank ? inBank.has(c._id) : ledger,
+      ledger
+    }
+  })
+
+  const missing = list.filter(x => !x.indexed)
+  // 未录入的排前面，让管理员一眼看到要处理的；同组内里照片多的优先（更好建库）
+  missing.sort((a, b) => b.photoCount - a.photoCount)
+  const indexedList = list.filter(x => x.indexed)
+
+  // 幽灵向量：特征库里**本校**有、但云库档案里已经没有的。
+  // 成因是删档案不删向量（服务端没有删除接口）。识别时 shapeCandidates 会把
+  // 它们过滤成「未知候选」，不影响正确性，但 bankTotal 会比「已录入」多出几条，
+  // 管理员对不上账就会来问「为什么库里有 11 只」（2026-10-25 现场问题之一）。
+  // 彻底清掉靠管理端「全部重建」（clear 后按现存档案重刷）。
+  const ghostCount = inBank
+    ? bankIds.filter(id => !nameById[id]).length
+    : 0
+
+  return {
+    ok: true,
+    schoolId,
+    scoped: !!schoolId,                   // 是否按学校过滤（未绑定时统计全环境）
+    source: inBank ? 'bank' : 'ledger',   // bank=特征库实况 / ledger=记账推测
+    bankError,
+    catError,                             // 非空 = 档案查询本身失败，不是「没档案」
+    dbTotal,                              // 仅在「按校过滤查到 0 条」时统计全库猫数，否则 null
+    total: list.length,
+    indexed: indexedList.length,
+    missing: missing.length,
+    bankTotal,                            // 特征库里的向量总数（可能含已删档案的残留）
+    ghostCount,                           // 本校范围内对不上档案的向量条数
+    cats: missing,                        // 只回未录入的，省流量
+    // 记账与实况不一致的数量：>0 说明有历史误标，云函数会在下次识别时自愈
+    ledgerDrift: inBank ? list.filter(x => !x.indexed && x.ledger).length : 0
+  }
+}
+
+/**
+ * 管理端「识别引擎体检」：检测模型有没有生效、花色走哪条路、特征库有多少只。
+ *
+ * 与 `indexStatus` 分开两个 action 的理由：
+ *   ① 失败互不连累 —— 健康检查挂掉不该让「未录入清单」也空着；
+ *   ② 各自一份超时预算，塞进一个调用里两头都紧；
+ *   ③ `indexStatus` 要扫 500 条档案，`engineHealth` 只发一个 GET，前台可以并行发。
+ *
+ * **失败必须显性**：识别服务连不上时返回 ok:false + error，不返回一份「看起来正常」
+ * 的默认值 —— 后台最怕的就是"绿灯但没生效"。
+ */
+async function engineHealth(user, event) {
+  const e = event || {}
+  const schoolId = e.schoolId || (user && user.schoolId) || ''
+  const out = {
+    ok: false,
+    schoolId,
+    provider: '',
+    detector: false,
+    detectModel: '',
+    attrSource: '',
+    indexed: -1,
+    indexedTotal: -1,
+    indexedScoped: true,
+    indexBackend: '',
+    framesMax: 0,
+    error: ''
+  }
+  try {
+    const h = await fetchEngineHealth(3000, schoolId)
+    const num = v => (typeof v === 'number' && isFinite(v)) ? v : -1
+    return Object.assign(out, {
+      ok: !!h.ok,
+      provider: h.provider || '',
+      detector: !!h.detector,
+      detectModel: h.detectModel || '',
+      detectConf: num(h.detectConf),
+      detectPad: num(h.detectPad),
+      attrSource: h.attrSource || '',
+      indexed: num(h.indexed),
+      // 全库条数（含其它学校 + 已删档案残留）。> indexed 时后台会注明差值，
+      // 「本校 7 / 全库 11」比一个来历不明的 11 可解释得多。
+      indexedTotal: num(h.indexedTotal),
+      indexedScoped: h.indexedScoped !== false,
+      indexBackend: h.indexBackend || '',
+      framesMax: num(h.framesMax),
+      error: h.ok ? '' : '识别服务返回 ok=false'
+    })
+  } catch (err) {
+    out.error = (err && err.message) || String(err)
+    return out
+  }
+}
+
+/**
+ * 管理端手动录入**一只**猫。
+ *
+ * 与建档时的 `buildIndexAuto` 区别：
+ *   - force=true：服务端已有也重算。用户点「录入」的意图就是「确保它进库」，
+ *     被 onlyMissing 静默跳过会让人以为按钮没生效。
+ *   - 超时放宽到 8s：云函数超时配 20s 后，3 张照片下载 + 推理跑得完；
+ *     建档路径必须压在 2.2s（会连累保存），手动点击可以等。
+ */
+async function indexOneCat(user, event) {
+  const e = event || {}
+  const ids = (Array.isArray(e.catIds) ? e.catIds : []).filter(Boolean).slice(0, 1)
+  if (!ids.length) return { ok: false, msg: '未指定猫' }
+  try {
+    const r = await buildIndex(user, {
+      schoolId: e.schoolId,
+      catIds: ids,
+      photosPerCat: Math.max(1, Math.min(INDEX_PHOTOS, Number(e.photosPerCat) || INDEX_PHOTOS)),
+      onlyMissing: false,
+      force: true,
+      timeoutMs: Math.max(2000, Math.min(9000, Number(e.timeoutMs) || 8000))
+    })
+    return Object.assign({ ok: true }, r)
+  } catch (err) {
+    console.error('[vision] 手动录入失败', err && err.message)
+    return { ok: false, msg: (err && err.message) || '录入失败' }
+  }
+}
+
+/**
+ * 把 AI_ENDPOINT 拆成 origin，拼出需要的 path。
+ *
+ * AI_ENDPOINT 形如 `https://host/v1/recognize`，这里只换 path，保留 host 与协议。
+ * 未配置 / 地址非法一律抛错（调用方据此降级），**不返回空结果冒充「一切正常」**。
+ */
+function apiUrl(pathname, query) {
+  const ep = process.env.AI_ENDPOINT
+  if (!ep) throw new Error('未配置识别服务地址')
+  let u
+  try { u = new URL(ep) } catch (err) { throw new Error('AI_ENDPOINT 非法') }
+  let url = u.protocol + '//' + u.host + pathname
+  if (query) url += (url.indexOf('?') >= 0 ? '&' : '?') + query
+  return url
+}
+
+/**
+ * GET + JSON。非 2xx 一律抛错，`label` 只影响错误文案
+ * （排障时要能一眼看出是「特征库接口」还是「健康检查」挂了）。
+ */
+function getJson(url, timeoutMs, label) {
+  const https = require('https')
+  const http = require('http')
+  let u
+  try { u = new URL(url) } catch (err) { return Promise.reject(new Error('AI_ENDPOINT 非法')) }
+  const lib = u.protocol === 'https:' ? https : http
+  return new Promise((resolve, reject) => {
+    const req = lib.request({
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      method: 'GET',
+      headers: process.env.AI_TOKEN ? { Authorization: 'Bearer ' + process.env.AI_TOKEN } : {},
+      timeout: Number(timeoutMs) || 3500
+    }, res => {
+      let data = ''
+      res.on('data', d => { data += d })
+      res.on('end', () => {
+        let parsed = null
+        try { parsed = JSON.parse(data) } catch (err) {
+          return reject(new Error(label + '返回非 JSON (HTTP ' + res.statusCode + ')'))
+        }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          return reject(new Error((parsed && parsed.detail) || (label + ' HTTP ' + res.statusCode)))
+        }
+        resolve(parsed || {})
+      })
+    })
+    req.on('timeout', () => { req.destroy(new Error(label + '超时')) })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+/**
+ * 调识别服务 `/v1/index/ids` —— 特征库里真实存在的猫 id。
+ *
+ * 为什么要这个接口：云库的 `aiIndexAt` 是**乐观记账**，旧版「接口 200 就全标」，
+ * 服务端补库失败时猫被永久误标、不再送照片。管理端必须问服务端「你到底有哪几只」。
+ */
+function fetchIndexIds(schoolId, timeoutMs) {
+  let url
+  try {
+    url = apiUrl('/v1/index/ids', schoolId ? 'schoolId=' + encodeURIComponent(schoolId) : '')
+  } catch (err) {
+    return Promise.reject(err)
+  }
+  return getJson(url, timeoutMs || 3500, '特征库接口').then(parsed => {
+    const ids = Array.isArray(parsed.ids) ? parsed.ids : []
+    return { ids, total: Number(parsed.total) || ids.length, backend: parsed.backend || '' }
+  })
+}
+
+/**
+ * 调识别服务 `/health` —— 引擎体检（检测模型 / 属性链路 / 特征库）。
+ *
+ * 为什么管理端需要它：「YOLO 到底有没有生效」在界面上完全看不出来 ——
+ * 检测模型加载失败只会打一条 warning，识别照常返回（整图提特征），
+ * 结果就是「代码改了、也部署了、准确率没变」。把这三个开关摆到后台，
+ * 运维不用翻日志、不用 SSH 上去 curl。
+ */
+function fetchEngineHealth(timeoutMs, schoolId) {
+  let url
+  try {
+    // schoolId：/health 的 indexed 默认是**全库**（含其它学校 + 已删档案残留），
+    // 管理后台要的是本校口径 —— 不传的话，「档案 6 只、特征库 11 只」这种
+    // 口径错位会把管理员吓到（2026-10-25 现场就是这个）。
+    url = apiUrl('/health', schoolId ? 'schoolId=' + encodeURIComponent(schoolId) : '')
+  } catch (err) { return Promise.reject(err) }
+  return getJson(url, timeoutMs || 3000, '健康检查')
+}
+
+/**
+ * 删掉识别服务特征库里某只猫的向量。
+ *
+ * 为什么必须主动删：特征库按 `cat_id` 存对象，而**删除猫档案不会碰特征文件**
+ * （服务端以前根本没有删除接口）。残留的向量会：
+ *   ① 继续参与检索并被返回，靠云函数 `shapeCandidates` 按 byId 过滤掉（无害但浪费）；
+ *   ② 让管理页「特征库已有 N 条向量」比档案数多几条，管理员对不上账。
+ *
+ * 失败**不能连累删档**：删档案已经成功了，清理只是顺手。
+ * 真漏了还有后台「全部重建」兜底（clear 后按现存档案重刷）。
+ */
+function deleteIndexEntry(catId, schoolId, timeoutMs) {
+  let url
+  try {
+    const q = 'catId=' + encodeURIComponent(String(catId || ''))
+      + (schoolId ? '&schoolId=' + encodeURIComponent(String(schoolId)) : '')
+    url = apiUrl('/v1/index', q)
+  } catch (err) {
+    return Promise.resolve(false)
+  }
+  const https = require('https')
+  const http = require('http')
+  let u
+  try { u = new URL(url) } catch (err) { return Promise.resolve(false) }
+  const lib = u.protocol === 'https:' ? https : http
+  return new Promise(resolve => {
+    const req = lib.request({
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      method: 'DELETE',
+      headers: process.env.AI_TOKEN ? { Authorization: 'Bearer ' + process.env.AI_TOKEN } : {},
+      timeout: Number(timeoutMs) || 2000
+    }, res => {
+      res.on('data', () => {})
+      res.on('end', () => resolve(res.statusCode >= 200 && res.statusCode < 300))
+    })
+    req.on('timeout', () => { req.destroy(); resolve(false) })
+    req.on('error', () => resolve(false))
+    req.end()
+  })
+}
+
 
 /**
  * 调用第三方视觉接口。
@@ -578,18 +1163,22 @@ async function advance(user, t, ctx) {
 
     let features = null
     let remoteCandidates = null
+    let remoteMeta = null
     let provider = 'local'
     const endpoint = process.env.AI_ENDPOINT
     const featFails = Number(partial.featFails) || 0
     const aiAttempts = Number(partial.aiAttempts) || 0
     const pollPath = !!(ctx && ctx.deadline)
     if (endpoint && featFails < FEAT_FALLBACK_ATTEMPTS && aiAttempts < MAX_AI_ATTEMPTS) {
-      // poll 路径：AI 超时单独封顶，且随剩余预算收缩 —— 整次调用必须在 3s 内返回。
-      // 同步路径没有 3s 限制，可以用满 AI_TIMEOUT_MS（慢服务靠它出真实匹配）。
+      // 两条路径都要按剩余预算裁剪 AI 超时 —— 早期只有 poll 裁剪，同步路径固定
+      // 用满 AI_TIMEOUT_MS(8s)。后果：冷启动/换链吃掉几秒后，AI 那 8s 已经没有
+      // 对应的预算，云函数被平台在 3s 处掐断（FUNCTIONS_TIME_LIMIT_EXCEEDED），
+      // 客户端看到 -504003。任务虽然安全（状态已落库、轮询可续），但白等一场。
+      // 裁剪后：预算不够就提前 defer，让轮询轻装去跑，而不是硬撑到被掐。
       const aiCap = pollPath
         ? Math.min(Number(process.env.AI_POLL_TIMEOUT_MS) || AI_POLL_CAP_MS, AI_POLL_CAP_MS)
         : (Number(process.env.AI_TIMEOUT_MS) || 8000)
-      const aiTimeout = pollPath
+      const aiTimeout = Number.isFinite(left())
         ? Math.max(300, Math.min(aiCap, left() - AI_RESERVE_MS))
         : aiCap
       if (aiTimeout < 500) return { deferred: true }
@@ -597,6 +1186,10 @@ async function advance(user, t, ctx) {
         const raw = await callVisionApi(endpoint, {
           url: partial.url, videoUrl: partial.videoUrl, fileId: mediaId,
           type, frames, schoolId,
+          // 排队耐心：同一个素材若已有一次计算在跑（上一轮被我超时放弃的那次），
+          // 本次就等它算完，而不是再开一遍。留 300ms 给响应回程与自身收尾。
+          // 少了它，poll 每轮都触发一次完整计算，视频（3.5s）永远收敛不了。
+          waitMs: Math.max(0, aiTimeout - 300),
           // 服务端 search() 用请求里的 cats 补 name/avatar。
           // ⚠️ 默认只送轻量字段：带照片链接会让服务端 ensure_index 去下载，
           // 200 只猫时必然拖过 3s 预算（一场「全轮询超时」事故的帮凶）。
@@ -610,15 +1203,46 @@ async function advance(user, t, ctx) {
           features = normalizeFeatures(raw.features)
           if (Array.isArray(raw.candidates)) remoteCandidates = raw.candidates
           provider = 'custom'
-          // 服务端已在检索前完成 ensure_index，这里乐观记账，避免下轮重复携带
-          markIndexed(Object.keys(pendingPhotos))
+          remoteMeta = (raw.meta && typeof raw.meta === 'object') ? raw.meta : {}
+          // 入库记账必须是**服务端确认**的，不能乐观标记。
+          //
+          // 历史写法 `markIndexed(Object.keys(pendingPhotos))` 只要接口成功就把
+          // 全部待补库的猫打上 aiIndexAt，而服务端补库可能因照片下载失败、
+          // 维度不符、COS 写失败而一只都没建成 —— 这些猫从此再也不会送照片，
+          // 向量永久缺失。线上表现就是「档案 4 只猫，识别永远只认得其中 1 只」
+          // （那只恰好是手动 build 成功的）。宁可每轮多带一次照片链接，
+          // 也不能把没入库的猫标成已入库。
+          const confirmed = Array.isArray(remoteMeta.indexedIds) ? remoteMeta.indexedIds : null
+          if (confirmed) {
+            const inBank = {}
+            confirmed.forEach(id => { inBank[id] = true })
+            // ① 只标记确认入库的
+            markIndexed(Object.keys(pendingPhotos).filter(id => inBank[id]))
+            // ② 自愈：标了「已入库」但服务端其实没有 → 打回待入库，下轮重新送照片
+            const stale = catsLite
+              .filter(c => c.aiIndexAt && !inBank[c.id])
+              .map(c => c.id)
+            if (stale.length) {
+              console.warn('[vision] 特征库缺 ' + stale.length + ' 只已标记入库的猫，重置标记触发补库')
+              resetIndexFlags(stale)
+            }
+          } else if (remoteMeta.indexed === undefined) {
+            // 旧版服务端（无 meta.indexedIds 也无 indexed）才退回乐观记账，
+            // 否则「服务端说库里有几只=0」会和「接口调用成功」混为一谈
+            markIndexed(Object.keys(pendingPhotos))
+          }
         }
       } catch (e) {
-        const isTimeout = !!(e && e.message === '识别接口超时')
+        const msg = (e && e.message) || ''
+        // 「排队中」= 前一次计算还没完，本次等不起。性质上等同超时：
+        // 素材和前一次的进度都还在，下轮再来即可，**不能**算作明确错误
+        // （FEAT_FALLBACK_ATTEMPTS 只有 6 次，视频场景第二轮就会排队，
+        //  记成明确错误会在真正拿到结果前就降级本地引擎）。
+        const isTimeout = msg === '识别接口超时' || /排队中/.test(msg)
         const attempts = aiAttempts + 1
         const fails = isTimeout ? featFails : featFails + 1
         console.error('[vision] 识别接口第 ' + attempts + ' 次失败' +
-          (isTimeout ? '（超时，下轮重试）' : '（明确错误）'), e && e.message)
+          (isTimeout ? '（超时/排队，下轮重试）' : '（明确错误）'), msg)
         const giveUp = attempts >= MAX_AI_ATTEMPTS || (!isTimeout && fails >= FEAT_FALLBACK_ATTEMPTS)
         const r = await patchTask(t, {
           partial: Object.assign({}, partial, { aiAttempts: attempts, featFails: fails })
@@ -635,26 +1259,15 @@ async function advance(user, t, ctx) {
     }
     if (!features) features = localFeatures(mediaId, type)
 
-    // ④ 检索 + 组装：远程候选优先，否则本地兜底匹配
-    let list
-    if (remoteCandidates && remoteCandidates.length) {
-      list = remoteCandidates
-    } else {
-      // 兜底路径才读全量（含 embedding）—— 平时不读，省一次 DB 往返和流量
-      const full = await loadCatsFull(schoolId)
-      list = match(features, full, t.location)
-      full.forEach(c => { if (!byId[c.id]) byId[c.id] = c })
-    }
-    const candidates = list.slice(0, TOP_N).map(c => {
-      const cat = byId[c.catId] || {}
-      return {
-        catId: c.catId,
-        name: c.name || cat.name || '未知',
-        avatar: c.avatar || cat.photo || '',
-        score: Math.max(0, Math.min(99, Math.round(Number(c.score) || 0))),
-        reason: c.reason || ''
-      }
-    }).sort((a, b) => b.score - a.score)
+    // ④ 组装候选：**只信远程候选**。
+    //
+    // 历史写法：远程没给候选就落到本地 `match()`，用属性/位置给全库猫打分排序。
+    // 问题是本地兜底时 features 是空的（或更糟：随机属性），
+    // 所有猫都拿同一个基线 30 分，排序实际由「离常驻点多近」决定 ——
+    // 界面上却工工整整写着「匹配候选 共 4 只」，用户会当结论读。
+    // 现在：没有可信特征就**不给候选**，由前端明说「这次没识别出来」。
+    // 整形 + 两道过滤（幽灵档案 / 低于匹配线）收在 shapeCandidates 里，可单测。
+    const candidates = shapeCandidates(remoteCandidates, byId)
 
     const result = {
       requestId: 'rc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -666,6 +1279,20 @@ async function advance(user, t, ctx) {
       features,
       candidates,
       threshold: LOW_CONF,
+      // degraded：本次**没有**可信的识别特征，features 与 candidates 都不可当结论。
+      // 前端必须据此换一张卡片，而不是把空特征当成「属性识别结果为空」。
+      degraded: provider === 'local',
+      // 特征库规模：库里只有 1~2 只猫时，任何"匹配"都不可信，前端要明说。
+      // 旧服务端不返回 meta.indexed 时给 -1（未知），不冒充 0。
+      indexedTotal: (remoteMeta && Number.isFinite(Number(remoteMeta.indexed)))
+        ? Number(remoteMeta.indexed) : (provider === 'local' ? 0 : -1),
+      // 属性识别（毛色/花纹）是否可用 —— 不可用时特征是只有检测/帧数两张卡，
+      // 用户会以为界面渲染缺了东西，需要一句解释。
+      attrsReady: !!(remoteMeta && remoteMeta.attrs),
+      // 身份是否认得出来。服务端判断优先，老服务端按 LOW_CONF 兜底。
+      identified: identifiedFlag(remoteMeta, candidates),
+      // 属性判不出来时的原因（"画面里猫体区域不足 12%"），用于排查和引导重拍
+      attrReason: (remoteMeta && remoteMeta.attrReason) || '',
       lowConfidence: !candidates.length || candidates[0].score < LOW_CONF,
       // 合规：不再下发内部实现说明（旧文案含 AI_ENDPOINT 等字样）。
       // 低置信提示统一由前端在「匹配候选」卡里按 lowConfidence 渲染。
@@ -745,7 +1372,26 @@ async function start(user, event) {
   // 根治办法是部署后调一次 `initCollections`，这里只是兜底。
   warmCollection(COL.aiTask)
   const add = await db.collection(COL.aiTask).add({ data: doc })
-  return { taskId: add._id, status: 'pending', type }
+
+  // ---- 计费（规则 V1.0：首次免费 → 20 猫粮/次，每日最多 10 次）----
+  // 放在建任务**之后**：任务 id 正好当流水的幂等键，事后能对上「哪次识别扣的钱」。
+  // 扣费失败（余额不足 / 次数用完）必须把任务删掉 —— 否则会留下一条
+  // 不花钱的 pending 任务，被轮询捡起来白跑一次识别。
+  let billing = null
+  try {
+    billing = await points.chargeRecognize(user, { refType: 'ai_task', refId: add._id })
+  } catch (e) {
+    await db.collection(COL.aiTask).doc(add._id).remove().catch(() => {})
+    throw e
+  }
+
+  return {
+    taskId: add._id,
+    status: 'pending',
+    type,
+    // 前端据此展示「本次免费 / 扣了 20，余 68，今日还剩 7 次」
+    billing
+  }
 }
 
 /**
@@ -972,36 +1618,61 @@ async function confirm(user, event) {
   }
 
   const result = task.result || {}
-  const topCatId = (result.candidates && result.candidates[0] && result.candidates[0].catId) || ''
+  const top = (result.candidates && result.candidates[0]) || null
+  const topCatId = (top && top.catId) || ''
 
   warmCollection(COL.aiSample)   // 同 ai_tasks：只后台发起，不阻塞确认请求
+  // ⚠️ 必须把**本次的匹配分**一起存下来（2026-10-24 新增）。
+  //   样本要拿去建特征库（见 buildIndexFromSamples），而「用户点了确认」并不等于
+  //   「这张照片可信」：低于匹配线的确认很可能是认错猫。没有分数就只能一律放行，
+  //   结果是用户随手一确认，就把别的猫的照片灌进了这只猫的特征库。
+  //   老样本没有这两个字段（score 缺失）→ 计划阶段按 score=0 处理，需管理员指定后才可用。
+  const topScore = Number(top && top.score) || 0
+  const topRaw = Number(top && top.rawSim) || 0
   await db.collection(COL.aiSample).add({
     data: {
       openid: user.openid,
       _openid: user.openid,
       schoolId: task.schoolId || '',
       fileId: task.fileId,
+      // 视频任务的封面：建库只认图片，视频文件服务端解不了
+      thumbId: task.thumbId || '',
       type: task.type,
       features: result.features || null,
       predictedCatId: topCatId,
       confirmedCatId: correct ? (catId || topCatId) : '',
       correct: !!correct,
+      score: topScore,
+      rawSim: topRaw,
       provider: result.provider || 'local',
+      // 生命周期：new（待用）→ used（已并入特征库）/ ignored（管理员排除）
+      state: 'new',
       createdAt: new Date()
     }
   })
 
   // 不再回写特征库（见函数头注释）。embeddingWritten 恒 false，仅作老客户端兼容。
   const embeddingWritten = false
+  let dexGained = 0
   if (correct && catId) {
     // 仍解锁图鉴：确认过 = 见过这只猫（与特征库无关，属用户侧收藏）
     const seen = user.catSeen || []
     if (seen.indexOf(catId) < 0) {
-      await db.collection(COL.user).doc(user._id).update({ data: { catSeen: _.push([catId]) } })
+      // 条件更新抢占：并发确认（超时重试）时只有一个能真正解锁，
+      // 否则会重复发「图鉴点亮」积分。`_.nin` 与打卡里的 firstMeet 同一写法。
+      const mark = await db.collection(COL.user)
+        .where({ _id: user._id, catSeen: _.nin([catId]) })
+        .update({ data: { catSeen: _.push([catId]) } })
+      if (mark && mark.stats && mark.stats.updated) {
+        // 图鉴点亮新品种 +10 积分 —— 与打卡里首次遇见同一口径，按 catSeen 去重，
+        // 所以同一只猫「识别确认」与「打卡遇见」加起来只发一次。
+        const dg = await points.grantPoint(user, 'dexNew', null, { refType: 'cat', refId: catId })
+        dexGained = dg.gained || 0
+      }
     }
   }
 
-  const g = await points.grant(user, 'confirm', null, { refType: 'ai_task', refId: taskId })
+  const g = await points.grantPoint(user, 'confirm', null, { refType: 'ai_task', refId: taskId })
   await db.collection(COL.aiTask).doc(taskId).update({
     data: {
       confirmedCatId: correct ? (catId || topCatId) : '',
@@ -1010,7 +1681,7 @@ async function confirm(user, event) {
     }
   }).catch(() => {})
 
-  return { ok: true, pointsGained: g.gained, embeddingWritten }
+  return { ok: true, pointsGained: (g.gained || 0) + dexGained, dexGained, embeddingWritten }
 }
 
 /* ==================== 特征库批量建库 ==================== */
@@ -1033,7 +1704,7 @@ async function buildIndex(user, event) {
   if (!endpoint) throw new AppError('未配置 AI_ENDPOINT', 400)
 
   const schoolId = event.schoolId || user.schoolId || ''
-  const photosPerCat = Math.max(1, Math.min(10, Number(event.photosPerCat) || 6))
+  const photosPerCat = Math.max(1, Math.min(INDEX_PHOTOS_MAX, Number(event.photosPerCat) || INDEX_PHOTOS))
   // force 优先：整体重建时忽略「已入库」判断
   // 老版本 build_index.py 脚本不带这两个字段，默认行为是全量重算（与历史一致）
   const onlyMissing = event.force !== true && event.onlyMissing === true
@@ -1044,9 +1715,33 @@ async function buildIndex(user, event) {
   // catIds：只建指定的猫（建档后自动建库）。不传 = 全校扫描（定时任务 / 手动全量）
   const cats = await index(schoolId, { photosPerCat, catIds: event.catIds })
 
+  // 前置拦截：临时链接一张都没换出来的猫，发过去服务端也只能回 failed，
+  // 白白占掉一次下载超时。更要紧的是**原因要说清** —— 现场「点录入 → 已录入没变」
+  // 十有八九就是这一条：档案里的照片文件已不存在 / 换链被拒。
+  const reasons = {}
+  const sendable = []
+  cats.forEach(c => {
+    if (c.photosUrl && c.photosUrl.length) { sendable.push(c); return }
+    const n = (c.photos && c.photos.length) || 0
+    reasons[c.id] = n
+      ? 'photoUrl:' + n
+      : 'noPhoto'
+  })
+
   const buildUrl = String(endpoint).replace(/\/v1\/recognize\/?$/, '/v1/index/build')
   if (buildUrl === String(endpoint)) {
     throw new AppError('AI_ENDPOINT 需以 /v1/recognize 结尾，才能推导建库地址', 400)
+  }
+
+  // 全都换不出链接就没必要发请求了（也避免「请求成功、built=0」这种含糊结果）
+  if (!sendable.length) {
+    if (cats.length) {
+      console.error('[vision] 建库前置失败：所有猫的照片都没换出临时链接', JSON.stringify(reasons))
+    }
+    return {
+      ok: true, schoolId, scanned: cats.length, built: 0,
+      failed: cats.map(c => c.id), skipped: 0, reasons, indexed: null
+    }
   }
 
   const res = await callVisionApi(buildUrl, {
@@ -1054,23 +1749,31 @@ async function buildIndex(user, event) {
     photosPerCat,
     onlyMissing,
     force: event.force === true,
-    cats: cats.map(c => ({
+    cats: sendable.map(c => ({
       id: c.id, name: c.name, pattern: c.pattern, color: c.color, photos: c.photosUrl
     }))
   }, buildTimeout)
 
-  // 记账：除服务端明确失败的猫外，其余都视为已入库 —— 下轮识别不再重复携带照片。
-  // 失败的猫保持未记账，定时任务（全量 + onlyMissing）会持续重试直到成功。
-  const failed = (res && res.failed) || []
-  markIndexed(cats.map(c => c.id).filter(id => failed.indexOf(id) < 0))
+  // 服务端逐只给的失败原因（noPhoto / downloadFailed:3/5 / embedFailed:xxx）
+  const remote = (res && res.reasons) || {}
+  Object.keys(remote).forEach(id => { reasons[id] = String(remote[id] || '') })
+
+  // 记账：**只标真的建成的猫**。旧写法在 res 缺字段时会把全部猫标成已入库，
+  // 一旦接口返回异常体，这些猫再也不会被送照片，向量永久缺失。
+  const failed = Array.isArray(res && res.failed) ? res.failed : null
+  let builtIds = []
+  if (failed) builtIds = sendable.map(c => c.id).filter(id => failed.indexOf(id) < 0)
+  else if (Number(res && res.built) >= sendable.length) builtIds = sendable.map(c => c.id)
+  if (builtIds.length) markIndexed(builtIds)
 
   return {
     ok: true,
     schoolId,
     scanned: cats.length,
-    built: res && res.built,
-    failed,
+    built: Number(res && res.built) || 0,
+    failed: failed || sendable.map(c => c.id),
     skipped: (res && res.skipped) || 0,
+    reasons,
     indexed: res && res.total
   }
 }
@@ -1085,8 +1788,9 @@ async function buildIndex(user, event) {
  *   A 识别热路径（pickPendingIndexCats）会在第一次识别时顺手补；
  *   B 每天 03:00 定时全量（aiIndexDaily）会持续重试直到成功。
  *
- * ⚠️ 预算：只带 1 只猫 ≤3 张照片，服务端下载 + 编码通常 1~2s，
+ * ⚠️ 预算：只带 1 只猫 ≤5 张照片，服务端下载 + 编码通常 1~2s，
  * 超时上限硬压在 2.2s —— 客户端 callFunction 只有约 3s，不能赌。
+ * 带不动的张数交给后台「用确认样本建库」补齐（那条路径是手动的，能等）。
  */
 async function buildIndexAuto(user, event) {
   const e = event || {}
@@ -1096,14 +1800,442 @@ async function buildIndexAuto(user, event) {
     return await buildIndex(user, {
       schoolId: e.schoolId,
       catIds: ids.slice(0, 3),
-      photosPerCat: Math.max(1, Math.min(3, Number(e.photosPerCat) || 2)),
+      // 自动入库走 INDEX_PHOTOS_AUTO（5）—— 这条路径的硬预算是 2.2s，
+      // 带 8 张必然超时，而超时等于一只都没建成（见该常量的注释）。
+      photosPerCat: Math.max(1, Math.min(INDEX_PHOTOS_AUTO, Number(e.photosPerCat) || INDEX_PHOTOS_AUTO)),
       onlyMissing: true,
-      timeoutMs: Math.max(800, Math.min(2200, Number(e.timeoutMs) || 2000))
+      timeoutMs: Math.max(800, Math.min(2400, Number(e.timeoutMs) || 2200))
     })
   } catch (err) {
     // 静默降级：让建档照常成功，未入库的猫交给 A/B 兜底
     console.warn('[vision] 建档后自动入库未当场完成，交给定时任务兜底', err && err.message)
     return { ok: false, deferred: true, msg: (err && err.message) || '入库延后' }
+  }
+}
+
+/* ==================== 确认样本库（人工确认 → 特征库） ==================== */
+/**
+ * 用户「识别 → 点确认」的样本，过去只写进 `ai_samples` 攒训练集，
+ * 从不参与建库（2026-10-15 的决定，当时理由是识别照质量不可控）。
+ *
+ * 现在反过来：这批照片的**分布**恰恰是档案照补不上的 ——
+ * 档案照是管理员精心摆拍的正脸，而用户识别时拍的是「远处 / 侧身 / 逆光 / 猫在草丛里」。
+ * 查询照片和档案照不同分布，才是「明明细看是同一只，相似度只有 68%」的主因。
+ * 所以把确认过的样本并入特征库，是提升准确率最对症的一味药。
+ *
+ * 但「用户点了确认」≠「这张照片可信」，所以入库前有三道闸：
+ *   ① 必须由**管理员在后台**手动触发（不在识别热路径上自动做）；
+ *   ② 分数门槛 SAMPLE_MIN_SCORE（低于匹配线的确认不予采信）；
+ *   ③ 每只猫最多并入 SAMPLE_PHOTOS_PER_CAT 张，且管理员可逐条排除 / 删除 / 改判归属。
+ * 再叠加服务端 rep_vector 的 medoid 离群剔除，一张误确认的照片影响有限。
+ */
+
+/** 每只猫最多并入几张确认样本（样本是补充，主体仍应是档案照） */
+const SAMPLE_PHOTOS_PER_CAT = 3
+/**
+ * 样本门槛分（= LOW_CONF = 匹配线）。
+ * 低于匹配线意味着服务端自己都判「没认出来」，此时用户点确认很可能是认错猫
+ * —— 把别的猫的照片写进这只猫的特征库，比不建库更糟。
+ */
+const SAMPLE_MIN_SCORE = LOW_CONF
+/** 单次调用最多建几只猫（3 × 8 张 × 约 500ms ≈ 12s，必须留在云函数 20s 超时内） */
+const SAMPLE_BUILD_CATS = 3
+/** 建库超时上限（含下载 + 编码；云函数超时需配到 20s 以上） */
+const SAMPLE_BUILD_TIMEOUT_MS = 12000
+
+/** 样本可用于建库的图片 id：视频任务只有封面能用（服务端建库只认图片） */
+function sampleMediaId(s) {
+  if (!s) return ''
+  if (s.type === 'video') return s.thumbId || ''
+  return s.fileId || ''
+}
+
+/**
+ * 纯函数：按规则筛出「本次要并入特征库」的样本。
+ *
+ * 抽出来是为了让 `listSamples`（后台展示「哪些可用 / 为什么不可用」）和
+ * `buildIndexFromSamples`（真正建库）**共用同一套判定** ——
+ * 两边各写一遍的后果就是界面显示「3 条可用」、点下去只建了 1 只。
+ *
+ * @param {Object[]} samples ai_samples 原始文档
+ * @param {Object} opts { samplePerCat, minScore, catIds, sampleIds, allowIgnored, skipUsed }
+ *   skipUsed —— 跳过「已入库」的样本。整批建库**必须**开：否则每一轮都从同一批
+ *   猫开始（已入库的样本照样合格），remaining 永远不会收敛到 0，按钮点了白点。
+ *   单只重算 / 显式 includeUsed 时关掉。
+ * @returns {{picked:Object[], excluded:Object[], catIds:string[], reasons:Object}}
+ */
+function planSampleBuild(samples, opts) {
+  const o = opts || {}
+  const perCat = Math.max(1, Math.min(6, Number(o.samplePerCat) || SAMPLE_PHOTOS_PER_CAT))
+  const minScore = (o.minScore === undefined || o.minScore === null)
+    ? SAMPLE_MIN_SCORE : Number(o.minScore)
+  const allowIgnored = o.allowIgnored === true
+  const skipUsed = o.skipUsed === true
+  const onlyCats = (Array.isArray(o.catIds) && o.catIds.length) ? o.catIds : null
+  const onlyIds = (Array.isArray(o.sampleIds) && o.sampleIds.length) ? o.sampleIds : null
+
+  const picked = []
+  const excluded = []
+  const reasons = Object.create(null)
+  const usedByCat = Object.create(null)
+  const seenKey = Object.create(null)
+
+  // 分数高的优先：同为「这只猫」的确认，越像的那张越值得占用名额
+  const ordered = (samples || []).slice().sort((a, b) => {
+    const d = (Number(b && b.score) || 0) - (Number(a && a.score) || 0)
+    if (d) return d
+    return new Date((b && b.createdAt) || 0).getTime() - new Date((a && a.createdAt) || 0).getTime()
+  })
+
+  ordered.forEach(s => {
+    if (!s || !s._id) return
+    if (onlyIds && onlyIds.indexOf(s._id) < 0) return
+    const catId = s.confirmedCatId || ''
+    const score = Number(s.score) || 0
+    const provider = s.provider || ''
+    let why = ''
+    if ((s.state || 'new') === 'ignored' && !allowIgnored) why = 'ignored'
+    else if ((s.state || 'new') === 'used' && skipUsed) why = 'alreadyUsed'
+    // 本地降级时分数是假的，认不认得出来都没依据 —— 一律不采信
+    else if (provider === 'local') why = 'degraded'
+    else if (!catId) why = 'unassigned'
+    else if (!sampleMediaId(s)) why = 'noMedia'
+    else if (score < minScore) why = 'lowScore'
+    else if (onlyCats && onlyCats.indexOf(catId) < 0) why = 'otherCat'
+    else if ((usedByCat[catId] || 0) >= perCat) why = 'quota'
+
+    if (!why) {
+      // 同一张照片被同一个人确认两次（或同猫重复确认同一素材）只算一次
+      const key = catId + '|' + sampleMediaId(s)
+      if (seenKey[key]) why = 'dup'
+      else seenKey[key] = 1
+    }
+
+    if (why) {
+      excluded.push({ id: s._id, reason: why })
+      reasons[s._id] = why
+      return
+    }
+    usedByCat[catId] = (usedByCat[catId] || 0) + 1
+    picked.push({
+      id: s._id, catId: catId, fileId: sampleMediaId(s), score: score,
+      alreadyUsed: (s.state || 'new') === 'used'
+    })
+  })
+
+  return {
+    picked, excluded, reasons,
+    catIds: Object.keys(usedByCat),
+    fresh: picked.filter(p => !p.alreadyUsed).length
+  }
+}
+
+/**
+ * 后台：列确认样本（含「能不能用于建库」的判定与原因）。
+ *
+ * 只回本校数据。样本量按学校规模增长，所以硬上限 200 条再在内存里筛 ——
+ * 云数据库的 `where` 里没法表达「state/score/归属」这套组合条件。
+ */
+async function listSamples(user, event) {
+  const e = event || {}
+  const schoolId = e.schoolId || (user && user.schoolId) || ''
+  const limit = Math.max(1, Math.min(200, Number(e.limit) || 60))
+  const where = {}
+  if (schoolId) where.schoolId = schoolId
+
+  let raw = []
+  try {
+    const q = db.collection(COL.aiSample).where(where).orderBy('createdAt', 'desc').limit(200)
+    const res = await q.get()
+    raw = res.data || []
+  } catch (err) {
+    // orderBy 在个别环境下会报「索引不存在」，退回不带排序的查询
+    console.warn('[vision] 样本查询降级（去掉排序）', err && err.message)
+    const res = await db.collection(COL.aiSample).where(where).limit(200).get()
+    raw = res.data || []
+  }
+
+  // 猫名（确认的 / 系统判的都查一遍，用来显示「判成了谁」）
+  const ids = []
+  raw.forEach(s => {
+    if (s.confirmedCatId) ids.push(s.confirmedCatId)
+    if (s.predictedCatId) ids.push(s.predictedCatId)
+  })
+  const uniq = [...new Set(ids)]
+  const nameOf = Object.create(null)
+  if (uniq.length) {
+    for (let i = 0; i < uniq.length; i += 100) {
+      const part = uniq.slice(i, i + 100)
+      // 单条读失败不能让整页空掉：档案已删的猫只是名字显示不出来
+      const res = await db.collection(COL.cat).where({ _id: _.in(part) }).limit(100).get()
+        .catch(() => ({ data: [] }))
+      ;(res.data || []).forEach(c => { nameOf[c._id] = c.name || '' })
+    }
+  }
+
+  // 两套计划：展示用「所有合格样本」（含已入库的，界面要显示它的状态），
+  // 整批建库用「只看没入库的」—— 否则每一轮都从同一批猫开始，永远收敛不了。
+  const plan = planSampleBuild(raw, {})
+  const planFresh = planSampleBuild(raw, { skipUsed: true })
+  // 缩略图：样本原图存的是 fileId，前台要看图必须换临时链接
+  const thumbs = raw.slice(0, limit).map(s => ({ _id: s._id, photos: [sampleMediaId(s)] }))
+  await attachTempUrls(thumbs, 1)
+  const thumbOf = Object.create(null)
+  thumbs.forEach(t => { thumbOf[t._id] = (t.photosUrl && t.photosUrl[0]) || '' })
+
+  const items = raw.slice(0, limit).map(s => {
+    const why = plan.reasons[s._id] || ''
+    const st = s.state || 'new'
+    const score = Number(s.score) || 0
+    const name = s.confirmedCatId ? (nameOf[s.confirmedCatId] || '') : ''
+    return {
+      id: s._id,
+      catId: s.confirmedCatId || '',
+      catName: name || (s.confirmedCatId ? '（档案已删除）' : ''),
+      catMissing: !!(s.confirmedCatId && !nameOf[s.confirmedCatId]),
+      predictedName: s.predictedCatId ? (nameOf[s.predictedCatId] || '（档案已删除）') : '',
+      // 文案一律在这里拼好：WXML 的 mustache 不做字符串拼接，会被静默忽略
+      scoreText: score ? (score + ' 分') : '无分数',
+      rawText: Number(s.rawSim) ? (Math.round(Number(s.rawSim) * 1000) / 10 + '%') : '',
+      typeText: s.type === 'video' ? '视频' : '照片',
+      stateText: st === 'used' ? '已入库' : (st === 'ignored' ? '已排除' : '待用'),
+      state: st,
+      thumb: thumbOf[s._id] || '',
+      usable: !why,
+      blockText: BLOCK_TEXT[why] || '',
+      blockReason: why,
+      createdAt: s.createdAt
+    }
+  })
+
+  // 按猫聚合（后台要看的是「哪只猫攒了几条」）
+  const groupMap = Object.create(null)
+  items.forEach(it => {
+    const key = it.catId || '__none__'
+    if (!groupMap[key]) {
+      groupMap[key] = {
+        // wx:key 需要非空且唯一：未归属组的 catId 是空串，直接拿它当 key 会撞重复警告
+        key: key,
+        catId: it.catId,
+        catName: it.catId ? (it.catName || '未知档案') : '未归属',
+        items: []
+      }
+    }
+    groupMap[key].items.push(it)
+  })
+  const groups = Object.keys(groupMap).map(k => groupMap[k])
+  // 每组补上可建库标记（后台模板里不做过滤/比较，会被静默忽略）
+  groups.forEach(g => {
+    const usable = g.items.filter(i => i.usable).length
+    g.countText = g.items.length + ' 条 · 可用 ' + usable + ' 条'
+    g.canBuild = usable > 0 && !!g.catId
+  })
+
+  return {
+    ok: true, schoolId,
+    total: raw.length,
+    shown: items.length,
+    usable: plan.picked.length,
+    fresh: planFresh.picked.length,
+    cats: planFresh.catIds.length,
+    perCat: SAMPLE_PHOTOS_PER_CAT,
+    minScore: SAMPLE_MIN_SCORE,
+    viewCap: INDEX_PHOTOS,
+    // 未出现在列表里的（超过 200 条上限）如实告知，别让管理员以为全看到了
+    truncated: raw.length > limit,
+    groups: groups
+  }
+}
+
+/** 排除原因 → 人话。后台直接渲染，不自己拼字符串。 */
+const BLOCK_TEXT = {
+  ignored: '已排除',
+  degraded: '本次识别降级，分数不可信',
+  unassigned: '未归属到某只猫',
+  noMedia: '没有可用图片（视频缺封面）',
+  lowScore: '低于匹配线，未采信',
+  otherCat: '不在本次范围内',
+  quota: '该猫样本已满',
+  dup: '与已选中的重复',
+  alreadyUsed: '已入库'
+}
+
+/**
+ * 后台：改一条样本。
+ *   ignore  排除（永不入库）  restore 恢复待用   assign  指定归属猫
+ */
+async function updateSample(user, event) {
+  const e = event || {}
+  const id = e.id
+  const act = String(e.act || '')
+  if (!id) throw new AppError('缺少样本 id', 400)
+  const res = await db.collection(COL.aiSample).doc(id).get().catch(() => ({ data: null }))
+  if (!res.data) throw new AppError('样本不存在', 404)
+
+  const patch = {}
+  if (act === 'ignore') patch.state = 'ignored'
+  else if (act === 'restore') patch.state = 'new'
+  else if (act === 'assign') {
+    const catId = String(e.catId || '')
+    if (!catId) throw new AppError('缺少目标猫 id', 400)
+    const cat = await db.collection(COL.cat).doc(catId).get().catch(() => ({ data: null }))
+    if (!cat.data) throw new AppError('目标档案不存在', 404)
+    // 归属一改，correct 必须同步为真 —— 否则这条在计划阶段仍会被判「未归属」
+    patch.confirmedCatId = catId
+    patch.correct = true
+    patch.state = 'new'
+    patch.assignedBy = (user && user.openid) || ''
+    patch.assignedAt = new Date()
+  } else {
+    throw new AppError('未知操作：' + act, 400)
+  }
+
+  await db.collection(COL.aiSample).doc(id).update({ data: patch })
+  return { ok: true, id, state: patch.state || '' }
+}
+
+/** 后台：物理删除一条样本（用户误传、涉隐私、拍的根本不是猫） */
+async function deleteSample(user, event) {
+  const id = (event && event.id) || ''
+  if (!id) throw new AppError('缺少样本 id', 400)
+  await db.collection(COL.aiSample).doc(id).remove()
+  return { ok: true, id }
+}
+
+/**
+ * 后台：把确认样本并入特征库。
+ *
+ * 做法不是「只拿样本建库」，而是**档案照 + 样本合并去重**后整只重算：
+ * 只送样本会把原本由档案照撑起来的正脸特征整块丢掉，反而更差。
+ * 合并后仍受 INDEX_PHOTOS（8）总上限约束，多出来的样本进不去。
+ *
+ * 为什么必须 force=true：代表向量是从这一批图整体算出来的，
+ * 视图集合变了就得重算；onlyMissing 会让它被静默跳过（「点了没反应」）。
+ *
+ * 分批：一次最多 SAMPLE_BUILD_CATS 只猫（3 × 8 张 ≈ 12s），
+ * 返回 remaining 让前台接着点 —— 一次性建完必然撞云函数超时，
+ * 而撞超时是「一只都没建成」，比分批糟得多。
+ */
+async function buildIndexFromSamples(user, event) {
+  const e = event || {}
+  const endpoint = process.env.AI_ENDPOINT
+  if (!endpoint) throw new AppError('未配置 AI_ENDPOINT', 400)
+  const schoolId = e.schoolId || (user && user.schoolId) || ''
+  const viewCap = Math.max(1, Math.min(INDEX_PHOTOS_MAX, Number(e.photosPerCat) || INDEX_PHOTOS))
+  const timeoutMs = Math.max(3000, Math.min(16000, Number(e.timeoutMs) || SAMPLE_BUILD_TIMEOUT_MS))
+  const perCat = Math.max(1, Math.min(6, Number(e.samplePerCat) || SAMPLE_PHOTOS_PER_CAT))
+  const minScore = (e.minScore === undefined || e.minScore === null)
+    ? SAMPLE_MIN_SCORE : Number(e.minScore)
+
+  const where = {}
+  if (schoolId) where.schoolId = schoolId
+  const res = await db.collection(COL.aiSample).where(where).limit(200).get()
+  // 手动指定某只猫时把「已入库」的样本也算上（管理员点它就是要重算）；
+  // 整批推进时只算没入库的，否则每轮都从头开始、remaining 永不归零。
+  const manual = Array.isArray(e.catIds) && e.catIds.length
+  const includeUsed = manual || e.includeUsed === true
+  const plan = planSampleBuild(res.data || [], {
+    samplePerCat: perCat, minScore: minScore,
+    catIds: e.catIds, sampleIds: e.sampleIds,
+    skipUsed: !includeUsed
+  })
+  if (!plan.picked.length) {
+    return {
+      ok: true, built: 0, scanned: 0, remaining: 0, cats: 0,
+      reasons: {}, msg: '没有可用样本（可能都被排除、未归属，或低于 ' + minScore + ' 分门槛）'
+    }
+  }
+
+  // 样本多的猫优先：同样一次调用，先覆盖收益最大的
+  const countByCat = Object.create(null)
+  plan.picked.forEach(p => { countByCat[p.catId] = (countByCat[p.catId] || 0) + 1 })
+  const allCats = plan.catIds.slice().sort((a, b) => countByCat[b] - countByCat[a])
+  // 手动指定时（catIds）不排队 —— 管理员点哪只就建哪只
+  const todoCats = (manual ? allCats : allCats.slice(0, SAMPLE_BUILD_CATS))
+  const restCats = allCats.slice(todoCats.length)
+
+  const cats = await index(schoolId, { photosPerCat: viewCap, catIds: todoCats })
+  const catById = Object.create(null)
+  cats.forEach(c => { catById[c.id] = c })
+
+  // 样本换临时链接（复用 attachTempUrls：顺带享受「陈旧链接反推」的自愈）
+  const thumbs = plan.picked
+    .filter(p => todoCats.indexOf(p.catId) >= 0)
+    .map(p => ({ _id: p.id, photos: [p.fileId] }))
+  await attachTempUrls(thumbs, 1)
+  const urlOf = Object.create(null)
+  thumbs.forEach(t => { urlOf[t._id] = (t.photosUrl && t.photosUrl[0]) || '' })
+
+  const reasons = Object.create(null)
+  const sendable = []
+  todoCats.forEach(id => {
+    const c = catById[id]
+    if (!c) { reasons[id] = 'catMissing'; return }
+    const arr = ((c.photosUrl || []).slice(0, viewCap)).slice()
+    plan.picked.forEach(p => {
+      if (p.catId !== id) return
+      const u = urlOf[p.id]
+      // 去重：同一张图既在档案里又被确认过，只算一次
+      if (u && arr.indexOf(u) < 0) arr.push(u)
+    })
+    const views = arr.slice(0, viewCap)
+    if (!views.length) { reasons[id] = 'noPhoto'; return }
+    sendable.push({ id: c.id, name: c.name, pattern: c.pattern, color: c.color, photos: views })
+  })
+
+  if (!sendable.length) {
+    return {
+      ok: true, built: 0, scanned: todoCats.length, remaining: restCats.length,
+      cats: plan.catIds.length, reasons, msg: '这些猫没有可用照片'
+    }
+  }
+
+  const buildUrl = String(endpoint).replace(/\/v1\/recognize\/?$/, '/v1/index/build')
+  if (buildUrl === String(endpoint)) {
+    throw new AppError('AI_ENDPOINT 需以 /v1/recognize 结尾，才能推导建库地址', 400)
+  }
+  const out = await callVisionApi(buildUrl, {
+    schoolId,
+    photosPerCat: viewCap,
+    // force：视图集合变了必须重算，否则服务端「已有向量」直接跳过
+    onlyMissing: false,
+    force: true,
+    cats: sendable
+  }, timeoutMs)
+
+  const remote = (out && out.reasons) || {}
+  Object.keys(remote).forEach(id => { reasons[id] = String(remote[id] || '') })
+  const failed = Array.isArray(out && out.failed) ? out.failed : null
+  const builtIds = failed
+    ? sendable.map(c => c.id).filter(id => failed.indexOf(id) < 0)
+    : (Number(out && out.built) >= sendable.length ? sendable.map(c => c.id) : [])
+
+  if (builtIds.length) {
+    markIndexed(builtIds)
+    // 只把「真的建成的猫」的样本标成已用：建失败的下一轮还会再带上
+    const usedIds = plan.picked
+      .filter(p => builtIds.indexOf(p.catId) >= 0)
+      .map(p => p.id)
+      .slice(0, 100)
+    if (usedIds.length) {
+      db.collection(COL.aiSample)
+        .where({ _id: _.in(usedIds) })
+        .update({ data: { state: 'used', usedAt: new Date() } })
+        .catch(err => console.warn('[vision] 标记样本已用失败', err && err.message))
+    }
+  }
+
+  return {
+    ok: true,
+    built: Number(out && out.built) || 0,
+    scanned: sendable.length,
+    failed: failed || [],
+    reasons,
+    // 还有没建的猫：前台据此提示「再点一次继续」
+    remaining: restCats.length,
+    cats: plan.catIds.length,
+    indexed: out && out.total,
+    msg: ''
   }
 }
 
@@ -1126,7 +2258,7 @@ async function buildIndexAll(opts) {
   const budget = Math.max(2000, Number(o.budgetMs)
     || Number(process.env.AI_INDEX_TIME_BUDGET_MS) || 15000)
   const deadline = started + budget
-  const photosPerCat = Math.max(1, Math.min(10, Number(o.photosPerCat) || 6))
+  const photosPerCat = Math.max(1, Math.min(INDEX_PHOTOS_MAX, Number(o.photosPerCat) || INDEX_PHOTOS))
   const maxSchools = Math.max(1, Number(o.maxSchools) || 200)
   // force=true → 忽略「服务端已有」判断，全部重算（特征库被清空后的恢复手段）。
   // 增量模式下若服务端特征库丢失，云函数侧的 aiIndexAt 仍会让这些猫被跳过，
@@ -1214,6 +2346,17 @@ function mulberry32(a) {
 
 module.exports = {
   runSync, start, poll, confirm, run, index, buildIndex, buildIndexAuto, buildIndexAll,
+  indexStatus, indexOneCat, engineHealth,
+  fetchIndexIds, fetchEngineHealth, deleteIndexEntry,
   scoreCat, match, TOP_N, LOW_CONF,
-  pickPendingIndexCats, PENDING_INDEX_MAX
+  candidateReason, shapeCandidates,
+  normalizeFeatures, identifiedFlag,
+  pickPendingIndexCats, PENDING_INDEX_MAX,
+  // 确认样本库（人工确认 → 特征库）：后台管理 + 手动建库
+  listSamples, updateSample, deleteSample, buildIndexFromSamples,
+  // 纯函数与阈值常量，供回归脚本直接断言（不依赖云环境）
+  planSampleBuild, sampleMediaId, BLOCK_TEXT,
+  INDEX_PHOTOS, INDEX_PHOTOS_AUTO, SAMPLE_PHOTOS_PER_CAT, SAMPLE_MIN_SCORE, SAMPLE_BUILD_CATS,
+  // 供回归脚本测「陈旧临时链接自愈」（attachTempUrls 本身不改数据，导出无害）
+  attachTempUrls, collectAuthorities, fileIdFromTempUrl
 }

@@ -1,0 +1,133 @@
+/* ===== 状态卡（加载中 / 未绑定学校） ===== */
+.state-card { text-align: center; padding: 56rpx 32rpx; }
+.state-ico { font-size: 64rpx; line-height: 1.2; }
+.state-title {
+  font-size: 32rpx;
+  font-weight: 700;
+  color: var(--text);
+  margin-top: 14rpx;
+}
+.state-desc {
+  font-size: 24rpx;
+  color: var(--text-sub);
+  line-height: 1.7;
+  margin-top: 10rpx;
+}
+
+/* ===== 进度头 ===== */
+.dex-hero {
+  background: linear-gradient(160deg, #FFF7ED 0%, #FFEDD5 58%, #FDE68A 100%);
+  border-radius: var(--radius);
+  padding: 34rpx 32rpx;
+  box-shadow: var(--shadow);
+}
+.hero-school {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  font-size: 26rpx;
+  color: #92400E;
+}
+.hero-tag {
+  font-size: 20rpx;
+  padding: 4rpx 12rpx;
+  border-radius: 999rpx;
+  background: rgba(249, 115, 22, .14);
+  color: #B45309;
+}
+.hero-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-top: 18rpx;
+}
+.hero-num {
+  font-size: 68rpx;
+  font-weight: 800;
+  line-height: 1;
+  color: #7C2D12;
+}
+.hero-slash {
+  font-size: 34rpx;
+  font-weight: 600;
+  color: rgba(124, 45, 18, .55);
+}
+.hero-pct {
+  font-size: 28rpx;
+  font-weight: 700;
+  color: #B45309;
+}
+.hero-bar {
+  height: 18rpx;
+  margin-top: 20rpx;
+  background: rgba(146, 88, 32, .14);
+  border-radius: 999rpx;
+  overflow: hidden;
+}
+.hero-bar-in {
+  height: 100%;
+  border-radius: 999rpx;
+  background: linear-gradient(90deg, #F97316 0%, #F59E0B 100%);
+  transition: width .5s;
+}
+.hero-hint {
+  margin-top: 18rpx;
+  font-size: 22rpx;
+  line-height: 1.6;
+  color: #92400E;
+  opacity: .85;
+}
+
+/* ===== 图鉴墙（3 列） ===== */
+.dex-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+  margin-top: 24rpx;
+}
+.cell {
+  width: calc((100% - 32rpx) / 3);
+  box-sizing: border-box;
+  padding: 16rpx 8rpx;
+  background: var(--card, #fff);
+  border: 2rpx solid var(--card-line);
+  border-radius: 20rpx;
+  text-align: center;
+}
+.cell-avatar {
+  width: 136rpx;
+  height: 136rpx;
+  margin: 0 auto;
+  border-radius: 18rpx;
+  overflow: hidden;
+  background: var(--brand-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 48rpx;
+}
+.cell-avatar image { width: 100%; height: 100%; }
+.cell-ph { font-size: 48rpx; }
+/* 未解锁的「?」比 🐱 略小一号，视觉上更"空"，符合未收集的感觉 */
+.cell-ph.q { font-size: 44rpx; font-weight: 700; color: var(--text-weak); }
+.cell-name {
+  margin-top: 12rpx;
+  font-size: 24rpx;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cell-hint {
+  margin-top: 4rpx;
+  font-size: 19rpx;
+  color: var(--text-weak);
+}
+/* 未解锁：虚线框 + 整体降透明度，和已解锁形成明确对比 */
+.cell.locked {
+  background: rgba(146, 88, 32, .03);
+  border-style: dashed;
+}
+.cell.locked .cell-name { color: var(--text-weak); font-weight: 500; }
+.cell.locked .cell-avatar { background: rgba(146, 88, 32, .05); }

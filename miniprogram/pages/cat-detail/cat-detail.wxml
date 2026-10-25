@@ -18,11 +18,13 @@
     <view class="tag {{cat.sterilized === 'yes' ? 'ok' : 'warn'}}">{{sterLabel}}</view>
   </view>
 
-  <!-- 记录概览（含标准照数量；不再展示旧的置信度圆环与说明文案） -->
+  <!-- 记录概览。
+       ⚠️ 不再展示「入库照数量」（2026-10-17 用户要求）：那是后台维护特征库时的概念，
+       对普通用户没有意义，而且它统计的是**档案照张数**，不是「特征库里真实有几条向量」，
+       两者口径对不上时（例如补库失败）反而误导。
+       ⚠️ 也不展示旧的置信度圆环与说明文案（2026-10-15 用户要求）。 -->
   <view class="card card-glow mt">
     <view class="card-title">档案概览</view>
-    <view class="small">该猫已入库 <text class="bold">{{photoCount}}</text> 张标准照。</view>
-    <view class="divider"></view>
     <view class="small muted">
       最近被记录：{{sightings[0] ? sightings[0].timeText : '暂无'}} · 累计 {{cat.sightingCount || 0}} 次目击<text wx:if="{{lastFedText}}"> · 最近投喂 {{lastFedText}}（{{cat.lastFedBy}}）</text>
     </view>
@@ -54,11 +56,19 @@
 
   <!-- 相册 -->
   <view class="card mt" wx:if="{{cat.photosSmall.length}}">
-    <view class="card-title">相册</view>
+    <view class="card-title" bindlongpress="albumDebug">相册</view>
     <view class="photo-grid">
-      <image wx:for="{{cat.photosSmall}}" wx:for-index="pi" wx:key="*this" src="{{item}}"
-        mode="aspectFill" lazy-load="{{true}}" binderror="onAlbumErr" data-i="{{pi}}"
-        data-url="{{cat.photosFull[pi]}}" data-urls="{{cat.photosFull}}" bindtap="previewPhoto" />
+      <!-- 预览不再走 wx.previewImage（它加载失败只给一片黑、连 fail 都不回调），
+           改成页面内全屏 <image>，与格子同一条渲染链路。 -->
+      <view class="photo-cell" wx:for="{{cat.photosSmall}}" wx:for-index="pi"
+            bindtap="previewPhoto" data-i="{{pi}}">
+        <image wx:if="{{item}}" src="{{item}}" mode="aspectFill" lazy-load="{{true}}"
+          binderror="onAlbumErr" data-i="{{pi}}" />
+        <view wx:else class="photo-bad">
+          <text>照片失效</text>
+          <text class="photo-bad-sub">请重新上传</text>
+        </view>
+      </view>
     </view>
   </view>
 
@@ -92,12 +102,13 @@
           <text class="small muted">{{item.timeText}}</text>
         </view>
         <view class="small muted" wx:if="{{item.locationName}}">📍 {{item.locationName}}</view>
-        <view class="note small" wx:if="{{item.note}}">{{item.note}}</view>
+        <!-- 结构化标签（合规改造：替代原自由文本 note） -->
+        <view class="note small" wx:if="{{item.tagText}}">{{item.tagText}}</view>
         <view class="photo-row" wx:if="{{item.photosSmall.length}}">
           <image wx:for="{{item.photosSmall}}" wx:for-item="p" wx:for-index="pi" wx:key="*this"
             src="{{p}}" mode="aspectFill" lazy-load="{{true}}"
             binderror="onSightErr" data-i="{{si}}" data-j="{{pi}}"
-            data-url="{{item.photosFull[pi]}}" data-urls="{{item.photosFull}}" bindtap="previewPhoto" />
+            bindtap="previewSightPhoto" />
         </view>
       </view>
     </view>
@@ -107,10 +118,33 @@
     </view>
   </view>
 
+  <!-- 超管专属：删除档案。
+       单独一张卡而不是塞进底部操作栏：底部两个按钮已经是「记录目击 / 编辑档案」，
+       塞第三个会把主操作挤小；删除本身也不该和日常操作挨在一起。
+       二次确认在 removeCat() 里做，确认文案写明「什么会消失、什么会保留」。 -->
+  <view class="card mt danger-zone" wx:if="{{isSuper}}">
+    <view class="card-title">管理员操作</view>
+    <view class="small muted danger-hint">
+      删除后档案、照片与识别特征一并移除，且无法恢复；已有目击记录会保留为历史。
+    </view>
+    <button class="btn btn-danger btn-block" bindtap="removeCat"
+            loading="{{removing}}" disabled="{{removing}}">删除猫档案</button>
+  </view>
+
   <!-- 底部操作 -->
   <view class="footer-bar">
     <button class="btn btn-plain" style="flex:1" bindtap="goSighting">记录目击</button>
     <button class="btn" style="flex:1" wx:if="{{canEdit}}" bindtap="goEdit">编辑档案</button>
+  </view>
+
+  <!-- 全屏查看：铺满屏幕的 <image>，点空白关闭、点图片不关、左右滑切换 -->
+  <view class="viewer" wx:if="{{viewer.on}}" catchtap="closeViewer"
+        catchtouchstart="onViewerTouchStart" catchtouchend="onViewerTouchEnd">
+    <view class="viewer-count" wx:if="{{viewer.total > 1}}">{{viewer.no}} / {{viewer.total}}</view>
+    <image wx:if="{{viewer.cur && !viewer.bad}}" class="viewer-img" src="{{viewer.cur}}"
+      mode="aspectFit" binderror="onViewerErr" catchtap="noop" />
+    <view class="viewer-tip" wx:elif="{{viewer.bad}}">照片无法显示，可能已被删除</view>
+    <view class="viewer-tip" wx:else>加载中…</view>
   </view>
 
 </view>

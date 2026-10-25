@@ -94,43 +94,98 @@ async function attachMarkerUrls(list) {
   if (dropped) console.warn('[map] 有 ' + dropped + ' 个头像未能换取临时链接，已保留 fileID 由前端 <image> 直接渲染')
 }
 
+/** 每只猫最多保留几个候选打卡点位（新 → 旧）。
+ *  >1 是为了「最新一次打卡跑到校园范围外」时能退到次新那条 ——
+ *  只留 1 条的话，一次校外打卡就会让这只猫从地图上凭空消失。 */
+const SIGHTING_LOC_CANDIDATES = 3
+
 /**
- * 取每只猫「最后一次打卡」的点位。
+ * 取每只猫「最近几次打卡」的点位。
  *
  * 为什么需要：地图点位原来只读猫档案的常驻位置（cats.location）——
  * 没填常驻位置的猫永远不上图；用户在新地点打卡后，图标也还停在老位置。
- * 现在按 sightings.createdAt 倒序扫描最近 N 条，同一 catId 只保留第一条（即最新），
- * 作为该猫的首选点位；档案常驻位置退居兜底。
+ * 现在按 sightings.createdAt 倒序扫描最近 N 条，每只猫留最多 3 条（新→旧），
+ * 由 mapPoints 结合校园范围挑选；档案常驻位置退居最后兜底。
  *
  * 两个约束：
  *  1. **只认档案里的猫**：catId 为空的打卡是「未认领的新猫」（pending），没有档案，
  *     不上图（等社团核实建档后自然会出现）。
- *  2. 字段投影只取 4 个字段 —— photos/note 等大字段不拉，响应包体积直接决定云函数耗时。
+ *  2. 字段投影只取 3 个字段 —— photos/note 等大字段不拉，响应包体积直接决定云函数耗时。
+ *
+ * ⚠️ 两条查询路径，且**失败原因必须交回上层**（return { locs:{}, error }）：
+ * 「最近几个目击没上图」最常见的根因就是这条查询挂了（缺索引 / 超时），
+ * 而旧写法在 catch 里直接 return {} —— 静默降级成档案常驻位置，
+ * 日志外无人知晓，现场只能看到「点位不对」，排查无从下手。
+ *
+ *  ① 首选：`orderBy('createdAt','desc')`（需要 createdAt 索引）
+ *  ② 降级：不带 orderBy（无索引也能跑），多拉一些后**内存排序**。
+ *     拿到的不一定严格是最新 N 条，但比「整条查询失败、只能退回档案位置」强得多。
+ *
+ * 关于归属：先按 `schoolId` 过滤（省得把别校记录拉回来挤占 500 条窗口），
+ * 再在**内存里按 catId 复核**一遍 —— 只保留本校猫的打卡。
+ * 双保险的原因：打卡记录的 schoolId 是写入时从用户档案快照来的，历史上出现过
+ * 用户还没绑校就打卡的情况（那时会写成空串，按校过滤就查不到）。
+ * 这种情况由 addSighting 的「猫档案反推」兜底 + `backfillSightingSchool` 回填处理，
+ * 这里再按 catId 复核一次，确保别校的猫永远不会串进来。
+ *
+ * 同理不要把 `location: _.neq(null)` 塞进 where —— 不等值条件会让索引需求复杂化，
+ * 在控制台没建索引时直接失败；而它完全可以在内存里过滤。
  */
-async function lastSightingLocations(schoolId) {
-  const where = { location: _.neq(null) }
-  if (schoolId) where.schoolId = schoolId
-  let res = { data: [] }
+async function lastSightingLocations(schoolId, catIds) {
+  const proj = { catId: true, location: true, createdAt: true }
+  // 本校一只猫都没有时不用查了 —— 查回来也会被下面的集合过滤光
+  if (!catIds || !catIds.size) return { locs: {}, error: null }
+  const where = schoolId ? { schoolId } : {}
+
+  // 500 而不是 400：坐标过滤挪到内存后，无坐标的打卡也会占窗口，
+  // 稍微放宽一点，保证「每只猫都能拿到自己最近那几次打卡」。
   try {
-    res = await db.collection(COL.sighting)
-      .where(where)
-      .field({ catId: true, location: true, createdAt: true })
-      .orderBy('createdAt', 'desc')
-      .limit(400)
-      .get()
+    const res = await db.collection(COL.sighting)
+      .where(where).field(proj).orderBy('createdAt', 'desc').limit(500).get()
+    return { locs: collectSightingLocs(res.data, catIds), error: null }
   } catch (e) {
-    // 打卡表查询失败不能拖垮整个地图：回退「只用档案常驻位置」的老行为
-    console.warn('[map] 拉取最近打卡点位失败，回退档案常驻位置', e && e.message)
-    return {}
+    console.warn('[map] 打卡点位排序查询失败，尝试降级（多半是缺索引）', (e && e.message) || e)
   }
-  const last = {}
-  ;(res.data || []).forEach(s => {
+
+  try {
+    const res = await db.collection(COL.sighting)
+      .where(where).field(proj).limit(800).get()
+    const rows = (res.data || []).slice().sort(byCreatedAtDesc)
+    const locs = collectSightingLocs(rows, catIds)
+    return {
+      locs,
+      error: null,
+      degraded: true,
+      note: '打卡点位未按索引排序，已降级为内存排序（建议为 sightings 建 (schoolId ASC, createdAt DESC) 索引）'
+    }
+  } catch (e) {
+    const msg = (e && e.message) || String(e)
+    // 两条路都挂了才真正放弃：回退「只用档案常驻位置」，并把原因交回上层
+    console.warn('[map] 拉取最近打卡点位失败，回退档案常驻位置', msg)
+    return { locs: {}, error: msg }
+  }
+}
+
+function byCreatedAtDesc(a, b) {
+  const ta = a && a.createdAt instanceof Date ? a.createdAt.getTime() : Number(a && a.createdAt) || 0
+  const tb = b && b.createdAt instanceof Date ? b.createdAt.getTime() : Number(b && b.createdAt) || 0
+  return tb - ta
+}
+
+/** 打卡记录 → 每只猫的候选点位列表（新 → 旧，最多 SIGHTING_LOC_CANDIDATES 条）。
+ *  catIds：本校猫的 id 集合，不在其中的一律丢掉（跨校隔离在内存里做）。 */
+function collectSightingLocs(rows, catIds) {
+  const locs = {}
+  ;(rows || []).forEach(s => {
     if (!s || !s.catId) return        // 未认领的新猫：无档案，不上图
-    if (last[s.catId]) return         // 倒序扫描，先到者即最新
+    if (catIds && !catIds.has(s.catId)) return   // 别的学校的猫
     const loc = s.location
-    if (loc && isFinite(loc.lat) && isFinite(loc.lng)) last[s.catId] = loc
+    // 无坐标的打卡在这里被丢掉（替代原来的 where location _.neq(null)）
+    if (!loc || !isFinite(loc.lat) || !isFinite(loc.lng)) return
+    const arr = locs[s.catId] || (locs[s.catId] = [])
+    if (arr.length < SIGHTING_LOC_CANDIDATES) arr.push(loc)   // 已按时间倒序，先到者更新
   })
-  return last
+  return locs
 }
 
 /**
@@ -142,25 +197,54 @@ async function mapPoints(user, event) {
   const schoolId = event.schoolId || (user && user.schoolId) || ''
   const where = schoolId ? { schoolId } : {}
   const res = await db.collection(COL.cat).where(where).limit(300).get()
+  // 本校猫的 id 集合 —— 打卡记录的归属判定用它（sightings.schoolId 可能是空的）
+  const catIds = new Set((res.data || []).map(c => c._id))
 
   const member = isMember(user)
   const zoom = Number(event.zoom) || 16
   const g = gridSize(zoom)
   const bounds = event.bounds || null
 
-  // 每只猫的最后一次打卡点位（缺失/查询失败时为空对象，下面自然回退档案位置）
-  const lastLoc = await lastSightingLocations(schoolId)
+  // 每只猫最近几次打卡的点位（查询失败时 locs 为空，下面自然回退档案位置）
+  const last = await lastSightingLocations(schoolId, catIds)
+  const lastLoc = last.locs || {}
+
+  /**
+   * 点位裁决：**优先落在校园范围内**的那条候选，而不是无条件用最新打卡。
+   *
+   * 为什么不能无条件用最新打卡（2026-10-25 修）：
+   *  客户端拿到点位后还要按校园 bounds 过滤一次，而打卡坐标是用户手机 GPS，
+   *  一次「在校外/校园边缘」的打卡会让这只猫的唯一坐标跑到框外 → 被整只丢掉。
+   *  现场表现就是「最近几个目击都没有显示在地图上」——越打越不见。
+   *
+   * 候选顺序（新 → 旧，最后是档案常驻位置）：
+   *  1. 取第一个落在 bounds 内的候选（bounds 为空时即取最新打卡）
+   *  2. 全都落在框外 → 仍用最新打卡，**标记 outside 而不丢弃**：
+   *     宁可多显示一只，也不能让猫凭空消失（越界由前端给出提示）
+   */
+  const pickLoc = c => {
+    const cands = (lastLoc[c._id] || []).map(loc => ({ loc, from: 'sighting' }))
+    if (c.location && isFinite(c.location.lat) && isFinite(c.location.lng)) {
+      cands.push({ loc: c.location, from: 'profile' })
+    }
+    if (!cands.length) return null
+    for (const cd of cands) {
+      if (!bounds || inBounds(cd.loc, bounds)) {
+        return { loc: cd.loc, from: cd.from, outside: false }
+      }
+    }
+    return { loc: cands[0].loc, from: cands[0].from, outside: !!bounds }
+  }
 
   // 两级可见：非成员直接剔除私有点位；其余按需模糊化
   // 坐标过滤必须 isFinite：typeof 检查放 NaN 通过，会产出 NaN:NaN 幽灵点位
-  // 点位优先级：最后一次打卡位置 > 档案常驻位置（用户要求：以最后一次打卡位置为准上图）
   const list = res.data
-    .map(c => ({ cat: c, loc: lastLoc[c._id] || c.location || null }))
-    .filter(x => x.loc && isFinite(x.loc.lat) && isFinite(x.loc.lng))
+    .map(c => ({ cat: c, picked: pickLoc(c) }))
+    .filter(x => x.picked)
     .filter(x => member || !x.cat.spotPrivate)
     .map(x => {
       const c = x.cat
-      const loc = (!member && needBlur(c)) ? blurLocation(x.loc) : x.loc
+      const loc = (!member && needBlur(c)) ? blurLocation(x.picked.loc) : x.picked.loc
       return {
         catId: c._id,
         name: c.name,
@@ -180,11 +264,14 @@ async function mapPoints(user, event) {
         lat: loc.lat,
         lng: loc.lng,
         blurred: !!loc.blurred,
-        // 供前端/排查区分点位来源（true = 来自最近一次打卡）
-        fromSighting: !!lastLoc[c._id]
+        // 供前端/排查区分点位来源（true = 点位来自某次打卡）
+        fromSighting: x.picked.from === 'sighting',
+        // 所有候选都落在校园范围外 —— 仍然上图，只打标（丢弃会让猫凭空消失）
+        outside: x.picked.outside
       }
     })
-    .filter(p => inBounds({ lat: p.lat, lng: p.lng }, bounds))
+
+  const outsideCount = list.filter(p => p.outside).length
 
   // 网格聚合
   const cells = new Map()
@@ -225,6 +312,14 @@ async function mapPoints(user, event) {
     zoom,
     grid: g,
     total: list.length,
+    // 越界（所有候选点位都在校园范围外）的点位数量，前端据此给提示
+    outside: outsideCount,
+    // 打卡表查询的异常说明（正常为空）。留空串而不是不返回字段，
+    // 便于前端/后台直接读 —— 「静默降级」是这类问题最难排查的地方。
+    warn: last.error
+      ? ('最近打卡点位查询失败，已回退档案常驻位置：' + last.error +
+         '（建议为 sightings 建 (schoolId ASC, createdAt DESC) 索引）')
+      : (last.note || ''),
     clusters,
     // points.avatar 已由 attachMarkerUrls 换成 https 临时链接：
     //  - marker.iconPath **不用它**（前端 buildCatMarker 一律用本地图标，从源头绕开 CORS）
@@ -232,6 +327,166 @@ async function mapPoints(user, event) {
     points,
     scope: member ? 'member' : 'public',
     notice: member ? '' : '幼猫、病猫与私有点位已隐藏或模糊处理，保护猫咪安全。'
+  }
+}
+
+/**
+ * 诊断：逐只猫回答「为什么它没出现在地图上」（仅超管）。
+ *
+ * 现场最常见的一句话是「新打卡的猫没上图」，可能的原因有五六种，
+ * 光看界面分不清。这个接口把每只猫的判定依据摊开：
+ *   - 档案有没有常驻位置
+ *   - 有没有带 catId 的打卡
+ *   - 那些打卡里有没有坐标（打卡时没授权定位就没坐标）
+ *   - 最终点位来自哪条、是否落在校园 bounds 内
+ *   - 打卡查询本身是不是挂了（缺索引 / 超时）
+ * 另外单独统计「catId 为空」的打卡 —— 那是未认领的新猫，按设计不上图，
+ * 数量一多往往就是「明明打了卡却看不到」的真相。
+ */
+async function diagnoseMapPoints(user, event) {
+  const schoolId = event.schoolId || (user && user.schoolId) || ''
+  const where = schoolId ? { schoolId } : {}
+  const bounds = (event.bounds && event.bounds.sw && event.bounds.ne) ? event.bounds : null
+
+  const res = await db.collection(COL.cat).where(where).limit(300).get()
+  const cats = res.data || []
+
+  // 打卡查询：和正式链路同一条语句，失败原因如实报出来
+  let queryError = null
+  let rows = []
+  try {
+    const r = await db.collection(COL.sighting)
+      .where(where)
+      .field({ catId: true, location: true, createdAt: true })
+      .orderBy('createdAt', 'desc').limit(500).get()
+    rows = r.data || []
+  } catch (e) {
+    queryError = (e && e.message) || String(e)
+    // 诊断场景下退一步也要给结论：不带排序再试一次
+    try {
+      const r2 = await db.collection(COL.sighting)
+        .where(where)
+        .field({ catId: true, location: true, createdAt: true })
+        .limit(500).get()
+      rows = (r2.data || []).slice().sort(byCreatedAtDesc)
+      queryError = queryError + '（已用不带排序的查询兜底，建议建 (schoolId ASC, createdAt DESC) 索引）'
+    } catch (e2) {
+      queryError = queryError + '（兜底查询也失败：' + ((e2 && e2.message) || e2) + '）'
+    }
+  }
+
+  const hasLoc = s => s && s.location && isFinite(s.location.lat) && isFinite(s.location.lng)
+  const pendingRows = rows.filter(s => s && !s.catId && hasLoc(s)).length
+  const pendingNoLoc = rows.filter(s => s && !s.catId && !hasLoc(s)).length
+
+  // ---- 跨校错配排查 ----
+  // 「本校只扫到 3 条，但我明明打了十几次卡」——最常见的原因是打卡记录落在
+  // 别的校园下（在测试校园做的打卡、或打卡时用户档案还没绑校导致 schoolId 为空串）。
+  // 只报本校数据是看不出这点的，必须同时给出全库分布做对照。
+  let schoolName = ''
+  if (schoolId) {
+    try {
+      const s = await db.collection(COL.school).doc(schoolId).get()
+      schoolName = (s.data && s.data.name) || ''
+    } catch (e) {
+      schoolName = ''    // 学校名拿不到不影响结论，不让它盖掉后面的证据
+    }
+  }
+  let allRows = []
+  try {
+    const r = await db.collection(COL.sighting)
+      .field({ catId: true, schoolId: true, location: true })
+      .limit(500).get()
+    allRows = r.data || []
+  } catch (e) {
+    allRows = []
+  }
+  const bySchool = {}
+  allRows.forEach(s => {
+    if (!s) return
+    const k = s.schoolId || '(空)'
+    bySchool[k] = (bySchool[k] || 0) + 1
+  })
+  const pendingAll = allRows.filter(s => s && !s.catId && hasLoc(s)).length
+  const otherCount = allRows.length - rows.length
+  // 明确的判定句，省得拿到 JSON 还要自己算
+  let mismatchHint = ''
+  if (otherCount > 0) {
+    mismatchHint = '全库共 ' + allRows.length + ' 条打卡，本校只匹配到 ' + rows.length +
+      ' 条，另有 ' + otherCount + ' 条记在别校或 schoolId 为空 —— 这些不会上图'
+  } else if (!rows.length && allRows.length) {
+    mismatchHint = '全库有 ' + allRows.length + ' 条打卡，但没有一条属于本校'
+  }
+
+  const out = cats.map(c => {
+    const own = rows.filter(s => s && s.catId === c._id)
+    const withLoc = own.filter(hasLoc)
+    const profLoc = (c.location && isFinite(c.location.lat) && isFinite(c.location.lng)) ? c.location : null
+    const cands = withLoc.slice(0, SIGHTING_LOC_CANDIDATES).map(s => s.location)
+    if (profLoc) cands.push(profLoc)
+
+    let source = 'none', reason = '', lat = null, lng = null, outside = false
+    if (cands.length) {
+      let hit = null
+      for (const loc of cands) {
+        if (!bounds || inBounds(loc, bounds)) { hit = loc; break }
+      }
+      const picked = hit || cands[0]
+      outside = !hit && !!bounds
+      source = withLoc.length ? 'sighting' : 'profile'
+      lat = picked.lat; lng = picked.lng
+      // 用档案位置时必须说清「为什么不是打卡点位」，否则排查时看不出打卡链路没生效
+      if (outside) reason = '所有候选点位都落在校园范围外'
+      else if (!withLoc.length) reason = '没有带 catId 的打卡，用档案常驻位置'
+    } else if (own.length) {
+      reason = '有 ' + own.length + ' 条打卡，但都没有坐标（打卡时未授权定位/未选点）'
+    } else if (profLoc) {
+      source = 'profile'; lat = profLoc.lat; lng = profLoc.lng
+      reason = '没有带 catId 的打卡，用档案常驻位置'
+    } else {
+      reason = '既无常驻位置、也没有带坐标的打卡 —— 不会上图'
+    }
+
+    return {
+      catId: c._id, name: c.name || '',
+      status: c.status || 'campus',
+      spotPrivate: !!c.spotPrivate,
+      hasProfileLoc: !!profLoc,
+      sightings: own.length,
+      sightingsWithLoc: withLoc.length,
+      source, lat, lng, outside, reason
+    }
+  })
+
+  const onMap = out.filter(x => x.source !== 'none').length
+
+  // 全库猫档案数（不带学校过滤）：本校 cats 数明显偏少 = 新猫档案建在别的校园下了
+  let catsAll = -1
+  try {
+    const rc = await db.collection(COL.cat).limit(300).get()
+    catsAll = (rc.data || []).length
+  } catch (e) {
+    catsAll = -1
+  }
+
+  return {
+    schoolId,
+    schoolName,
+    boundsUsed: !!bounds,
+    sightingQueryError: queryError || '',
+    sightingRowsScanned: rows.length,
+    // catId 为空的打卡：未认领的新猫，按设计不上图
+    pendingWithLoc: pendingRows,
+    pendingNoLoc,
+    // ---- 跨校错配证据 ----
+    sightingsAll: allRows.length,
+    sightingsBySchool: bySchool,
+    pendingAll,
+    catsInSchool: cats.length,
+    catsAll,
+    mismatchHint,
+    summary: { cats: cats.length, onMap, missing: cats.length - onMap },
+    cats: out
   }
 }
 
@@ -288,6 +543,11 @@ function isCloudFileId(v) { return typeof v === 'string' && v.indexOf('cloud://'
 async function attachCatMediaUrls(list, opts) {
   if (!list || !list.length) return list
   const withPhotos = !opts || opts.photos !== false
+  // ids=true：额外下发一份**原始 fileID**（photoIds / avatarId，与 photos 同下标）。
+  // 为什么需要：下面会把 photos 原地替换成临时链接，签名过期后客户端手里就再也
+  // 没有「能重新换链」的东西了 —— 详情页点相册预览黑屏、且无法自愈。
+  // 只在详情页（getCat）开启，列表接口不多传这份冗余字段。
+  const keepIds = !!(opts && opts.ids)
   const ids = []
   list.forEach(c => {
     if (!c) return
@@ -299,6 +559,10 @@ async function attachCatMediaUrls(list, opts) {
   const map = ids.length ? await fetchTempUrls(ids) : {}
   list.forEach(c => {
     if (!c) return
+    if (keepIds && withPhotos) {
+      c.avatarId = isCloudFileId(c.avatar) ? c.avatar : ''
+      c.photoIds = (Array.isArray(c.photos) ? c.photos : []).map(p => (isCloudFileId(p) ? p : ''))
+    }
     c.avatar = normalizeMedia(c.avatar, map)
     if (withPhotos && Array.isArray(c.photos)) {
       c.photos = c.photos.map(p => normalizeMedia(p, map))
@@ -357,6 +621,6 @@ async function probeTempUrls(ids) {
 }
 
 module.exports = {
-  mapPoints, gridSize, attachMarkerUrls,
+  mapPoints, gridSize, attachMarkerUrls, diagnoseMapPoints,
   attachCatMediaUrls, attachSightingMediaUrls, fetchTempUrls, probeTempUrls
 }

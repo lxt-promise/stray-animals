@@ -14,14 +14,20 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import List, Optional, Tuple
+import math
+import os
+import time
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
 
 from . import config
+from . import attrs as attr_heuristic
 
 log = logging.getLogger("catcampus.engine")
+
+_SERVER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _dim_of(shape) -> Optional[int]:
@@ -94,6 +100,64 @@ def l2(v: np.ndarray) -> np.ndarray:
     return v / n if n else v
 
 
+def rep_vector(embs: List[np.ndarray], keep: float = 0.0,
+               spread_min: Optional[float] = None) -> np.ndarray:
+    """把同一个体的多条向量合成一条**代表向量**：medoid + 内点平均。
+
+    为什么不直接平均：平均值对离群点没有抵抗力。档案里 5 张照片、其中 1 张
+    是「糊了」/「拍的是旁边的另一只猫」/「猫只占角落一成」，平均出来的向量
+    会被拽向那个离群点，而检索时它是这只猫唯一的门面 —— 一次错误档案
+    会持续污染这只猫的识别，直到有人重拍。
+    同一只猫的多数照片彼此高度相似，所以「离群」在向量空间里是**可测的**：
+      ① 算两两余弦，取「到其它向量平均相似度最高」的那条当 medoid（中位数样本）；
+      ② 只保留离 medoid 最近的 ceil(n*keep) 条求平均。
+    keep=0 取 config.REP_KEEP；keep>=1 等价于全部平均（用于不在乎离群的场合）。
+
+    ⚠️ 视图散得开时不要平均（2026-10-25 实测，见 tools/mv_eval.py）：
+    档案照是「大头特写 + 远景全身 + 侧身」这种彼此余弦只有 0.80 的组合时，
+    平均出来的「中间脸」谁都不像 —— 实测 margin +0.142，而只用 medoid 是
+    +0.148。所以先算整体离散度 spread，低于 config.REP_SPREAD_MIN 就退回
+    medoid 本身。反过来，档案照彼此很像（spread 0.93）时平均是**降噪**，
+    比 medoid 更好（+0.189 vs +0.179）—— 两头都要，所以是自适应而不是一刀切。
+    只在 keep<=0（走默认策略）时生效；显式传 keep 表示调用方要指定行为。
+
+    退化处理：n<=2 时不做筛选（两条里分不出谁是离群点，删谁都可能删掉正脸）；
+    n==1 直接返回。返回已 L2 归一化。
+    """
+    vecs = [np.asarray(v, dtype=np.float32).reshape(-1) for v in embs
+            if v is not None and np.asarray(v).size]
+    if not vecs:
+        raise RuntimeError("rep_vector 收到空向量列表")
+    if len(vecs) == 1:
+        return l2(vecs[0])
+    k = float(config.REP_KEEP if keep <= 0 else keep)
+    n = len(vecs)
+    if k >= 1.0 or n <= 2:
+        return l2(np.mean(np.stack(vecs), axis=0))
+
+    mat = np.stack([l2(v) for v in vecs])       # 已归一化，点积即余弦
+    sim = mat @ mat.T
+    self_sim = sim.copy()
+    np.fill_diagonal(self_sim, 0.0)             # 选 medoid 时不能把自己算成「最像」
+    medoid = int(np.argmax(self_sim.sum(axis=1)))
+
+    if keep <= 0:
+        sm = float(config.REP_SPREAD_MIN if spread_min is None else spread_min)
+        # 除掉对角线（n 个 1.0）后取平均，即「两两余弦均值」
+        spread = float((sim.sum() - n) / (n * (n - 1)))
+        if spread < sm:
+            return l2(mat[medoid])
+
+    # 排序用的距离：medoid 与自己的相似度必须是 1（填 0 会让它自己排到最后，
+    # 于是「离 medoid 最近的 k 条」把这个 medoid 本身排除掉 —— 实测就是这里错的）
+    dist = sim[medoid].copy()
+    dist[medoid] = 1.0
+    order = np.argsort(-dist)
+    keep_n = max(2, min(n, int(math.ceil(n * k))))
+    picked = order[:keep_n]
+    return l2(np.mean(mat[picked], axis=0))
+
+
 def _letterbox(im: Image.Image, size: int) -> Image.Image:
     """保持长宽比缩放并补灰边，避免直接 resize 拉伸导致个体形变。
 
@@ -112,6 +176,133 @@ def _letterbox(im: Image.Image, size: int) -> Image.Image:
     canvas = Image.new("RGB", (size, size), (128, 128, 128))
     canvas.paste(im2, ((size - nw) // 2, (size - nh) // 2))
     return canvas
+
+
+def _resolve_detect_model() -> str:
+    """决定用哪个检测模型，返回路径；空串表示不检测。
+
+    规则（按优先级）：
+      1. `DETECT_ONNX=off / none / 0 / false` —— 显式关闭，即使模型文件在旁边也不用。
+      2. `DETECT_ONNX` 指向具体文件 —— 用它（配错路径会在 _Detector 里告警并降级）。
+      3. `DETECT_ONNX` 为空且 `DETECT_AUTO` 开着 —— 自动发现 `models/yolov8n.onnx`。
+
+    为什么要自动发现：模型随仓库走（12.8MB），部署时漏配环境变量是最常见的
+    「代码明明改了、线上没生效」。自动发现让「把 server/ 放上去」就等于启用，
+    而想关的人有明确的开关可拨（第 1 条），不存在「关不掉」的问题。
+    """
+    raw = (config.DETECT_ONNX or "").strip()
+    if raw.lower() in ("0", "off", "none", "false", "no"):
+        return ""
+    if raw:
+        return raw
+    if not config.DETECT_AUTO:
+        return ""
+    cand = os.path.join(_SERVER_DIR, "models", "yolov8n.onnx")
+    return cand if os.path.exists(cand) else ""
+
+
+def _iou(a: List[int], b: List[int]) -> float:
+    """两个 xyxy 框的交并比。"""
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = float(iw * ih)
+    if inter <= 0:
+        return 0.0
+    area_a = float((a[2] - a[0]) * (a[3] - a[1]))
+    area_b = float((b[2] - b[0]) * (b[3] - b[1]))
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _pick_subject(boxes: List[List[int]], confs: List[float],
+                  iou_thr: float = 0.45) -> int:
+    """从候选框里挑出「画面主体」，返回下标；空列表返回 -1。
+
+    两步，缺一不可：
+      ① **NMS 去重**。YOLO 导出的是未做后处理的原始输出，同一只猫会给出十几条
+         高度重叠的框（实测一张图 10 条）。不去重的话「面积最大」很容易被同一只猫
+         的另一个框命中，等于白算。
+      ② **按面积而非置信度选**。用户拍的是「这只猫」，画面主体就是面积最大的那只；
+         置信度最高的往往是构图里最近、最清楚的那只小猫，未必是主体。
+         这与 `_Detector.__call__` 文档里承诺的「面积最大的猫框」也一致。
+    """
+    if not boxes:
+        return -1
+    order = sorted(range(len(boxes)), key=lambda i: -confs[i])
+    kept: List[int] = []
+    for i in order:
+        if all(_iou(boxes[i], boxes[j]) <= iou_thr for j in kept):
+            kept.append(i)
+    if not kept:
+        return -1
+    return max(kept, key=lambda i: (boxes[i][2] - boxes[i][0]) * (boxes[i][3] - boxes[i][1]))
+
+
+def _pad_box(box: List[int], w: int, h: int, ratio: float) -> List[int]:
+    """把框按比例外扩并夹到画面内。
+
+    检测框天生「贴得紧」：猫耳尖、尾巴、后腿常被切在框外。少一点边缘会让
+    个体特征更完整（尤其是靠尾巴/耳形区分的猫）。外扩比例不能大 ——
+    每扩 10% 就多带进一圈背景，而背景正是检测要消掉的东西。默认 8%。
+    """
+    if not box or ratio <= 0:
+        return box
+    bw, bh = box[2] - box[0], box[3] - box[1]
+    dx, dy = int(round(bw * ratio)), int(round(bh * ratio))
+    return [max(0, box[0] - dx), max(0, box[1] - dy),
+            min(w, box[2] + dx), min(h, box[3] + dy)]
+
+
+_AUTO_BOX = object()   # 哨兵：box=_AUTO_BOX 表示「没给框，自己检测」
+
+
+def _run_detect(detector, im: Image.Image) -> Dict:
+    """调检测器并统一成 dict 返回。
+
+    兼容只有 `__call__` 的检测器实现（测试替身、以及早期只返回框的接口）：
+    没有 `detect()` 就用 `__call__` 拿框，置信度未知按 0 报。
+    """
+    fn = getattr(detector, "detect", None)
+    if callable(fn):
+        return fn(im)
+    box = detector(im)
+    return {"box": box, "core": box, "conf": 0.0, "candidates": 1 if box else 0,
+            "reason": "" if box else "未检测到猫体"}
+
+
+def _detect_box_to_xyxy(box, w: int, h: int, size: int) -> List[int]:
+    """把检测模型输出的一个框还原成**原图坐标**的 [x1, y1, x2, y2]。
+
+    两个坑都在这里，且都会静默给出一个「看起来很正经」的错误框：
+
+    ① 输出格式是 **cxcywh**，不是 xyxy。YOLOv5/v8/v11 直接导出的 ONNX 都是
+       `[1, anchors, 4+nc]`，前 4 列是中心点 + 宽高。早期这里按「像素则当 xyxy」
+       处理，于是把 `(cx=283, cy=330, bw=363, bh=390)` 读成右下角 (363, 390)，
+       裁出来是一块 80×60 的胸口碎毛 —— 提特征时等于随机采样一块背景。
+    ② 逆变换必须按 **letterbox** 算。`_to_nchw` 是「按长边缩放 + 居中补边」，
+       缩放系数是 `size/max(w, h)` 且带 padding；早期用 `w/size, h/size`，
+       那是「拉伸成正方形」的系数，任何非方图都会错位，越扁错得越多。
+
+    归一化坐标（0~1）的导出也存在，用 1.5 做分界：一个框不可能只有 1.5 像素。
+    """
+    cx, cy, bw, bh = (float(v) for v in box[:4])
+    if max(cx, cy, bw, bh) <= 1.5:
+        cx, cy, bw, bh = cx * size, cy * size, bw * size, bh * size
+
+    s = size / max(w, h)
+    pad_x, pad_y = (size - w * s) / 2.0, (size - h * s) / 2.0
+    x1, y1 = (cx - bw / 2 - pad_x) / s, (cy - bh / 2 - pad_y) / s
+    x2, y2 = (cx + bw / 2 - pad_x) / s, (cy + bh / 2 - pad_y) / s
+
+    # 夹到画面内：检测框可以越界（模型偶尔给负数），crop 越界会被 PIL 静默补黑边
+    x1, x2 = max(0, min(w, x1)), max(0, min(w, x2))
+    y1, y2 = max(0, min(h, y1)), max(0, min(h, y2))
+    box_out = [int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2))]
+    # 退化框（宽或高为 0）一律当检测失败，否则 crop 出 0 像素图会让 embedding 崩
+    if box_out[2] - box_out[0] < 8 or box_out[3] - box_out[1] < 8:
+        return []
+    return box_out
 
 
 def _probe_input_size(sess, input_name, prefer=None):
@@ -268,8 +459,9 @@ class _Detector:
     def __init__(self):
         self.sess = None
         self.size = 640
-        if not config.DETECT_ONNX:
-            log.info("未配置 DETECT_ONNX，跳过检测，直接整图提特征")
+        self.path = _resolve_detect_model()
+        if not self.path:
+            log.info("未启用猫体检测（DETECT_ONNX 为空 / 关闭 / 自动发现不到模型），整图提特征")
             return
         try:
             import onnxruntime as ort  # type: ignore
@@ -278,19 +470,30 @@ class _Detector:
             if config.DEVICE in ("auto", "cuda"):
                 if "CUDAExecutionProvider" in ort.get_available_providers():
                     providers.insert(0, "CUDAExecutionProvider")
-            self.sess = ort.InferenceSession(config.DETECT_ONNX, providers=providers)
+            self.sess = ort.InferenceSession(self.path, providers=providers)
             self.input_name = self.sess.get_inputs()[0].name
             sh = self.sess.get_inputs()[0].shape
             self.size = int(sh[-1]) if isinstance(sh[-1], int) else 640
-            log.info("检测模型就绪：%s input=%d", providers[0], self.size)
+            log.info("检测模型就绪：%s input=%d %s", providers[0], self.size,
+                     os.path.basename(self.path))
         except Exception as e:  # noqa: BLE001
-            log.warning("检测模型加载失败，降级为整图提特征：%s", e)
+            log.warning("检测模型加载失败，降级为整图提特征：%s: %s", type(e).__name__, e)
             self.sess = None
 
-    def __call__(self, im: Image.Image) -> Optional[List[int]]:
-        """返回面积最大的猫框 [x1, y1, x2, y2]（原图坐标），没检测到返回 None。"""
+    def detect(self, im: Image.Image) -> Dict:
+        """检测画面主体（猫），返回诊断完整的 dict。
+
+        {'box': [x1,y1,x2,y2] | None, 'conf': float,
+         'candidates': int, 'reason': str}
+
+        `reason` 只在没框到时非空，用于区分三种「没框到」：
+        没启用模型 / 模型没看到猫 / 框退化。三者在前端的处理相同（退回整图），
+        但现场排查时差别很大 —— 前者是配置问题，后两者是素材问题。
+        """
         if self.sess is None:
-            return None
+            return {"box": None, "core": None, "conf": 0.0, "candidates": 0,
+                    "reason": "未启用检测模型" if not self.path else "检测模型加载失败"}
+
         w, h = im.size
         x = _to_nchw(im, self.size, (0, 0, 0), (1, 1, 1))
         out = self.sess.run(None, {self.input_name: x})[0]
@@ -302,27 +505,28 @@ class _Detector:
             a = a.T
 
         if a.shape[-1] < 6:
-            return None
-        boxes, scores = a[:, :4], a[:, 4:]
+            return {"box": None, "core": None, "conf": 0.0, "candidates": 0, "reason": "检测输出形状异常"}
+        raw_boxes, scores = a[:, :4], a[:, 4:]
         cls = scores.argmax(1)
         conf = scores.max(1)
 
         keep = np.where((conf > config.DETECT_CONF) & (cls == self.CAT_CLASS))[0]
         if not len(keep):
-            return None
+            return {"box": None, "core": None, "conf": 0.0, "candidates": 0, "reason": "模型没有识别到猫体"}
 
-        # 取置信度最高的候选框
-        b = boxes[keep][conf[keep].argmax()]
-        if b.max() <= 1.5:                # 归一化的 cx,cy,w,h → 转成像素 xyxy
-            cx, cy, bw, bh = b
-            box = [
-                int(max(0, (cx - bw / 2) * w)), int(max(0, (cy - bh / 2) * h)),
-                int(min(w, (cx + bw / 2) * w)), int(min(h, (cy + bh / 2) * h)),
-            ]
-        else:
-            x1, y1, x2, y2 = b
-            sx, sy = w / self.size, h / self.size
-            box = [int(x1 * sx), int(y1 * sy), int(x2 * sx), int(y2 * sy)]
+        # 原始输出（YOLOv5/v8/v11 一致）是 cxcywh + 输入坐标系，先统一还原成原图 xyxy
+        cand_boxes, cand_confs = [], []
+        for i in keep:
+            b = _detect_box_to_xyxy(raw_boxes[i], w, h, self.size)
+            if b:
+                cand_boxes.append(b)
+                cand_confs.append(float(conf[i]))
+        if not cand_boxes:
+            return {"box": None, "core": None, "conf": 0.0, "candidates": int(len(keep)), "reason": "检测框退化"}
+
+        idx = _pick_subject(cand_boxes, cand_confs)
+        core = cand_boxes[idx]
+        box = _pad_box(core, w, h, config.DETECT_PAD)
 
         # 可选：把框扩成正方形再裁，避免整图提特征/裁得太扁时特征跑偏。
         # 默认关闭（见 config.DETECT_COLLAPSE_SQUARE 的长注释：开启需配合
@@ -334,7 +538,13 @@ class _Detector:
             half = max(1, side // 2)
             box = [max(0, cx - half), max(0, cy - half),
                    min(w, cx + half), min(h, cy + half)]
-        return box
+
+        return {"box": box, "core": core, "conf": round(cand_confs[idx], 3),
+                "candidates": len(cand_boxes), "reason": ""}
+
+    def __call__(self, im: Image.Image) -> Optional[List[int]]:
+        """返回面积最大的猫框 [x1, y1, x2, y2]（原图坐标），没检测到返回 None。"""
+        return self.detect(im)["box"]
 
 
 class _AttrClassifier:
@@ -397,31 +607,187 @@ class Engine:
     def provider(self) -> str:
         return self.embedder.backend
 
-    def features(self, im: Image.Image) -> Tuple[np.ndarray, str, str, float, bool]:
-        """返回 (embedding, color, pattern, detect_conf, detected)。
+    @property
+    def attrs_ready(self) -> bool:
+        """属性识别是否可用。
 
-        检测到猫就用裁剪图提特征；检测不到（或没配检测模型）就退化为整图。
+        CLIP 没开也照样有属性（`app/attrs.py` 的启发式兜底），所以这里恒为 True；
+        保留它是为了让 /health 的语义从「有没有属性」细化成
+        「走的是哪条路径」，优先级见 attr_source。
         """
-        box = self.detector(im)
-        crop = im.crop(box) if box else im
+        return True
 
-        # 长宽比保护：embedder 按**原图**算 letterbox 缩放系数，裁剪后的 crop 若形状
-        # 和原图差得多（检测框很扁/很窄），缩放系数就失效 —— 极端情况下 crop 的一边
-        # 会被缩到远超输入边长（实测踩过：518×293 的框喂给 224 的模型会得到
-        # 1370 宽的张量，报 "Attempting to broadcast an axis by a dimension other
-        # than 1. 257 by 1370"）。直接在 embedder 里按 crop 自己的尺寸缩放，
-        # 这里的 crop 就是最终输入。
-        emb = np.asarray(self.embedder(crop), dtype=np.float32).reshape(-1)
+    @property
+    def attr_source(self) -> str:
+        """当前属性识别的首选路径：clip（语义更准）/ api（远程）/ heuristic（色域）。"""
+        if self.clf.ok:
+            return "clip"
+        if getattr(config, "ATTR_API_URL", ""):
+            return "api"
+        return "heuristic"
 
-        # 维度自检：_pool 若因骨干换导出方式而取错层，向量会变成几十万维，
-        # 存进特征库后与其它猫矩阵乘会直接广播报错。宁可当场失败也不要污染特征库。
+    def attrs(self, im: Image.Image, cropped: bool = False) -> dict:
+        """属性识别：CLIP 优先，置信度不足或不可用时落到色域启发式。
+
+        为什么是「CLIP 先、启发式后」而不是反过来：
+          CLIP 在有条件装的环境下确实更准（能区分重点色、银渐层这类微妙花色），
+          但它对 9×6 个候选做 softmax，置信度低于 0.5 基本等于瞎猜 ——
+          这时启发式的「数像素」反而更可靠（橘猫就是橘色占多数，不需要语义理解）。
+
+        返回结构见 app/attrs.py：color/pattern/breed/confidence/source/palette/reason。
+        这个 dict 会原样进 /v1/recognize 的 features 和 meta，**不给前端假数据**：
+        判不出来时 color 就是空字符串，附带 reason 说明原因。
+        """
+        clip = None
+        try:
+            color, pattern, conf = self.clf(im)
+            conf = float(conf or 0.0)
+            if color and pattern and conf >= config.ATTR_CONF_MIN:
+                clip = {
+                    "color": color,
+                    "pattern": pattern,
+                    "breed": attr_heuristic._breed_of(color, pattern),
+                    "confidence": round(conf, 3),
+                    "source": "clip",
+                    "palette": [],
+                    "stripe": 0.0,
+                    "reason": "",
+                }
+            elif color or pattern:
+                # 保留 CLIP 的低置信结果作为最后兜底，但 reason 必须写清楚
+                # 「仅供参考」—— 上层据此决定是否直接展示，别当确凿结论用。
+                clip = {
+                    "color": color,
+                    "pattern": pattern,
+                    "breed": attr_heuristic._breed_of(color, pattern),
+                    "confidence": round(conf, 3),
+                    "source": "clip",
+                    "palette": [],
+                    "stripe": 0.0,
+                    "reason": "模型置信度低于 %d%%，仅供参考" % int(config.ATTR_CONF_MIN * 100),
+                }
+        except Exception as e:  # noqa: BLE001 —— 属性失败绝不能拖垮识别
+            log.warning("CLIP 属性分类异常，改用色域分析：%s: %s", type(e).__name__, e)
+
+        if clip and not clip["reason"]:
+            return clip
+
+        got = attr_heuristic.detect(im, cropped=cropped)
+        if got.get("color"):
+            return got
+        # 启发式也判不出来 → 退回 CLIP 的低置信结果（有就带上说明）
+        return clip or got
+
+    def _embed(self, im: Image.Image) -> np.ndarray:
+        """提一条 L2 归一化向量，并做维度自检。
+
+        长宽比保护：embedder 按**传进来的这张图**自己的尺寸算 letterbox 缩放系数，
+        所以「先按框裁出任意长宽比的 crop、再交给 embedder」是安全的（见 _letterbox）。
+        早期是拿原图的系数去缩 crop，518×293 的框会得到 1370 宽的张量，
+        报 "Attempting to broadcast an axis by a dimension other than 1. 257 by 1370"。
+
+        维度自检：_pool 若因骨干换导出方式而取错层，向量会变成几十万维，
+        存进特征库后与其它猫矩阵乘会直接广播报错。宁可当场失败也不要污染特征库。
+        """
+        emb = np.asarray(self.embedder(im), dtype=np.float32).reshape(-1)
         if self.dim and emb.shape[0] != int(self.dim):
             raise RuntimeError(
                 f"特征维度异常：期望 {int(self.dim)}，实际 {emb.shape[0]}"
                 f"（骨干导出方式变了？请检查 engine._pool 与 REID_ONNX）")
+        return emb
 
-        color, pattern, conf = self.clf(crop)
-        return emb, color, pattern, conf, box is not None
+    def features_ex(self, im: Image.Image, box=_AUTO_BOX) -> Tuple[np.ndarray, bool, dict]:
+        """返回 (embedding, 是否检测到猫体, 属性 dict)。
+
+        `box` 可传入外部已算好的框（多帧复用时用），默认自己检测。
+        与 features() 的差别只是把属性从 3 个标量升级成完整 dict（含品种、
+        来源、色板占比、失败原因），/v1/recognize 需要这些诊断信息。
+        """
+        if box is _AUTO_BOX:
+            det = _run_detect(self.detector, im)
+            box = det["box"]
+            core = det.get("core") or box
+        else:
+            core = box
+        crop = im.crop(box) if box else im
+        # 花色用紧绷框（理由见 analyze_frames），提特征用外扩框
+        attr_im = im.crop(core) if core else im
+        # cropped=True 告诉属性分析「这已是紧贴猫体的裁剪图」，
+        # 别再套中央椭圆（会削掉耳朵和尾巴）。
+        return self._embed(crop), box is not None, self.attrs(attr_im, cropped=box is not None)
+
+    def analyze_frames(self, frames: List[Image.Image]) -> dict:
+        """识别主流程：检测一次 → 所有帧复用同一个框 → 提特征 → 选最清楚的一帧判花色。
+
+        三个设计点，都是踩过坑才定下来的：
+
+        ① **检测只跑一次**。视频相邻帧几乎一样，逐帧检测要付 N 次 ~65ms，换来的框
+           却基本重合。更要紧的是复用同一个框让**多帧平均有意义** —— 每帧各裁各的，
+           视野不一致（猫挪了、框抖了），平均出来的向量反而更糊。
+        ② **检测帧从中间挑，失败再试首/尾**。中间帧通常既不是用户截的封面（可能糊），
+           也不是片尾转身；万一中间帧真没猫（镜头扫过去），再试首尾，代价只是一次
+           额外推理，而不是整段视频退化成整图提特征。
+        ③ **属性聚合而非挑帧**（2026-10-25 升级，此前是「取置信度最高的那一帧」）。
+           置信度只反映「这一帧颜色多集中」，不反映「结论多可靠」—— 糊帧/逆光帧
+           照样能给高置信的错误结论，而多数帧的正确结论被无视。现在把各帧的
+           中间统计量（色板占比/暗灰/条纹）加权平均后**统一判定**，各帧独立
+           结论的一致率折进置信度，分歧写进 reason。见 attrs.merge_and_decide。
+           CLIP 帧没有中间统计量，维持「取最高置信」的旧行为（由聚合器兜底）。
+        """
+        n = len(frames)
+        mid = n // 2
+        order = [mid] + [i for i in range(n) if i != mid]
+
+        t_det = time.time()
+        det = {"box": None, "core": None, "conf": 0.0, "candidates": 0, "reason": "没有可用帧"}
+        for tried, i in enumerate(order, 1):
+            det = _run_detect(self.detector, frames[i])
+            if det["box"] or tried >= 3:     # 首/中/尾各试一次就够，别把 N 帧全跑一遍
+                break
+        detect_ms = int((time.time() - t_det) * 1000)
+
+        box = det["box"]
+        # 花色用**紧绷框**、提特征用**外扩框**：两者诉求相反。
+        # 外扩能补回被切掉的耳尖/尾巴（个体特征更完整），但每扩一圈都会带进
+        # 背景和杂物 —— 实测 8% 外扩把绿墙和木桌算进色域，白猫从「纯白」变成
+        # 「颜色不集中」判不出来。所以色彩统计坚持用没外扩的那个框。
+        core = det.get("core") or box
+        embs, frame_attrs = [], []
+        t_emb = time.time()
+        for im in frames:
+            crop = im.crop(box) if box else im
+            embs.append(self._embed(crop))
+            frame_attrs.append(self.attrs(im.crop(core) if core else im, cropped=bool(box)))
+        embed_ms = int((time.time() - t_emb) * 1000)
+
+        # 属性结论：优先多帧聚合（含单帧 —— 单帧时聚合器等价于原样返回），
+        # 聚合器不适用（全是 CLIP 帧 / 全判不出）时退回「最高置信帧」的旧行为。
+        best_attr = None
+        for a in frame_attrs:
+            if a.get("color") and (best_attr is None or a["confidence"] > best_attr["confidence"]):
+                best_attr = a
+        merged = attr_heuristic.merge_and_decide(frame_attrs)
+        attr = merged or best_attr
+
+        return {
+            "embs": embs,
+            "detected": bool(box),
+            "box": box,
+            "core": core,
+            "detectConf": float(det.get("conf") or 0.0),
+            "detectCandidates": int(det.get("candidates") or 0),
+            "detectReason": det.get("reason") or "",
+            "attr": attr,
+            "timing": {"detect": detect_ms, "embed": embed_ms},
+        }
+
+    def features(self, im: Image.Image) -> Tuple[np.ndarray, str, str, float, bool]:
+        """返回 (embedding, color, pattern, attr_conf, detected)。
+
+        兼容旧签名的薄封装 —— 需要品种 / 来源 / 失败原因时用 features_ex。
+        """
+        emb, detected, a = self.features_ex(im)
+        return emb, a["color"], a["pattern"], a["confidence"], detected
 
 
 _engine: Optional[Engine] = None

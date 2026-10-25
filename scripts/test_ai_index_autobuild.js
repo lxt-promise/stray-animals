@@ -180,7 +180,14 @@ const cloud = {
 }
 
 const coreStub = { cloud, db, _, COL, AppError, distanceM, cosine, warmCollection: () => {} }
-const pointsStub = { grant: async () => ({ gained: 0, today: 0 }) }
+// 账本 stub：本测试只关心「特征库补建与记账」，不关心货币。
+// vision.start() 现在会先扣识别费，因此三个入口都必须存在，
+// 否则 TypeError 会被 start 的 catch 捕获 → 去删任务 → mock 没 remove → 场景全挂。
+const pointsStub = {
+  grantPoint: async () => ({ gained: 0, today: 0 }),
+  grantFood: async () => ({ gained: 0, today: 0 }),
+  chargeRecognize: async () => ({ cost: 0, free: true, balance: 0, used: 1, left: 9, limit: 10 })
+}
 
 /* ==================== Module 拦截（vision/security 真实现） ==================== */
 const origLoad = Module._load
@@ -200,13 +207,37 @@ const ai = {
   delay: 300,
   recognizeMode: 'ok',     // ok | broken | timeout
   buildMode: 'ok',
-  calls: { recognize: [], build: [] }
+  // 服务端诊断 meta 的生成器。null = 旧版服务端（不返回 meta），
+  // 云函数会退到「乐观记账」兼容分支；传函数 = 新版服务端，
+  // 返回值里 indexedIds 决定哪些猫真的进了特征库（见 vision.markIndexed 的注释）。
+  meta: null,
+  // 特征库里**真实存在**的猫 id（/v1/index/ids 返回）。null=空库
+  ids: null,
+  // GET /health 的返回体（管理端「识别引擎体检」）
+  health: null,
+  healthStatus: 200,
+  calls: { recognize: [], build: [], ids: [], health: [] }
 }
 const aiServer = http.createServer((req, res) => {
   res.on('error', () => {})
   let body = ''
   req.on('data', d => { body += d })
   req.on('end', () => {
+    // GET /health —— 管理端「识别引擎体检」用它查检测模型/花色链路/特征库
+    if (/\/health(\?|$)/.test(req.url)) {
+      ai.calls.health.push(req.url)
+      res.writeHead(ai.healthStatus, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(ai.health || {}))
+      return
+    }
+    // GET /v1/index/ids —— 管理端「特征库体检」用它查真实入库清单
+    if (/\/v1\/index\/ids/.test(req.url)) {
+      ai.calls.ids.push(req.url)
+      const ids = Array.isArray(ai.ids) ? ai.ids : []
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, ids, total: ids.length, backend: 'mock' }))
+      return
+    }
     let p = {}
     try { p = JSON.parse(body || '{}') } catch (e) {}
     if (/\/v1\/index\/build$/.test(req.url)) {
@@ -230,13 +261,15 @@ const aiServer = http.createServer((req, res) => {
         }
         const cats = p.cats || []
         const emb = new Array(8).fill(0).map((_, i) => 0.5 + i * 0.01)
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({
+        const payload = {
           features: { pattern: 'tabby', color: '橘色', size: '匀称', confidence: 0.9, tags: [], embedding: emb },
           candidates: cats.slice(0, 2).map((c, i) => ({
             catId: c.id, name: c.name, avatar: '', score: 90 - i * 6, rawSim: 0.88, reason: '特征相似度'
           }))
-        }))
+        }
+        if (typeof ai.meta === 'function') payload.meta = ai.meta(cats)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(payload))
       } catch (e) { /* 已销毁 */ }
     }, ai.delay)
   })
@@ -252,9 +285,12 @@ function reset() {
   store.schools = [{ _id: 'school_1', name: '示例大学' }, { _id: 'school_2', name: '隔壁大学' }]
   ai.calls.recognize = []
   ai.calls.build = []
+  ai.calls.ids = []
   ai.delay = 300
   ai.recognizeMode = 'ok'
   ai.buildMode = 'ok'
+  ai.meta = null          // 默认模拟旧版服务端（不带 meta），既有场景的记账行为不变
+  ai.ids = null           // 默认特征库为空
   tempUrlCalls = 0
 }
 
@@ -543,6 +579,285 @@ async function s10() {
 }
 
 /* ==================== 执行 ==================== */
+// S11 服务端确认才记账：接口调用成功 ≠ 猫进了特征库
+//
+// 线上事故（2026-10-17）：档案里 4 只猫，识别永远只认得其中 1 只。
+// 旧版 markIndexed 只要 /v1/recognize 返回 200 就把**所有**待补库的猫标成已入库，
+// 而服务端 ensure_index 可能一只都没建成（照片下载失败 / 维度不符 / COS 写失败）。
+// 被误标的猫从此不再送照片，向量永久缺失。
+async function s11() {
+  reset()
+  addCat('old', true)
+  const p1 = addCat('p1', false)   // 本次待入库，服务端建成了
+  const p2 = addCat('p2', false)   // 本次待入库，服务端没建成
+  // 服务端如实汇报：库里只有 old 和 p1
+  ai.meta = () => ({ indexed: 2, indexedIds: ['cat_old', p1] })
+
+  const taskId = await newTask()
+  const rounds = await drive(taskId)
+  assert(rounds[rounds.length - 1].status === 'done', 'S11 识别应完成')
+
+  await sleep(400)
+  assert(!!catById(p1).aiIndexAt, 'S11 服务端确认入库的 p1 应被记账')
+  assert(!catById(p2).aiIndexAt, 'S11 服务端未确认的 p2 不得被记账（否则永不重试）')
+}
+
+// S12 自愈：aiIndexAt 有值但服务端特征库里其实没有 → 重置标记，下一轮重新送照片
+//
+// 这条专门修存量脏数据：旧逻辑误标过的猫，不需要人工改数据库，
+// 每轮识别顺手对一次 indexedIds 就能把不一致的挑出来打回待入库。
+async function s12() {
+  reset()
+  const stale = addCat('stale', true)   // 云函数以为已入库，服务端其实没有
+  const real = addCat('real', true)     // 确实在库里
+  ai.meta = () => ({ indexed: 1, indexedIds: [real] })
+
+  const taskId = await newTask()
+  await drive(taskId)
+  await sleep(400)
+
+  assert(!catById(stale).aiIndexAt, 'S12 库里没有的 stale 应被重置（否则永远不补库）')
+  assert(!!catById(real).aiIndexAt, 'S12 库里确实有的 real 记账不应被动')
+
+  // 重置后下一轮必须重新带上 stale 的照片
+  ai.calls.recognize = []
+  const t2 = await newTask()
+  await drive(t2)
+  const req = ai.calls.recognize[0]
+  assert(!!req, 'S12 第二轮应发出识别请求')
+  const of = (req.cats || []).find(c => c.id === stale)
+  assert(of && of.photos && of.photos.length > 0,
+    'S12 重置标记后下一轮应重新带上照片，实际 ' + JSON.stringify(of && of.photos))
+}
+
+// S13 特征库体检：以服务端真实 id 列表为准，不信云库 aiIndexAt
+//
+// 这是「后台显示全部已入库、实际只认得 1 只」的正解：
+// 云库记账可能被旧版逻辑误标，只有特征库的 id 列表是真相。
+async function s13() {
+  reset()
+  const a = addCat('a', true)   // 记账有 + 库里真有
+  addCat('b', true)             // 记账有 + 库里没有 → 属于历史误标（drift）
+  addCat('c', false)            // 记账无 + 库里没有
+  ai.ids = [a]
+
+  const r = await vision.indexStatus(USER, { schoolId: 'school_1' })
+  assert(r.ok === true, 'S13 应返回 ok')
+  assert(r.source === 'bank', 'S13 来源应为特征库实况，实际 ' + r.source)
+  assert(r.total === 3, 'S13 档案总数应为 3，实际 ' + r.total)
+  assert(r.indexed === 1, 'S13 已录入应为 1，实际 ' + r.indexed)
+  assert(r.missing === 2, 'S13 未录入应为 2，实际 ' + r.missing)
+  assert(r.cats.length === 2 && r.cats.every(x => x.id !== a),
+    'S13 未录入清单不应包含已入库的 a，实际 ' + JSON.stringify(r.cats.map(x => x.id)))
+  assert(r.ledgerDrift === 1, 'S13 记账有值但库里没有的应计 1 个 drift，实际 ' + r.ledgerDrift)
+}
+
+// S14 手动录入单只：force=true（服务端已有也重算），只提交这一只
+async function s14() {
+  reset()
+  const a = addCat('a', false)
+  const r = await vision.indexOneCat(USER, { catIds: [a], schoolId: 'school_1' })
+  assert(r.ok === true, 'S14 应成功，实际 ' + JSON.stringify(r))
+  const body = ai.calls.build[ai.calls.build.length - 1]
+  assert(!!body, 'S14 应发出建库请求')
+  assert(body.cats.length === 1 && body.cats[0].id === a,
+    'S14 只应提交这一只猫，实际 ' + JSON.stringify((body.cats || []).map(c => c.id)))
+  assert(body.force === true, 'S14 手动录入必须 force（服务端已有也重算）')
+  assert(body.onlyMissing === false, 'S14 手动录入不应走 onlyMissing')
+}
+
+// S15 未配置识别服务时，体检降级为记账口径并显式标注（不拿推测冒充实况）
+async function s15() {
+  reset()
+  const a = addCat('a', true)
+  addCat('b', false)
+  const old = process.env.AI_ENDPOINT
+  delete process.env.AI_ENDPOINT
+  let r
+  try {
+    r = await vision.indexStatus(USER, { schoolId: 'school_1' })
+  } finally {
+    process.env.AI_ENDPOINT = old
+  }
+  assert(r.ok === true, 'S15 未配置识别服务时体检本身不应抛错')
+  assert(r.source === 'ledger', 'S15 应标记为记账口径，实际 ' + r.source)
+  assert(!!r.bankError, 'S15 应带回降级原因')
+  assert(r.indexed === 1 && r.cats.length === 1 && r.cats[0].id !== a,
+    'S15 降级口径下仍应正确区分已录入/未录入，实际 ' + JSON.stringify(r.cats))
+}
+
+// S16 识别引擎体检：检测模型到底有没有生效，必须能在后台看见
+//
+// 「YOLO 没配」和「配了但没加载上」在用户侧表现完全一样（识别不准），
+// 日志里也只是一条 warning。所以这里锁三件事：
+//   ① 正常时把 detector / detectModel / indexed 透出来；
+//   ② 检测没生效时**照实报 false**，不能因为"请求成功"就当成正常；
+//   ③ 识别服务连不上时显式报错，不返回一份看起来正常的默认值。
+async function s16() {
+  reset()
+  ai.health = {
+    ok: true, provider: 'onnx', detector: true, detectModel: 'yolov8n.onnx',
+    detectConf: 0.35, detectPad: 0.08, attrSource: 'heuristic',
+    indexed: 5, indexBackend: 'sqlite', framesMax: 8
+  }
+  let r = await vision.engineHealth(USER, { schoolId: 'school_1' })
+  assert(r.ok === true, 'S16 健康检查应成功，实际 ' + JSON.stringify(r))
+  assert(r.detector === true, 'S16 应透出 detector=true')
+  assert(r.detectModel === 'yolov8n.onnx', 'S16 应透出模型文件名，实际 ' + r.detectModel)
+  assert(r.indexed === 5, 'S16 应透出特征库只数，实际 ' + r.indexed)
+  assert(r.attrSource === 'heuristic', 'S16 应透出花色链路，实际 ' + r.attrSource)
+  assert(!r.error, 'S16 成功时不应带 error')
+  // /health 必须带 schoolId：不带的话 indexed 是**全库**（含其它学校 + 已删档案残留），
+  // 后台「特征库 11 只」对不上「花色比对卡本校 7 条」（2026-10-25 现场问题）。
+  const lastHealthUrl = ai.calls.health[ai.calls.health.length - 1] || ''
+  assert(/schoolId=school_1/.test(lastHealthUrl),
+    'S16 /health 请求必须带 schoolId（本校口径），实际 ' + lastHealthUrl)
+  // 双口径透传：indexed 本校 / indexedTotal 全库，后台据此注明差值
+  ai.health = Object.assign({}, ai.health, { indexed: 7, indexedTotal: 11 })
+  r = await vision.engineHealth(USER, { schoolId: 'school_1' })
+  assert(r.indexed === 7 && r.indexedTotal === 11,
+    'S16 应同时透出本校与全库条数，实际 ' + JSON.stringify([r.indexed, r.indexedTotal]))
+
+  // 检测未生效：请求照样 200，但 detector=false —— 这才是最常见的"静默失效"
+  ai.health = Object.assign({}, ai.health, { detector: false, detectModel: '' })
+  r = await vision.engineHealth(USER, {})
+  assert(r.detector === false && r.detectModel === '',
+    'S16 检测未启用时必须照实报 false，实际 ' + JSON.stringify(r))
+  assert(r.ok === true, 'S16 检测未启用不等于服务挂了')
+
+  // 服务连不上
+  const old = process.env.AI_ENDPOINT
+  delete process.env.AI_ENDPOINT
+  try {
+    r = await vision.engineHealth(USER, {})
+  } finally {
+    process.env.AI_ENDPOINT = old
+  }
+  assert(r.ok === false && !!r.error, 'S16 未配置识别服务时必须显式报错，实际 ' + JSON.stringify(r))
+  assert(r.indexed === -1, 'S16 连不上时特征库只数应为 -1（不可用），不能是 0')
+}
+
+// S17 「档案 0」的成因必须能分清
+//
+// 现场：管理员看到「档案 0 / 已录入 0 / 未录入 0」，第一反应是「特征库文件没读到」。
+// 其实 indexed / missing 都是从**档案列表**算出来的 —— 档案查不到，一律是 0，
+// 跟特征库有没有文件无关。所以体检至少要能回三件事：
+//   ① 查询本身有没有失败（catError）—— 旧实现把异常吞成 0 条，把「查不到」说成「没有」；
+//   ② 全库到底有几只猫（dbTotal）—— 区分「真没档案」和「有档案但不属于本校」；
+//   ③ 统计口径（scoped）—— 未绑学校时 statistics 是全环境的。
+async function s17() {
+  // a) 云库真没有档案
+  reset()
+  let r = await vision.indexStatus(USER, { schoolId: 'school_1' })
+  assert(r.total === 0 && r.indexed === 0 && r.missing === 0,
+    'S17a 空库应全 0，实际 ' + JSON.stringify([r.total, r.indexed, r.missing]))
+  assert(r.catError === '', 'S17a 空库不是错误，catError 应为空，实际 ' + JSON.stringify(r.catError))
+  assert(r.dbTotal === 0, 'S17a 空库时全库统计应为 0，实际 ' + JSON.stringify(r.dbTotal))
+  assert(r.scoped === true, 'S17a 传了 schoolId 应标记为按校统计')
+
+  // b) 有档案，但都属于别的学校（多校隔离前的历史数据 / 换了学校）
+  //    这是最容易误判成「特征库丢了」的场景：特征库里的向量还在，档案却过滤掉了
+  reset()
+  addCat('x', true, 'school_2')
+  ai.ids = ['cat_x']
+  r = await vision.indexStatus(USER, { schoolId: 'school_1' })
+  assert(r.total === 0, 'S17b 本校档案应为 0，实际 ' + r.total)
+  assert(r.dbTotal === 1, 'S17b 必须回全库 1 只，供界面提示「档案不属于本校」，实际 ' + JSON.stringify(r.dbTotal))
+  // 注：mock 的 /v1/index/ids 不按 schoolId 过滤（真实服务是过滤的），
+  // 所以这里不断言 bankTotal —— 断在 mock 做不到的行为上只会锁死假实现。
+
+  // c) 未绑学校：统计全环境，不做额外 count（dbTotal 保持 null，避免让人以为「全库只有 0 只」）
+  reset()
+  addCat('y', false, 'school_2')
+  r = await vision.indexStatus(Object.assign({}, USER, { schoolId: '' }), {})
+  assert(r.total === 1, 'S17c 未绑学校应统计全环境，实际 ' + r.total)
+  assert(r.scoped === false, 'S17c 应标记为非按校统计')
+  assert(r.dbTotal === null, 'S17c 未按校过滤时不该再 count 一次，实际 ' + JSON.stringify(r.dbTotal))
+
+  // d) 档案查询报错：必须如实带 catError，不许静默变成「0 条档案」
+  reset()
+  const origCollection = db.collection
+  db.collection = function (name) {
+    if (name === 'cats') throw new Error('database collection not exists')
+    return origCollection.call(db, name)
+  }
+  try {
+    r = await vision.indexStatus(USER, { schoolId: 'school_1' })
+  } finally {
+    db.collection = origCollection
+  }
+  assert(r.ok === true, 'S17d 查询失败时体检本身不应抛错（界面要能显示原因）')
+  assert(/not exists/.test(r.catError), 'S17d 必须回 catError，实际 ' + JSON.stringify(r.catError))
+  assert(r.total === 0, 'S17d 查询失败时计数为 0')
+  assert(r.dbTotal === null, 'S17d 查询失败时不要再 count 出一个 0 来误导')
+
+  // e) 幽灵向量：本校特征库里有、档案里已经没有的（删档案不删向量）。
+  //    「已录入 6 / 库里 7」差的那 1 条就是它 —— 必须单独点名，
+  //    否则管理员永远对不上账（2026-10-25「为什么库里有 11 只」的另一半）。
+  reset()
+  addCat('a', true, 'school_1')
+  ai.ids = ['cat_a', 'cat_ghost']
+  r = await vision.indexStatus(USER, { schoolId: 'school_1' })
+  assert(r.ghostCount === 1, 'S17e 应识别出 1 条幽灵向量，实际 ' + JSON.stringify(r.ghostCount))
+  assert(r.bankTotal === 2 && r.indexed === 1,
+    'S17e 库 2 条 / 已录入 1，差值即幽灵，实际 ' + JSON.stringify([r.bankTotal, r.indexed]))
+}
+
+// S18 相册里的照片「全部」用于建库（上限 = vision.INDEX_PHOTOS）
+//
+// 现场问题：档案里明明有 5 张，识别却总匹配不上 —— 因为建库只送 2~3 张，
+// 一张糊图/背影就决定了这只猫的全部特征。代表向量是「多张取 medoid + 内点平均」，
+// 送得越多越稳，所以口径统一为：相册有几张送几张，上限 INDEX_PHOTOS 张。
+//
+// ⚠️ 上限从 5 提到 8（2026-10-24），断言必须绑到常量而不是写死数字：
+//    这条测的是「各入口共用同一个上限」，不是「上限必须等于 5」。
+async function s18() {
+  const CAP = vision.INDEX_PHOTOS
+  function fivePhotoCat(id, n) {
+    store.cats.push({
+      _id: id, name: id, schoolId: 'school_1', pattern: 'tabby', color: '橘色',
+      photos: Array.from({ length: n }, (_, i) => 'cloud://' + id + '-' + i),
+      avatar: '', location: null, embedding: null, aiIndexAt: null
+    })
+    return id
+  }
+
+  // a) 单只「录入」：相册几张就送几张（不足上限时全送）
+  reset()
+  const a = fivePhotoCat('cat_five', 5)
+  await vision.indexOneCat(USER, { catIds: [a], schoolId: 'school_1' })
+  let req = ai.calls.build[ai.calls.build.length - 1]
+  assert(!!req, 'S18a 应发出建库请求')
+  assert(req.cats.length === 1 && req.cats[0].photos.length === 5,
+    'S18a 5 张相册照片应全部送进建库，实际 ' + JSON.stringify((req.cats[0].photos || []).length))
+
+  // b) 超过上限：截断到 INDEX_PHOTOS（纵深防御，别把整本相册都发过去）
+  reset()
+  const b = fivePhotoCat('cat_many', 20)
+  await vision.indexOneCat(USER, { catIds: [b], schoolId: 'school_1' })
+  req = ai.calls.build[ai.calls.build.length - 1]
+  assert(req.cats[0].photos.length === CAP,
+    'S18b 超过上限时截断到 ' + CAP + ' 张，实际 ' + JSON.stringify(req.cats[0].photos.length))
+
+  // c) 全量建库走同一口径（默认值不能被各入口各自写死）
+  reset()
+  fivePhotoCat('cat_full', CAP)
+  await vision.buildIndex(USER, { schoolId: 'school_1', onlyMissing: true, timeoutMs: 3000 })
+  req = ai.calls.build[ai.calls.build.length - 1]
+  assert(req.cats[0].photos.length === CAP,
+    'S18c 全量建库默认也送 ' + CAP + ' 张，实际 ' + JSON.stringify(req.cats[0].photos.length))
+
+  // d) 建档后的自动入库仍走 INDEX_PHOTOS_AUTO（5）—— 那条路径只有 2.2s 预算，
+  //    带 8 张必然超时，而超时等于一只都没建成。
+  reset()
+  const d = fivePhotoCat('cat_auto', 20)
+  await vision.buildIndexAuto(USER, { catIds: [d], schoolId: 'school_1' })
+  req = ai.calls.build[ai.calls.build.length - 1]
+  assert(req.cats[0].photos.length === vision.INDEX_PHOTOS_AUTO,
+    'S18d 自动入库只带 ' + vision.INDEX_PHOTOS_AUTO + ' 张（预算所限），实际 ' +
+    JSON.stringify(req.cats[0].photos.length))
+}
+
 async function main() {
   await new Promise(r => aiServer.listen(0, '127.0.0.1', r))
   const port = aiServer.address().port
@@ -558,7 +873,15 @@ async function main() {
     ['S7 待入库筛选', s7],
     ['S8 force 透传', s8],
     ['S9 无照片不记账', s9],
-    ['S10 建档即入库', s10]
+    ['S10 建档即入库', s10],
+    ['S11 服务端确认才记账', s11],
+    ['S12 特征库缺失自愈', s12],
+    ['S13 特征库体检口径', s13],
+    ['S14 手动录入单只', s14],
+    ['S15 未配置服务降级口径', s15],
+    ['S16 识别引擎体检', s16],
+    ['S17 档案 0 的成因区分', s17],
+    ['S18 相册照片全部用于建库', s18]
   ]
 
   for (const [name, fn] of scenes) {

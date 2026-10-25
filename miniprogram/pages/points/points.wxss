@@ -1,14 +1,111 @@
-/* 猫粮明细 */
-.balance-card {
+/* ==================== 等级页（积分模式） ====================
+   参考「成长值」式布局：等级徽章 → 积分总值 → 进度 → 等级阶梯。
+   全部用 CSS 渐变/光斑做视觉，不依赖任何图片资源（避免再引入一张要维护的 png）。 */
+.lv-hero {
+  position: relative;
+  overflow: hidden;
+  padding: 28rpx 28rpx 34rpx;
+  border-radius: var(--radius);
+  background: linear-gradient(160deg, #FFF7ED 0%, #FFEDD5 58%, #FDE68A 100%);
+  border: 2rpx solid rgba(249, 115, 22, .1);
+  box-shadow: var(--shadow);
+}
+/* 装饰光斑：绝对定位 + 只做背景，不参与布局 */
+.lv-blob { position: absolute; border-radius: 50%; }
+.lv-blob.a {
+  width: 320rpx; height: 320rpx; right: -110rpx; top: -130rpx;
+  background: radial-gradient(circle, rgba(251, 191, 36, .55), rgba(251, 191, 36, 0) 70%);
+}
+.lv-blob.b {
+  width: 280rpx; height: 280rpx; left: -100rpx; bottom: -140rpx;
+  background: radial-gradient(circle, rgba(249, 115, 22, .3), rgba(249, 115, 22, 0) 70%);
+}
+
+.lv-top { position: relative; display: flex; align-items: center; justify-content: space-between; }
+.lv-user { display: flex; align-items: center; min-width: 0; }
+.lv-avatar {
+  width: 72rpx; height: 72rpx; border-radius: 50%;
+  background: #fff; border: 4rpx solid #fff; flex-shrink: 0;
+}
+.lv-avatar.ph { display: flex; align-items: center; justify-content: center; font-size: 36rpx; }
+.lv-nick {
+  margin-left: 16rpx; font-size: 28rpx; font-weight: 600; color: var(--text);
+  max-width: 340rpx; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lv-rules-link { font-size: 24rpx; color: var(--brand-dark); padding: 8rpx 0 8rpx 16rpx; flex-shrink: 0; }
+
+/* 等级徽章：整页最显眼的一块，一眼知道自己是几级 */
+.lv-badge {
+  position: relative;
+  display: inline-block;
+  margin-top: 30rpx;
+  padding: 10rpx 30rpx;
+  border-radius: 18rpx;
   background: var(--brand-grad);
-  border-radius: 28rpx;
-  padding: 48rpx 0;
+  color: #fff;
+  font-size: 40rpx;
+  font-weight: 800;
+  letter-spacing: 1rpx;
+  box-shadow: 0 10rpx 22rpx rgba(249, 115, 22, .32);
+}
+.lv-cap { position: relative; margin-top: 16rpx; font-size: 24rpx; color: #A16207; }
+
+.lv-value-row { position: relative; display: flex; align-items: baseline; margin-top: 30rpx; }
+.lv-value { font-size: 76rpx; font-weight: 800; line-height: 1; color: var(--brand-dark); }
+.lv-value-lbl { margin-left: 14rpx; font-size: 26rpx; color: #A16207; }
+
+.lv-track {
+  position: relative;
+  margin-top: 22rpx;
+  height: 12rpx;
+  border-radius: 999rpx;
+  background: rgba(194, 65, 12, .14);
+  overflow: hidden;
+}
+.lv-track-bar {
+  height: 100%;
+  border-radius: 999rpx;
+  background: var(--brand-grad);
+  transition: width .35s ease;
+}
+.lv-next { position: relative; margin-top: 12rpx; font-size: 24rpx; color: #A16207; }
+
+/* 等级阶梯：6 档等分排开，当前档的圆点放大 + 描边光环 */
+.lv-ladder { position: relative; display: flex; margin-top: 42rpx; }
+.lv-step { flex: 1; display: flex; flex-direction: column; align-items: center; }
+.lv-dot {
+  width: 14rpx; height: 14rpx; border-radius: 50%;
+  background: rgba(194, 65, 12, .2);
+}
+.lv-step.done .lv-dot { background: rgba(249, 115, 22, .7); }
+.lv-step.on .lv-dot {
+  width: 26rpx; height: 26rpx;
+  margin-top: -6rpx;
+  background: var(--brand-dark);
+  box-shadow: 0 0 0 8rpx rgba(249, 115, 22, .16);
+}
+.lv-step-lbl { margin-top: 10rpx; font-size: 20rpx; color: var(--text-weak); }
+.lv-step.done .lv-step-lbl { color: var(--brand-dark); opacity: .75; }
+.lv-step.on .lv-step-lbl { color: var(--brand-dark); font-weight: 700; opacity: 1; }
+
+/* ==================== 规则说明 ==================== */
+.rule-block + .rule-block { margin-top: 24rpx; }
+.rule-title { font-size: 27rpx; font-weight: 700; color: var(--text); }
+.rule-line { font-size: 24rpx; color: var(--text-sub); line-height: 1.7; margin-top: 8rpx; }
+
+/* ==================== 猫粮明细（food 模式） ==================== */
+/* 余额卡：猫粮用次级色，与积分区分 —— 两者不是同一种东西，长得一样会误导 */
+.wallet-card {
+  background: linear-gradient(135deg, #D97706 0%, #B45309 100%);
+  border-radius: 24rpx;
+  padding: 36rpx 24rpx;
   text-align: center;
   color: #fff;
-  box-shadow: 0 12rpx 30rpx rgba(249, 115, 22, .25);
+  box-shadow: 0 10rpx 24rpx rgba(180, 83, 9, .22);
 }
-.b-num { font-size: 72rpx; font-weight: 800; line-height: 1; }
-.b-lbl { font-size: 26rpx; opacity: .92; margin-top: 12rpx; }
+.w-num { font-size: 64rpx; font-weight: 800; line-height: 1.1; }
+.w-lbl { font-size: 24rpx; opacity: .94; margin-top: 8rpx; }
+.w-sub { font-size: 20rpx; opacity: .8; margin-top: 6rpx; }
 
 .p-item { align-items: center; justify-content: space-between; }
 .p-main { display: flex; flex-direction: column; }
@@ -19,7 +116,8 @@
   color: var(--brand-dark);
   flex-shrink: 0;
 }
-/* 负向流水（删除目击记录退回）用红色/降权，避免误读为「又发了」 */
-.p-delta.minus {
-  color: #B42318;
-}
+/* 负向流水（识别扣费 / 退回）标红，避免误读为「又发了」 */
+.p-delta.minus { color: #B42318; }
+
+/* 底部规则提示 */
+.tip { padding: 24rpx 8rpx 8rpx; line-height: 1.7; }

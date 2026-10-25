@@ -1,6 +1,203 @@
 <view class="page">
 
+  <!-- 打卡可见性策略（合规二审：由超管统一配置，不放在用户打卡页） -->
   <view class="card">
+    <view class="card-title">打卡记录可见性</view>
+    <view class="small muted" style="margin-bottom:16rpx">
+      决定全校同学的打卡记录对**访客**是否公开。关闭时（推荐）记录仅社团成员与本人可见；
+      打开后公开的打卡会展示在猫档案、地图与猫谱里。此设置只影响新提交的记录。
+    </view>
+    <view class="vis-row" bindtap="togglePolicy">
+      <view class="vis-main">
+        <view class="vis-title">{{policyPublic ? '公开到校园猫谱' : '仅社团内部可见'}}</view>
+        <view class="small muted vis-desc">
+          {{policyPublic
+            ? '访客能看到打卡的猫只、时间与结构化状态（不含照片与提交人身份）。'
+            : '访客看不到任何打卡记录；社团成员与提交人本人仍可查看。'}}
+        </view>
+      </view>
+      <view class="switch {{policyPublic ? 'on' : ''}}">
+        <view class="knob"></view>
+      </view>
+    </view>
+    <view class="small muted" style="margin-top:12rpx">
+      建议保持关闭：公开打卡会构成「用户内容的对外发布」，个人主体小程序审核时易被判定为社交类目。
+    </view>
+  </view>
+
+  <!-- 校园管理（超管）：预览所有校区 + 就地修改 -->
+  <view class="card mt">
+    <view class="card-title">
+      校园管理（{{schools.length}}）
+      <view class="more hist-clear" bindtap="loadSchools" hover-class="pressed">{{schoolLoading ? '读取中…' : '刷新'}}</view>
+    </view>
+    <view class="small muted" style="margin-bottom:16rpx">
+      全校校区一览。点「编辑」可改名称、校区、城市、简介与地图范围，保存后立即生效（地图与首页校名会跟着变）。
+    </view>
+
+    <!-- 读取失败要照实说：空列表会被误读成「一所学校都没有」 -->
+    <view class="notice small" wx:if="{{schoolsError}}">
+      ⓘ 校园列表读取失败：{{schoolsError}}。点右上「刷新」重试。
+    </view>
+
+    <view class="school-item" wx:for="{{schools}}" wx:key="_id">
+      <view class="school-head">
+        <view class="school-main">
+          <view class="school-name">
+            {{item.name}}
+            <text class="tag gold" wx:if="{{item.isCurrent}}">当前</text>
+            <text class="tag" wx:if="{{item.isHidden}}">仅超管可见</text>
+          </view>
+          <view class="small muted">{{item.subText}}</view>
+          <view class="small muted">{{item.statText}}</view>
+          <view class="small muted">{{item.geoText}} · {{item.visText}}</view>
+          <view class="small {{item.isHidden ? 'warn' : 'muted'}}">{{item.hiddenText}}</view>
+        </view>
+        <view class="build-btn"
+              data-id="{{item._id}}" bindtap="editSchool" hover-class="pressed">
+          {{schoolEditing === item._id ? '收起' : '编辑'}}
+        </view>
+      </view>
+
+      <!-- 编辑面板：同一时间只展开一所（两份表单同时改会互相覆盖） -->
+      <view class="school-form" wx:if="{{schoolEditing === item._id}}">
+        <view class="fld">
+          <view class="fld-label">学校名称</view>
+          <input class="fld-input" value="{{schoolForm.name}}" data-key="name"
+                 bindinput="onSchoolInput" maxlength="30" placeholder="必填，展示在首页与地图" />
+        </view>
+        <view class="fld-row">
+          <view class="fld">
+            <view class="fld-label">校区</view>
+            <input class="fld-input" value="{{schoolForm.campus}}" data-key="campus"
+                   bindinput="onSchoolInput" maxlength="20" placeholder="如 四牌楼校区" />
+          </view>
+          <view class="fld">
+            <view class="fld-label">城市</view>
+            <input class="fld-input" value="{{schoolForm.city}}" data-key="city"
+                   bindinput="onSchoolInput" maxlength="20" placeholder="如 南京" />
+          </view>
+        </view>
+        <view class="fld">
+          <view class="fld-label">简介</view>
+          <textarea class="fld-textarea" value="{{schoolForm.intro}}" data-key="intro"
+                    bindinput="onSchoolInput" maxlength="200" auto-height
+                    placeholder="一句话介绍这所学校 / 社团" />
+        </view>
+
+        <view class="fld">
+          <view class="fld-label">对普通用户</view>
+          <view class="geo-box">
+            <view class="geo-row">
+              <text class="geo-k">选校列表</text>
+              <view class="op" bindtap="onToggleSchoolHidden" hover-class="pressed">
+                {{schoolForm.hidden ? '隐藏中 ›' : '可见 ›'}}
+              </view>
+            </view>
+          </view>
+          <view class="small muted" style="margin-top:8rpx">
+            隐藏后普通用户的选校下拉里看不到这所校区，也不能用 id 直接绑定；超管始终可见可改。
+            测试校园建议保持隐藏。
+          </view>
+        </view>
+
+        <view class="fld">
+          <view class="fld-label">地图范围</view>
+          <view class="geo-box">
+            <view class="geo-row">
+              <text class="geo-k">中心点</text>
+              <text class="geo-v {{schoolCenter ? '' : 'geo-empty'}}">{{schoolCenterText}}</text>
+            </view>
+            <view class="geo-row">
+              <text class="geo-k">缩放级别</text>
+              <picker mode="selector" range="{{scaleLabels}}" value="{{schoolScaleIndex}}"
+                      bindchange="onSchoolScaleChange">
+                <view class="geo-pick">{{schoolScaleLabel}} ›</view>
+              </picker>
+            </view>
+          </view>
+          <view class="school-actions">
+            <view class="op" bindtap="chooseSchoolCenter" hover-class="pressed">在地图上选中心点</view>
+          </view>
+          <view class="small muted" style="margin-top:8rpx">
+            地图页只展示「中心点 + 缩放」推算出的这块校园范围；不改动这里就不会动原有范围。
+          </view>
+        </view>
+
+        <view class="school-actions end">
+          <view class="op" bindtap="cancelSchoolEdit" hover-class="pressed">取消</view>
+          <view class="build-btn {{schoolSaving ? 'busy' : ''}}" bindtap="saveSchool" hover-class="pressed">
+            {{schoolSaving ? '保存中…' : '保存'}}
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <view class="empty" wx:if="{{!schoolLoading && !schoolsError && !schools.length}}">
+      <text class="emoji">🏫</text>还没有校区
+    </view>
+  </view>
+
+  <!-- 重复档案（超管）：清「保存超时又点一遍」留下的同名同校档案 -->
+  <view class="card mt">
+    <view class="card-title">
+      重复档案
+      <view class="more hist-clear" bindtap="loadDuplicates" hover-class="pressed">{{dupLoading ? '扫描中…' : (dupChecked ? '重新扫描' : '扫描')}}</view>
+    </view>
+    <view class="small muted" style="margin-bottom:16rpx">
+      把「同校 + 同名」的档案列出来。以前保存超时后重复提交会建出两只一样的猫，可在这里删掉多余的一条。
+      只按名字判重，所以同名但不是同一只的猫也会列出 —— 删之前核对照片数与创建时间。
+    </view>
+
+    <view class="notice small" wx:if="{{dupError}}">
+      ⓘ 扫描失败：{{dupError}}。点右上「重新扫描」重试。
+    </view>
+
+    <view class="empty" wx:if="{{dupChecked && !dupLoading && !dupError && !dupGroups.length}}">
+      <text class="emoji">✨</text>
+      没有发现重复档案（已扫描 {{dupScanned}} 条）
+    </view>
+
+    <view class="dup-group" wx:for="{{dupGroups}}" wx:key="key" wx:for-item="g">
+      <view class="dup-name">
+        {{g.name}}<text class="small muted"> · {{g.countText}}</text>
+      </view>
+      <view class="dup-item" wx:for="{{g.items}}" wx:key="_id">
+        <view class="dup-main">
+          <view class="small">{{item.metaText}}</view>
+          <view class="small muted mono">{{item._id}}</view>
+        </view>
+        <view class="tag {{item.keep ? 'gold' : 'gray'}}">{{item.tagText}}</view>
+        <view class="op danger {{dupRemovingId === item._id ? 'busy' : ''}}"
+              data-id="{{item._id}}" data-name="{{g.name}}" data-time="{{item.timeText}}"
+              bindtap="removeDuplicate" hover-class="pressed">
+          {{dupRemovingId === item._id ? '删除中' : '删除'}}
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 建校申请：用户在本校还没建档时提交，通过后立即建校并绑定申请人 -->
+  <view class="card mt" wx:if="{{schoolApplies.length}}">
+    <view class="card-title">建校申请（{{schoolApplies.length}}）</view>
+    <view class="small muted" style="margin-bottom:16rpx">
+      通过后会立即创建学校并绑定申请人；地图中心先用默认坐标，之后可在上方「校园管理」里调整地图范围。
+    </view>
+    <view class="idx-row" wx:for="{{schoolApplies}}" wx:key="_id">
+      <view class="idx-main">
+        <view class="bold">{{item.fullName}}</view>
+        <view class="small muted">{{item.timeText}}<text wx:if="{{item.city}}"> · {{item.city}}</text></view>
+        <view class="small muted ellipsis" wx:if="{{item.intro}}">{{item.intro}}</view>
+      </view>
+      <view class="m-actions">
+        <view class="build-btn {{handlingApplyId === item._id ? 'busy' : ''}}"
+              data-id="{{item._id}}" data-approve="1" bindtap="handleSchoolApply" hover-class="pressed">通过</view>
+        <view class="danger" data-id="{{item._id}}" data-approve="0" bindtap="handleSchoolApply" hover-class="pressed">驳回</view>
+      </view>
+    </view>
+  </view>
+
+  <view class="card mt">
     <view class="card-title">成员管理（更改管理员身份）</view>
     <view class="small muted" style="margin-bottom:16rpx">仅你能操作。超级管理员身份由账号本身决定，不可被降级。</view>
     <view class="row member" wx:for="{{members}}" wx:key="_id">
@@ -30,8 +227,9 @@
           <text class="bold muted" wx:else>{{item.catName || '未认领的新猫'}}</text>
           <text class="small muted">{{item.timeText}}</text>
         </view>
-        <view class="small muted ellipsis" wx:if="{{item.note}}">{{item.note}}</view>
-        <view class="small muted">上报人：{{item.reporterName || item.reporter}}</view>
+        <!-- 结构化标签（合规改造：替代原自由文本 note） -->
+        <view class="small muted ellipsis" wx:if="{{item.tagText}}">{{item.tagText}}</view>
+        <!-- ⚠️ 不再展示提交人身份（合规：后台列表也不需要暴露 UGC 作者） -->
       </view>
       <view class="danger" data-id="{{item._id}}" bindtap="removeSighting" hover-class="pressed">删除</view>
     </view>
@@ -39,22 +237,196 @@
   </view>
 
   <view class="card mt">
-    <view class="card-title">特征库维护（花色比对）</view>
-    <view class="small muted" style="margin-bottom:16rpx">
-      把档案照提交给识别服务计算「代表向量」。新猫建档后会在下次识别时自动入库，
-      每天凌晨还会全量兜底一次 —— 通常不需要手动执行。
+    <view class="card-title">
+      识别引擎
+      <view class="more hist-clear" bindtap="loadEngineHealth" hover-class="pressed">{{engineLoading ? '读取中…' : '刷新'}}</view>
     </view>
+    <view class="small muted" style="margin-bottom:16rpx">
+      「没开检测」和「开了但没加载上」都表现为识别不准，界面上看不出区别 —— 所以把三个开关摆在这里。
+    </view>
+
+    <view class="notice small" wx:if="{{engine.error}}">
+      ⓘ 识别服务连不上：{{engine.error}}。识别会退到本地占位引擎，结果不可用。
+    </view>
+    <block wx:else>
+      <!-- 三行全部由 JS 预计算（label/value/hint/ok），模板里不做判断：
+           WXML 的 mustache 只认白名单表达式，拼接与比较容易被静默忽略，
+           到时表现是「界面一块空白、没有任何报错」。 -->
+      <view class="eng-row" wx:for="{{engineRows}}" wx:key="key">
+        <view class="eng-name">{{item.name}}</view>
+        <view class="eng-val {{item.ok ? 'ok' : 'warn'}}">{{item.value}}</view>
+        <view class="eng-hint small muted">{{item.hint}}</view>
+      </view>
+    </block>
+  </view>
+
+  <view class="card mt">
+    <view class="card-title">
+      特征库（花色比对）
+      <view class="more hist-clear" bindtap="loadIndexStatus" hover-class="pressed">{{indexLoading ? '读取中…' : '刷新'}}</view>
+    </view>
+    <view class="small muted" style="margin-bottom:16rpx">
+      没录入的猫在识别时永远匹配不到 —— 这是「档案里有、但识别不出来」的直接原因。
+      点「录入」可单独补建。
+    </view>
+
+    <!-- 概览：档案 / 已录入 / 未录入 -->
+    <view class="idx-stats">
+      <view class="idx-stat">
+        <view class="idx-num">{{indexStatus.total}}</view>
+        <view class="small muted">档案</view>
+      </view>
+      <view class="idx-stat">
+        <view class="idx-num ok">{{indexStatus.indexed}}</view>
+        <view class="small muted">已录入</view>
+      </view>
+      <view class="idx-stat">
+        <view class="idx-num {{indexStatus.missing ? 'warn' : ''}}">{{indexStatus.missing}}</view>
+        <view class="small muted">未录入</view>
+      </view>
+    </view>
+
+    <!-- 统计口径 + 特征库实况：这两个数字必须能对得上，否则「档案 0」到底是
+         没档案、还是按学校过滤掉了、还是特征库丢了，管理员根本分不清 -->
+    <view class="small muted" wx:if="{{indexStatus.source}}">{{indexStatus.scopeText}}</view>
+    <view class="small muted {{indexStatus.bankError ? 'warn' : ''}}" wx:if="{{indexStatus.source}}">
+      {{indexStatus.bankText}}
+    </view>
+
+    <!-- 数据来源说明：实况 vs 推测必须区分，别拿推测当结论 -->
+    <view class="notice small mt" wx:if="{{indexStatus.source === 'ledger'}}">
+      ⓘ 识别服务连不上，下面是按本地记录推测的结果，未核实。
+      <text wx:if="{{indexStatus.bankError}}">（{{indexStatus.bankError}}）</text>
+    </view>
+    <view class="notice small mt" wx:if="{{indexStatus.source === 'error'}}">
+      ⓘ 读取失败{{indexStatus.bankError ? '：' + indexStatus.bankError : ''}}，点右上「刷新」重试。
+    </view>
+    <view class="notice small mt" wx:if="{{indexStatus.source === 'bank' && indexStatus.ledgerDrift}}">
+      ⓘ 有 {{indexStatus.ledgerDrift}} 只猫被旧记录标成已入库、实际不在特征库，下次识别会自动补。
+    </view>
+
+    <!-- 未录入清单 -->
+    <view class="idx-row" wx:for="{{indexStatus.cats}}" wx:key="id">
+      <view class="idx-main" data-id="{{item.id}}" bindtap="goCat" hover-class="pressed">
+        <view class="bold">{{item.name}}</view>
+        <view class="small muted">{{item.patternLabel}} · {{item.photoCount}} 张照</view>
+      </view>
+      <view class="build-btn {{indexingId === item.id ? 'busy' : (item.canIndex ? '' : 'off')}}"
+            data-id="{{item.id}}" bindtap="indexOne" hover-class="pressed">
+        {{indexingId === item.id ? '录入中…' : (item.canIndex ? '录入' : '无照片')}}
+      </view>
+    </view>
+    <view class="empty" wx:if="{{!indexLoading && indexStatus.source && !indexStatus.cats.length && indexStatus.total}}">
+      全部档案都已录入
+    </view>
+    <!-- 空态分三种：查询失败 / 有猫但不属于本校 / 真没有档案。
+         旧实现一律显示「还没有猫咪档案」，把「查不到」说成了「没有」。 -->
+    <view class="notice small mt" wx:if="{{!indexLoading && indexStatus.emptyKind === 'error'}}">
+      ⓘ {{indexStatus.emptyText}}。点右上「刷新」重试。
+    </view>
+    <view class="empty" wx:if="{{!indexLoading && indexStatus.emptyKind !== 'error' && indexStatus.emptyKind}}">
+      {{indexStatus.emptyText}}
+    </view>
+
+    <!-- 全量重建（应急） -->
+    <view class="divider"></view>
     <view class="row s-item">
       <view class="s-main">
-        <view class="bold">立即建库</view>
+        <view class="bold">全部重建</view>
         <view class="small muted" wx:if="{{indexResult}}">{{indexResult}}</view>
-        <view class="small muted" wx:else>尚未执行</view>
+        <view class="small muted" wx:else>应急用。日常靠建档自动入库 + 每天凌晨兜底。</view>
       </view>
       <view class="build-btn {{building ? 'busy' : ''}}" bindtap="rebuildIndex" hover-class="pressed">
         {{building ? '建库中…' : '开始'}}
       </view>
     </view>
     <view class="small muted" wx:if="{{indexDetail}}">明细：{{indexDetail}}</view>
+  </view>
+
+  <view class="card mt">
+    <view class="card-title">
+      确认样本（人工确认）
+      <view class="more hist-clear" bindtap="loadSamples" hover-class="pressed">{{sampleLoading ? '读取中…' : '刷新'}}</view>
+    </view>
+    <view class="small muted" style="margin-bottom:16rpx">
+      用户识别后点「确认」的照片。并入特征库能补上档案照没有的角度（远处 / 侧身 / 逆光），
+      这是提升准确率最直接的一味药。每只猫最多 {{sampleStat.perCat}} 张，
+      连同档案照不超过 {{sampleStat.viewCap}} 张视图。
+    </view>
+
+    <view class="idx-stats">
+      <view class="idx-stat">
+        <view class="idx-num">{{sampleStat.total}}</view>
+        <view class="small muted">样本</view>
+      </view>
+      <view class="idx-stat">
+        <view class="idx-num ok">{{sampleStat.usable}}</view>
+        <view class="small muted">可用</view>
+      </view>
+      <view class="idx-stat">
+        <view class="idx-num {{sampleStat.unassigned ? 'warn' : ''}}">{{sampleStat.unassigned}}</view>
+        <view class="small muted">未归属</view>
+      </view>
+    </view>
+
+    <view class="small muted" wx:if="{{sampleStat.total}}">
+      门槛：匹配分 ≥ {{sampleStat.minScore}} 才采信（低于匹配线的确认很可能是认错猫）。
+      已入库 {{sampleStat.used}} 条 · 已排除 {{sampleStat.ignored}} 条。
+    </view>
+
+    <!-- 整批建库 -->
+    <view class="divider"></view>
+    <view class="row s-item">
+      <view class="s-main">
+        <view class="bold">用确认样本建库</view>
+        <view class="small muted" wx:if="{{sampleResult}}">{{sampleResult}}</view>
+        <view class="small muted" wx:else>手动触发，分批推进；只对通过门槛的样本生效。</view>
+      </view>
+      <view class="build-btn {{sampleBuilding ? 'busy' : ''}}" bindtap="buildFromSamples" hover-class="pressed">
+        {{sampleBuilding ? '建库中…' : '开始'}}
+      </view>
+    </view>
+
+    <view class="notice small mt" wx:if="{{sampleError}}">
+      ⓘ {{sampleError}}。点右上「刷新」重试。
+    </view>
+    <view class="empty" wx:if="{{!sampleLoading && !sampleError && !sampleGroups.length}}">
+      还没有人工确认的样本
+    </view>
+
+    <!-- 按猫分组：管理员要看的是「哪只猫攒了几条」，不是一条流水 -->
+    <view class="sm-group" wx:for="{{sampleGroups}}" wx:key="key">
+      <view class="sm-head">
+        <view class="sm-cat">
+          <text class="bold">{{item.catName}}</text>
+          <text class="small muted">{{item.countText}}</text>
+        </view>
+        <view class="op {{sampleBuildingId === item.catId ? 'busy' : ''}}"
+              wx:if="{{item.canBuild}}"
+              data-catid="{{item.catId}}" bindtap="buildFromSamples" hover-class="pressed">
+          {{sampleBuildingId === item.catId ? '建库中…' : '建库'}}
+        </view>
+      </view>
+
+      <view class="sm-row" wx:for="{{item.items}}" wx:for-item="s" wx:key="id">
+        <image class="sm-thumb" src="{{s.thumb}}" mode="aspectFill" wx:if="{{s.thumb}}" />
+        <view class="sm-thumb sm-thumb-empty" wx:else>无图</view>
+        <view class="sm-main">
+          <view class="sm-meta">{{s.metaText}}</view>
+          <view class="small {{s.usable ? 'muted' : 'sm-bad'}}">{{s.noteText}}</view>
+        </view>
+        <view class="sm-ops">
+          <!-- 未归属的样本只能靠管理员指派，否则永远进不了库 -->
+          <picker wx:if="{{!s.catId && catNames.length}}"
+                  mode="selector" range="{{catNames}}" data-id="{{s.id}}"
+                  bindchange="assignSample">
+            <view class="op">指定猫</view>
+          </picker>
+          <view class="op" data-id="{{s.id}}" bindtap="toggleSample" hover-class="pressed">{{s.ignoreText}}</view>
+          <view class="op del" data-id="{{s.id}}" bindtap="deleteSample" hover-class="pressed">删除</view>
+        </view>
+      </view>
+    </view>
   </view>
 
   <view class="tip small muted">

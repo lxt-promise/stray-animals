@@ -114,6 +114,14 @@ const db = {
         if (!d) return { stats: { updated: 0 } }
         applyData(d, data)
         return { stats: { updated: 1 } }
+      },
+      // start() 扣费失败时会删掉刚建的任务；mock 必须支持，否则 catch 分支再抛
+      // TypeError 会盖掉真正的错误信息，排查时完全看不出发生了什么。
+      remove: async () => {
+        await sleep(RT.db); opLog.push('remove:' + name)
+        const i = store[name].findIndex(x => x._id === id)
+        if (i >= 0) store[name].splice(i, 1)
+        return { stats: { removed: i >= 0 ? 1 : 0 } }
       }
     })
     coll.where = where => {
@@ -161,7 +169,16 @@ const cloud = {
   }
 }
 const coreStub = { cloud, db, _, COL, AppError, distanceM, cosine, warmCollection: () => {} }
-const pointsStub = { grant: async () => ({ gained: 0, today: 0 }) }
+/**
+ * points stub：本测试只关心「续跑预算」，不关心账本。
+ * 但 vision.start() 现在会调 chargeRecognize 扣费，stub 必须提供同名函数 ——
+ * 缺了它就是 TypeError，而 catch 分支会去删任务（mock 里没 remove）→ 整个场景假失败。
+ */
+const pointsStub = {
+  grantPoint: async () => ({ gained: 0, today: 0 }),
+  grantFood: async () => ({ gained: 0, today: 0 }),
+  chargeRecognize: async () => ({ cost: 0, free: true, balance: 0, used: 1, left: 9, limit: 10 })
+}
 
 /* ==================== Module 拦截（vision/security 真实现，core/points stub） ==================== */
 const origLoad = Module._load
@@ -315,7 +332,15 @@ async function s2() {
   const last = rounds[rounds.length - 1].r
   assert(last.status === 'done', 'S2 最终应降级本地引擎并 done，实际 ' + last.status)
   assert(last.result.provider === 'local', 'S2 provider 应为 local')
-  assert(last.result.candidates.length > 0, 'S2 本地兜底也应有候选')
+  // 2026-10-17 **反向修改**：本地兜底不得再给候选。
+  // 旧断言「S2 本地兜底也应有候选」锁死的其实是一个有害设计 ——
+  // 降级时没有真特征，所有猫拿同一个基线分，排序实际由位置先验决定，
+  // 与图片内容无关，界面上却和真识别结果长得一模一样。
+  // 实测用户上传白猫拿到「小白 56%」，根因是本地随机属性撞上档案的 pattern。
+  assert(last.result.candidates.length === 0, 'S2 本地兜底不得给候选（无真特征时排序即噪声）')
+  assert(last.result.degraded === true, 'S2 应标记 degraded，前端才能换掉"匹配候选"卡片')
+  assert((last.result.features.tags || []).length === 0, 'S2 本地兜底不得伪造毛色/花纹标签')
+  assert(!last.result.features.pattern && !last.result.features.color, 'S2 本地兜底不得伪造属性')
   const task = store.ai_tasks.find(t => t._id === taskId)
   assert(Number(task.partial.aiAttempts) >= 12, 'S2 aiAttempts 应达到上限 12，实际 ' + task.partial.aiAttempts)
   assert(Number(task.partial.featFails) === 0, 'S2 超时不应计入 featFails，实际 ' + task.partial.featFails)

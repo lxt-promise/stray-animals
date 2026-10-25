@@ -6,6 +6,12 @@
     <view class="mt {{mode === 'video' ? 'on' : ''}}" data-mode="video" bindtap="switchMode">视频识别</view>
   </view>
 
+  <!-- 计费条：本次花多少、还剩几次，选素材之前就要看得见 -->
+  <view class="bill-bar">
+    <text class="bill-hint">{{wallet.hint}}</text>
+    <text class="bill-food">猫粮 {{wallet.food}}</text>
+  </view>
+
   <!-- 取景区 -->
   <view class="viewport {{stage === 'working' ? 'scanning' : ''}}" bindtap="choose">
     <view class="grid-layer"></view>
@@ -46,8 +52,21 @@
 
   <!-- 结果 -->
   <block wx:if="{{stage === 'done' && !error && result}}">
+    <!-- 降级：没有可信特征。
+         必须与「识别完了但没匹配上」区分开 —— 那是"库里没有它"，
+         这是"这次根本没识别出东西"，两者的下一步动作不一样。 -->
+    <view class="card" wx:if="{{result.degraded}}">
+      <view class="text-center" style="padding:26rpx 0">
+        <view style="font-size:70rpx">📡</view>
+        <view class="bold mt">识别服务暂时不可用</view>
+        <view class="small muted" style="margin-top:12rpx;line-height:1.7">
+          这次没能提取出可靠特征，所以不给你猜一个结果。稍后重试，或直接新建档案。
+        </view>
+      </view>
+    </view>
+
     <!-- 特征摘要（合规：不展示占位引擎说明与 request_id 等内部信息） -->
-    <view class="card card-glow">
+    <view class="card card-glow" wx:if="{{!result.degraded && result.features.tags.length}}">
       <view class="card-title">
         识别特征
         <text class="more mono">{{result.latency}}ms</text>
@@ -60,10 +79,13 @@
           </view>
         </block>
       </view>
+      <!-- 毛色/花纹现在恒可用（服务端有本地色域分析兜底），判不出来时才给原因。
+           有属性就什么都不显示 —— 正常结果下面挂一句解释反而是噪音。 -->
+      <view class="small muted mt" wx:if="{{result.attrHint}}">{{result.attrHint}}</view>
     </view>
 
     <!-- 候选列表 -->
-    <view class="card" wx:if="{{result.candidates.length}}">
+    <view class="card" wx:if="{{!result.degraded && result.candidates.length}}">
       <view class="card-title">
         匹配候选
         <text class="more">共 {{result.candidates.length}} 只</text>
@@ -78,7 +100,9 @@
           <view class="cand-main">
             <view class="flex-between">
               <view class="cand-name bold">{{item.name}}</view>
-              <view class="score mono" style="color:{{item.score >= 80 ? 'var(--brand)' : (item.score >= 60 ? 'var(--gold)' : 'var(--text-sub)')}}">
+              <!-- 分数配色跟着「校准后」的量级走：同猫不同照片典型 50~70 分，
+                   沿用旧的 80/60 门槛会让一次正确的匹配整行发灰。 -->
+              <view class="score mono" style="color:{{item.score >= 70 ? 'var(--brand)' : (item.score >= 45 ? 'var(--gold)' : 'var(--text-sub)')}}">
                 {{item.score}}%
               </view>
             </view>
@@ -90,19 +114,25 @@
           <view class="cand-arrow">›</view>
         </view>
       </block>
+      <!-- 特征库太小：库里只有 1~2 只猫时，"Top1" 没有比较对象，
+           它只是唯一那个，不代表像。 -->
+      <view class="notice small mt" wx:if="{{result.indexedTotal >= 0 && result.indexedTotal < 3}}">
+        ⓘ 特征库目前只有 {{result.indexedTotal}} 只猫的特征，没有可比较的对象，结果参考价值有限。
+      </view>
       <view class="notice small mt" wx:if="{{result.lowConfidence}}">
-        ⓘ 匹配置信度偏低（低于 {{result.threshold}}%），请人工确认后再使用结果，别直接当结论。
+        ⓘ 匹配置信度偏低（低于 {{result.threshold}}%），上面的排序仅供参考，
+        以「识别特征」卡里的画面特征为准。
       </view>
     </view>
 
-    <!-- 人工确认：人机协同闭环 -->
+    <!-- 人工确认：人机协同闭环。
+         ⚠️ 文案只说「记录 + 解锁图鉴」，不许写「越用越准」：
+         确认识别**不入特征库**（见云端 vision.confirm：只写 ai_samples 与图鉴），
+         特征库不会因为用户点确认而变准，那样写是无依据的承诺。 -->
     <view class="card" wx:if="{{result.candidates.length && taskId}}">
-      <view class="card-title">
-        人工确认
-        <text class="more small">让系统越用越准</text>
-      </view>
+      <view class="card-title">人工确认</view>
       <view class="small muted">
-        你的确认会作为一条标注样本记录下来，帮系统越用越准，并解锁这只猫的图鉴。
+        你的确认会作为一条标注样本保存下来，并解锁这只猫的图鉴。
       </view>
       <view class="act-row mt">
         <block wx:if="{{!confirmedId}}">
@@ -116,13 +146,24 @@
       </view>
     </view>
 
-    <!-- 没匹配上 -->
-    <view class="card" wx:if="{{!result.candidates.length}}">
+    <!-- 没匹配上（已经识别出特征，只是库里没有像的）。
+         标题用花色而不是干巴巴的「档案库里没有它」：身份没认出来时，
+         毛色/花纹是这次识别唯一有价值、且用户自己能校验的产出。 -->
+    <view class="card" wx:if="{{!result.degraded && !result.candidates.length}}">
       <view class="text-center" style="padding:20rpx 0">
         <view style="font-size:70rpx">🆕</view>
-        <view class="bold mt">档案库里没有它</view>
+        <view class="bold mt">{{result.guessTitle}}</view>
         <view class="small muted" style="margin-top:12rpx;line-height:1.7">
-          这可能是还没登记的新猫。把它录入校园猫谱，下次就能被认出来。
+          <!-- 「库是空的」和「库里没这只」是两件事：前者该等管理员建库，后者该建档 -->
+          <block wx:if="{{result.indexedTotal === 0}}">
+            特征库还没有建立，暂时没法做匹配。社团管理员完成建库后就能识别了。
+          </block>
+          <block wx:else>
+            没能匹配到已有档案。这可能是还没登记的新猫，录入校园猫谱下次就能被认出来。
+          </block>
+        </view>
+        <view class="small muted" style="margin-top:16rpx" wx:if="{{result.hasAttr}}">
+          画面特征：{{result.attrText}}
         </view>
       </view>
     </view>
@@ -154,7 +195,8 @@
       <view class="hist-ico">{{item.mode === 'video' ? '🎬' : '📷'}}</view>
       <view class="hist-main">
         <view class="hist-title">
-          <block wx:if="{{item.result.candidates.length}}">
+          <block wx:if="{{item.result.degraded}}">识别服务不可用</block>
+          <block wx:elif="{{item.result.candidates.length}}">
             「{{item.result.candidates[0].name}}」{{item.result.candidates[0].score}}%
           </block>
           <block wx:else>未匹配到档案猫</block>

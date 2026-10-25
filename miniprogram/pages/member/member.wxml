@@ -45,7 +45,8 @@
         </view>
         <view class="m-info">
           <view class="bold">{{item.nickName}}</view>
-          <view class="small muted">打卡 {{item.sightingCount}} · 猫粮值 {{item.points}}</view>
+          <!-- 成员榜展示**积分**（长期贡献度），不是猫粮余额：猫粮是消费币，会被花掉 -->
+          <view class="small muted">打卡 {{item.sightingCount}} · 积分 {{item.points}}</view>
         </view>
         <view class="tag {{item.role === 'admin' ? 'warn' : (item.role === 'member' ? 'ok' : 'gray')}}">
           {{item.role === 'admin' ? '管理员' : (item.role === 'member' ? '成员' : '爱猫同学')}}

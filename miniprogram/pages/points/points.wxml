@@ -1,27 +1,97 @@
 <view class="page">
 
-  <view class="balance-card">
-    <view class="b-num">{{balance}}</view>
-    <view class="b-lbl">当前猫粮值</view>
-  </view>
+  <!-- ==================== 积分模式：等级页 ====================
+       只展示「当前等级 + 积分总值 + 离下一档还差多少」。
+       刻意不列流水：积分只增不减、唯一用途是判等级，列出来只会让人以为积分能被花掉。
+       所有数字与文案都由 utils/level.js 算好，WXML 只做插值 —— 这里不会出现 undefined。 -->
+  <block wx:if="{{isPoint}}">
+    <view class="lv-hero">
+      <!-- 纯装饰光斑：不接事件、不挡点击 -->
+      <view class="lv-blob a"></view>
+      <view class="lv-blob b"></view>
 
-  <view class="card mt">
-    <view class="card-title">发放记录</view>
-    <view class="row p-item" wx:for="{{list}}" wx:key="_id">
-      <view class="p-main">
-        <text class="p-reason">{{item.reason || item.kind}}</text>
-        <text class="small muted">{{item.timeText}}</text>
+      <view class="lv-top">
+        <view class="lv-user">
+          <image wx:if="{{user.avatarView}}" class="lv-avatar" src="{{user.avatarView}}" mode="aspectFill" />
+          <view wx:else class="lv-avatar ph">🐱</view>
+          <text class="lv-nick">{{user.nickName}}</text>
+        </view>
+        <view class="lv-rules-link" bindtap="toggleRules" hover-class="pressed">规则说明 ›</view>
       </view>
-      <text class="p-delta {{item.delta < 0 ? 'minus' : ''}}">{{item.delta > 0 ? '+' : ''}}{{item.delta}}</text>
-    </view>
-    <view class="empty" wx:if="{{!list.length}}">
-      <text class="emoji">🐾</text>
-      还没有猫粮发放记录
-    </view>
-  </view>
 
-  <view class="tip small muted">
-    猫粮值规则：目击打卡 +10，本人投喂 +10，投喂有照片 +15，上报新猫 +30，首次遇见某只猫 +20，参与 TNR 记录 +50。每日打卡积分上限 60。
-  </view>
+      <view class="lv-badge">{{view.levelText}}</view>
+      <view class="lv-cap">当前等级 · 只升不降</view>
+
+      <view class="lv-value-row">
+        <text class="lv-value">{{view.peak}}</text>
+        <text class="lv-value-lbl">积分值</text>
+      </view>
+
+      <view class="lv-track">
+        <view class="lv-track-bar" style="width: {{view.progress}}%"></view>
+      </view>
+      <view class="lv-next">{{view.nextText}}</view>
+
+      <!-- 等级阶梯：done=已走过，on=当前档（选中态在 JS 预计算） -->
+      <view class="lv-ladder">
+        <view class="lv-step {{s.done ? 'done' : ''}} {{s.on ? 'on' : ''}}"
+          wx:for="{{view.steps}}" wx:for-item="s" wx:key="lv">
+          <view class="lv-dot"></view>
+          <view class="lv-step-lbl">{{s.label}}</view>
+        </view>
+      </view>
+    </view>
+
+    <!-- 规则说明：右上角点开，与「我的」页共用同一份文案（const.RULES） -->
+    <view class="card mt" wx:if="{{rulesOpen}}">
+      <view class="card-title">规则说明</view>
+      <view class="rule-block" wx:for="{{rules}}" wx:for-item="r" wx:key="title">
+        <view class="rule-title">{{r.title}}</view>
+        <view class="rule-line" wx:for="{{r.lines}}" wx:for-item="line" wx:for-index="li" wx:key="*this">{{line}}</view>
+      </view>
+    </view>
+
+    <view class="tip small muted">
+      <view>{{tipText}}</view>
+      <view style="margin-top:12rpx">{{tipText2}}</view>
+    </view>
+  </block>
+
+  <!-- ==================== 猫粮模式：余额 + 流水 ==================== -->
+  <block wx:else>
+    <!-- 当前账本的余额：一屏只看一种货币，避免「-20」被误读成掉级 -->
+    <view class="wallet-card food">
+      <view class="w-num">{{head.num}}</view>
+      <view class="w-lbl">{{head.label}}</view>
+      <view class="w-sub" wx:if="{{head.sub}}">{{head.sub}}</view>
+    </view>
+
+    <view class="card mt">
+      <view class="flex-between small muted">
+        <text>今日已获得 {{wallet.foodToday}}/{{wallet.foodCap}}</text>
+        <text>识别 20/次 · 首次免费</text>
+      </view>
+    </view>
+
+    <view class="card mt">
+      <view class="row p-item" wx:for="{{list}}" wx:key="_id">
+        <view class="p-main">
+          <text class="p-reason">{{item.reason}}</text>
+          <text class="small muted">{{item.timeText}}</text>
+        </view>
+        <text class="p-delta {{item.minus ? 'minus' : ''}}">{{item.deltaText}}</text>
+      </view>
+      <view class="empty" wx:if="{{!loading && !list.length}}">
+        <text class="emoji">🐾</text>
+        {{emptyText}}
+      </view>
+    </view>
+
+    <view class="tip small muted">
+      <view class="bold">{{tipTitle}}</view>
+      <view>{{tipText}}</view>
+      <view style="margin-top:12rpx">{{tipText2}}</view>
+    </view>
+  </block>
 
 </view>

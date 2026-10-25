@@ -28,8 +28,14 @@ COPY . .
 RUN mkdir -p /data/catcampus
 
 # ---- 容器内固定配置（不依赖外部注入，保证模型一定被加载）----
+# REID_SIZE 必须与 reid.onnx 的导出边长一致。镜像里这份是在 224 上导出的
+# （输出 token = 16²+1 = 257），写 518 会让首次推理报 "257 by 1370" 广播错。
+# engine._probe_input_size 会按 token 数反推并纠正，但那时已经打了一条 warning，
+# 不如这里就写对。
+# DETECT_ONNX 不写：DETECT_AUTO 默认开，会自动发现 /app/models/yolov8n.onnx；
+# 留空的好处是不会和云托管控制台的环境变量打架。
 ENV REID_ONNX=/app/models/reid.onnx \
-    REID_SIZE=518 \
+    REID_SIZE=224 \
     INDEX_DB=/data/catcampus/index.sqlite3 \
     FETCH_TIMEOUT=20 \
     MAX_FRAMES=8

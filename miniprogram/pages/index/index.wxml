@@ -2,10 +2,16 @@
 
   <!-- 顶部：学校 + 身份 -->
   <view class="hero">
+    <!-- 右上角柔光：让冷白背景不再"平"，也把视线拉到校名上 -->
+    <view class="hero-glow"></view>
+    <!-- 校名严格跟随已绑定学校；未绑定时显示品牌名「喵园」，不显示任何校名占位。
+         文案由 index.js 的 syncIdentity 预计算（schoolTitle / schoolSub）：
+         模板里写 `school ? school.name : '喵园'` 一旦字段缺失就渲染空串，
+         而且改文案要同时动模板和 JS，集中在 JS 只有一处真源。 -->
     <view class="hero-left">
-      <view class="school-name">{{school ? school.name : '喵园'}}</view>
-      <view class="school-sub small">
-        {{school && school.campus ? school.campus : '校园流浪猫守护计划'}}
+      <view class="school-name">{{schoolTitle}}</view>
+      <view class="school-sub small" wx:if="{{schoolSub}}">
+        <text class="sub-dot"></text><text>{{schoolSub}}</text>
       </view>
     </view>
     <view class="hero-right">
@@ -23,120 +29,94 @@
   <view class="ai-card">
     <view class="grid-bg-layer"></view>
     <view class="scan-line"></view>
+    <!-- 半透明猫剪影只是氛围装饰，压在最底层，不参与点击也不与文案抢位置 -->
+    <view class="ai-mascot">🐈</view>
     <view class="ai-card-inner">
       <view class="ai-head">
         <view class="badge mono">SMART MATCH</view>
-        <view class="badge mono" style="border-color:rgba(251,191,36,.55);color:#B45309">花色比对 v0.1</view>
+        <view class="badge dim mono">花色比对 v0.1</view>
       </view>
       <view class="ai-title">拍一张，认出它是谁</view>
       <view class="ai-desc">
-        上传照片或视频，系统在校园猫档案库中检索匹配，秒级给出候选名单与相似度。
-        不认识的新猫？一键建档入库。
+        上传照片或视频，在校园猫档案里秒级比对。遇到新面孔？一键建档入库。
       </view>
       <view class="ai-actions">
-        <view class="ai-btn photo" bindtap="goRecognize" data-mode="image">
-          <text class="ico">📸</text><text>拍照识别</text>
+        <view class="ai-btn photo" bindtap="goRecognize" data-mode="image" hover-class="btn-press">
+          <text class="ico">📸</text><text>拍照识别</text><text class="go">›</text>
         </view>
-        <view class="ai-btn video" bindtap="goRecognize" data-mode="video">
+        <view class="ai-btn video" bindtap="goRecognize" data-mode="video" hover-class="btn-press">
           <text class="ico">🎬</text><text>视频识别</text>
         </view>
       </view>
-      <view class="ai-meta">
-        <text class="mono">档案库 {{overview ? overview.catCount : (loading ? '…' : 0)}} 只</text>
-        <view class="sep"></view>
-        <text class="mono">平均响应 0.8s</text>
-        <view class="sep"></view>
-        <text class="mono">本地特征比对</text>
-      </view>
     </view>
   </view>
 
-  <!-- 无学校引导 -->
+  <!-- 无学校引导：校名不显示，这里负责说清「为什么是空的」并给出下一步 -->
   <view class="card" wx:if="{{!loading && !school}}">
     <view class="card-title">还没有绑定学校</view>
     <view class="muted small" style="line-height:1.7">
-      管理员可在「我的」中创建 / 绑定学校；创建后即可开始录入猫口档案。
-      数据按学校隔离，未来复制到其他学校只需新建一个学校即可。
+      图鉴、打卡与地图都按学校统计。去「我的」选择已建学校；列表里没有的话，提交新建申请，管理员审核通过后会自动绑定。
     </view>
-    <button class="btn btn-ghost btn-sm mt" bindtap="goCreateSchool">去设置</button>
+    <button class="btn btn-ghost btn-sm mt" bindtap="goCreateSchool">去选择学校</button>
   </view>
 
-  <!-- 统计 -->
+  <!-- 统计：三格都可点（各自进猫谱 / 打卡记录），点击反馈沿用 .stat-hover
+       版式：图标在左（浅橙圆角方块），右侧竖排「标签 / 数值」，比竖排更省纵向空间 -->
   <view class="stat-grid" wx:if="{{overview}}">
     <view class="item">
-      <view class="stat-card">
-        <view class="num">{{overview.catCount}}</view>
-        <view class="lbl">在册猫咪</view>
+      <view class="stat-card" bindtap="goCats" hover-class="stat-hover">
+        <view class="stat-ico">🐈</view>
+        <view class="stat-body">
+          <view class="lbl">在册猫咪</view>
+          <view class="num">{{overview.catCount}}</view>
+        </view>
       </view>
     </view>
     <view class="item">
-      <view class="stat-card">
-        <view class="num">{{overview.sterilizedRate}}<text class="unit">%</text></view>
-        <view class="lbl">绝育率</view>
+      <view class="stat-card" bindtap="goCats" hover-class="stat-hover">
+        <view class="stat-ico">💉</view>
+        <view class="stat-body">
+          <view class="lbl">绝育率</view>
+          <view class="num">{{overview.sterilizedRate}}<text class="unit">%</text></view>
+        </view>
       </view>
     </view>
     <view class="item">
-      <view class="stat-card">
-        <view class="num">{{overview.sightingMonth}}</view>
-        <view class="lbl">本月目击</view>
-      </view>
-    </view>
-    <view class="item" wx:if="{{isMember}}">
-      <view class="stat-card">
-        <view class="num">{{overview.taskOpen}}</view>
-        <view class="lbl">待办任务</view>
-      </view>
-    </view>
-    <view class="item" wx:if="{{isMember}}">
-      <view class="stat-card">
-        <view class="num">{{overview.tnrMonth}}</view>
-        <view class="lbl">本月 TNR</view>
-      </view>
-    </view>
-    <view class="item" wx:else>
-      <view class="stat-card">
-        <view class="num">{{user ? user.points : 0}}</view>
-        <view class="lbl">我的猫粮值</view>
+      <view class="stat-card" bindtap="goSightingList" hover-class="stat-hover">
+        <view class="stat-ico">📷</view>
+        <view class="stat-body">
+          <view class="lbl">本月目击</view>
+          <view class="num">{{overview.sightingMonth}}</view>
+        </view>
       </view>
     </view>
   </view>
-  <!-- 统计骨架：数据在路上时先占住位置，避免统计卡到时把下方内容整块往下推 -->
+  <!-- 统计骨架：数据在路上时先占住位置，避免统计卡到时把下方内容整块往下推
+       结构与真实卡一致（左图标 + 右两行），否则骨架与真卡高度不等，切换时仍会跳 -->
   <view class="stat-grid" wx:elif="{{loading}}">
-    <view class="item"><view class="stat-card skeleton"><view class="num sk"></view><view class="lbl sk"></view></view></view>
-    <view class="item"><view class="stat-card skeleton"><view class="num sk"></view><view class="lbl sk"></view></view></view>
-    <view class="item"><view class="stat-card skeleton"><view class="num sk"></view><view class="lbl sk"></view></view></view>
-    <view class="item"><view class="stat-card skeleton"><view class="num sk"></view><view class="lbl sk"></view></view></view>
-    <view class="item"><view class="stat-card skeleton"><view class="num sk"></view><view class="lbl sk"></view></view></view>
-    <view class="item"><view class="stat-card skeleton"><view class="num sk"></view><view class="lbl sk"></view></view></view>
+    <view class="item"><view class="stat-card skeleton"><view class="stat-ico sk"></view><view class="stat-body"><view class="lbl sk"></view><view class="num sk"></view></view></view></view>
+    <view class="item"><view class="stat-card skeleton"><view class="stat-ico sk"></view><view class="stat-body"><view class="lbl sk"></view><view class="num sk"></view></view></view></view>
+    <view class="item"><view class="stat-card skeleton"><view class="stat-ico sk"></view><view class="stat-body"><view class="lbl sk"></view><view class="num sk"></view></view></view></view>
   </view>
 
-  <!-- 快捷操作 -->
+  <!-- 快捷操作：图标收进浅色圆形底，比裸 emoji 更稳、更有卡片感 -->
   <view class="quick-row mt">
-    <view class="quick-btn primary" bindtap="goSighting">
+    <view class="quick-btn primary" bindtap="goSighting" hover-class="pressed">
       <view class="ico">🐾</view>
       <view class="txt">目击打卡</view>
+      <view class="sub">记录今天遇见的那只</view>
     </view>
-    <view class="quick-btn" bindtap="goSightingList">
+    <view class="quick-btn" bindtap="goSightingList" hover-class="pressed">
       <view class="ico">📷</view>
-      <view class="txt">最新动态</view>
+      <view class="txt">打卡记录</view>
+      <view class="sub">翻翻自己的每一次到访</view>
     </view>
   </view>
 
-  <!-- 绝育进度条 -->
-  <view class="card mt" wx:if="{{overview && overview.catCount}}">
-    <view class="flex-between">
-      <view class="bold">TNR 进展</view>
-      <view class="small muted">已绝育 {{overview.sterilized}} / {{overview.catCount}}</view>
-    </view>
-    <view class="progress">
-      <view class="bar" style="width: {{overview.sterilizedRate}}%"></view>
-    </view>
-    <view class="small muted" style="margin-top:16rpx">
-      绝育率是衡量校园猫口是否可控的核心指标。国际通行做法是把它做到 70% 以上。
-    </view>
-  </view>
+  <!-- 绝育进度条（TNR 进展）已移除：绝育率仍作为统计卡展示，
+       逐条 TNR 记录与进度去「工作台 → TNR」看。 -->
 
-  <!-- 最近目击 -->
+  <!-- 最近目击：猫名 + 时间一行，位置/上报人一行，标签一行（原先把三样挤在两个 flex 里） -->
   <view class="card mt" wx:if="{{overview && overview.recent.length}}">
     <view class="card-title">
       最新目击
@@ -151,12 +131,18 @@
         </view>
         <view class="feed-main">
           <view class="feed-title">
-            <text class="bold">{{item.cat ? item.cat.name : item.catName}}</text>
-            <text class="small muted" style="margin-left:12rpx">{{item.locationName}}</text>
+            <text class="feed-name ellipsis">{{item.cat ? item.cat.name : item.catName}}</text>
+            <text class="feed-time">{{item.createdAtText}}</text>
           </view>
-          <view class="feed-note ellipsis-2 small muted" wx:if="{{item.note}}">{{item.note}}</view>
-          <view class="small muted" style="margin-top:8rpx">{{item.reporterName}} · {{item.createdAtText}}</view>
+          <view class="feed-sub">
+            <text class="feed-loc ellipsis" wx:if="{{item.locationName}}">📍 {{item.locationName}}</text>
+            <text class="feed-sep" wx:if="{{item.locationName}}">·</text>
+            <text class="feed-by">{{item.reporterName}} 记录</text>
+          </view>
+          <!-- 结构化标签（合规改造：替代原自由文本 note）——公开记录的猫况摘要 -->
+          <view class="feed-note ellipsis-2 small muted" wx:if="{{item.tagText}}">{{item.tagText}}</view>
         </view>
+        <text class="feed-arrow">›</text>
       </view>
     </block>
   </view>

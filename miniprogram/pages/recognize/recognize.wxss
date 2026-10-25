@@ -25,6 +25,19 @@
   box-shadow: 0 6rpx 18rpx rgba(249, 115, 22, .3);
 }
 
+/* 计费条：让「本次消耗多少、还剩几次」在选素材前就能看到 */
+.bill-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14rpx;
+  padding: 12rpx 20rpx;
+  border-radius: 12rpx;
+  background: rgba(146, 88, 32, .06);
+}
+.bill-hint { font-size: 23rpx; color: var(--text-sub); }
+.bill-food { font-size: 23rpx; font-weight: 600; color: var(--brand-dark); }
+
 /* 取景区 */
 .viewport {
   position: relative;

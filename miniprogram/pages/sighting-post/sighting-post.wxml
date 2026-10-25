@@ -8,12 +8,18 @@
         <view>{{catNames[catIndex] || '选择猫咪 ›'}}</view>
       </picker>
     </view>
-    <view class="form-item" wx:if="{{isNewCat}}">
-      <text class="label">临时名字</text>
-      <input placeholder="如：图书馆门口的橘猫" value="{{newCatName}}" data-key="newCatName" bindinput="onInput" />
-    </view>
+    <!-- 未建档的猫：用**结构化特征**描述，不提供自由命名（避免用户生成文字）。
+         正式名字由社团核实后统一分配（服务端按毛色生成占位名，如「未命名·橘猫」）。 -->
+    <block wx:if="{{isNewCat}}">
+      <view class="form-item">
+        <text class="label">毛色 / 花纹</text>
+        <picker mode="selector" range="{{patternOptions}}" range-key="label" value="{{patternIndex}}" bindchange="onPatternPick">
+          <view>{{patternOptions[patternIndex].label}} ›</view>
+        </picker>
+      </view>
+    </block>
     <view class="small muted" style="padding:16rpx 28rpx">
-      选「不指定」表示这是一只尚未建档的猫，社团成员核实后会为它建立正式档案。
+      选「不指定」表示这是一只尚未建档的猫，社团成员核实后会为它建立正式档案并命名。
     </view>
   </view>
 
@@ -37,15 +43,15 @@
 
   <view class="card">
     <view class="card-title">位置</view>
+    <!-- 地点一律通过微信「选择位置」获取（返回结构化名称），不再提供自由文本输入 -->
     <view class="form-item">
       <text class="label">地点</text>
       <view bindtap="chooseLocation" class="loc-pick">
         {{locationName || (locating ? '定位中…' : (location ? '已获取定位，点此修改 ›' : '点此选择位置 ›'))}}
       </view>
     </view>
-    <view class="form-item">
-      <text class="label">地点名称</text>
-      <input placeholder="如：教三楼北侧" value="{{locationName}}" data-key="locationName" bindinput="onInput" />
+    <view class="small muted" style="padding:0 28rpx 8rpx">
+      点位来自微信地图选择，用于社团核实猫只活动范围
     </view>
   </view>
 
@@ -57,12 +63,16 @@
         <view>{{feedOptions[feedIndex].label}} ›</view>
       </picker>
     </view>
-    <!-- 投喂状态动态提示：选中「本人投喂」时说明照片佐证奖励，避免用户不知道有图能多赚 -->
-    <view class="feed-hint" wx:if="{{feedValue === 'fed' && !photos.length}}">
-      上传照片作为投喂佐证，可额外获得猫粮值；不上传则只有基础投喂奖励
+    <!-- 食物类型：只影响积分档位（+2 ~ +5）。用 picker 而非输入框 ——
+         打卡页必须零自由文本输入（合规：UGC 文本属于「社交-笔记」类目，个人主体未开放）。 -->
+    <view class="form-item" wx:if="{{feedValue === 'fed'}}">
+      <text class="label">食物类型</text>
+      <picker mode="selector" range="{{foodOptions}}" range-key="label" value="{{foodIndex}}" bindchange="onFoodPick">
+        <view>{{foodOptions[foodIndex].label}} ›</view>
+      </picker>
     </view>
-    <view class="feed-hint" wx:if="{{feedValue === 'fed' && photos.length}}">
-      已选 {{photos.length}} 张照片，提交后「投喂照片」奖励自动生效
+    <view class="feed-hint" wx:if="{{feedValue === 'fed'}}">
+      投喂按食物类型计入积分：干粮 +2 / 零食 +3 / 罐头 +4 / 自制 +5
     </view>
     <view class="feed-hint" wx:if="{{feedValue === 'fedByOther'}}">
       记录「已被其他人投喂」，提醒其他同学避免重复投喂
@@ -75,13 +85,16 @@
     </view>
     <view class="form-item">
       <text class="label">数量</text>
-      <input type="number" value="{{count}}" bindinput="changeCount" style="width:120rpx" />
+      <picker mode="selector" range="{{countOptions}}" value="{{countIndex}}" bindchange="onCountPick">
+        <view>{{countOptions[countIndex]}} 只 ›</view>
+      </picker>
     </view>
-    <!-- ⚠️ 合规改造（2026-10-16 审核驳回）：原「描述」自由文本框已移除。
-         审核认定「用户自行生成文字 + 图片 + 公开可见」＝ 社交-笔记（个人主体未开放类目）。
-         改为**结构化行为标签多选**：用户只能从预设项里挑，不再自由创作文字。
-         形态从「写笔记」变成「登记猫况」，与「工具-信息查询」类目相符。
-         如需补充，仅保留极短（≤20字）的备注且默认不公开。 -->
+    <!-- ⚠️ 合规改造（2026-10-16 审核驳回「社交-笔记」类目）：
+         本页**不得有任何自由文字输入**。审核认定「用户自行生成文字 + 图片 + 公开可见」
+         即构成「社交-笔记」（个人主体未开放类目）。
+         所有用户输入一律改为**预设选项**：多选标签 / 单选枚举。
+         形态是「登记猫况」而非「创作笔记」，与「工具-信息查询」类目相符。
+         新增维度时请加枚举项（const.js），不要把 input/textarea 加回来。 -->
     <view class="form-item col">
       <text class="label">见到它在做什么</text>
       <view class="tag-picker">
@@ -95,8 +108,27 @@
       </view>
     </view>
     <view class="form-item col">
-      <text class="label">补充（选填，最多 20 字）</text>
-      <input placeholder="如：右前腿有伤" maxlength="20" value="{{note}}" data-key="note" bindinput="onInput" />
+      <text class="label">外观特征（可多选）</text>
+      <view class="tag-picker">
+        <view
+          wx:for="{{featureOptions}}"
+          wx:key="value"
+          class="tag-chip {{item.on ? 'on' : ''}}"
+          data-value="{{item.value}}"
+          bindtap="toggleFeature"
+        >{{item.label}}</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- ⚠️ 可见性开关已**移出本页**（合规二审 2026-10-16）：
+       打卡者不再有"公开到校园"的入口 —— 公开与否由超级管理员在控制台按校区统一配置。
+       本页只提示当前策略结果，不提供任何发布按钮。 -->
+  <view class="card">
+    <view class="card-title">可见性</view>
+    <view class="small muted" style="line-height:1.7">
+      打卡记录默认**仅你自己与社团成员可见**。是否对访客公开由社团管理员统一设置，
+      你无需（也无法）在此选择。
     </view>
   </view>
 

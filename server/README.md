@@ -24,7 +24,7 @@
 
 | 用途      | 推荐                       | 备选                                  | 说明                          |
 | ------- | ------------------------ | ----------------------------------- | --------------------------- |
-| 猫体检测    | YOLOv8n / YOLO11n ONNX   | 不检测（整图提特征）                          | 裁掉背景可显著提升准确率，避免模型「记住背景」     |
+| 猫体检测    | **YOLOv8n ONNX（已内置 models/yolov8n.onnx）** | 不检测（整图提特征）                          | 裁掉背景可显著提升准确率，避免模型「记住背景」     |
 | 个体特征提取  | **DINOv2-base ONNX（量化）** | DINOv2-large（更准更慢）、MegaDescriptor-L | 已经在海量图像上学会了「把图压成有区分度的向量」    |
 | 毛色 / 花纹 | CLIP 零样本分类               | 管理员手填                               | 用自然语言标签打分类，零标注；只做辅助展示，不决定身份 |
 
@@ -74,23 +74,57 @@ curl http://127.0.0.1:8000/health
 
 返回里 `provider` 是 `onnx` 说明模型加载成功；是 `hash` 说明在跑占位引擎（检查模型路径有没有挂进去）。
 
-### ⚠️ 检测模型（DETECT_ONNX）的坑
+### ⚠️ 检测模型（DETECT_ONNX）
 
-**默认不要配**（留空 = 整图提特征）。曾经配上后线上 100% 复现 500：
+**现在已经默认启用。** 仓库自带 `models/yolov8n.onnx`（12.8MB，COCO class 15 = cat），
+`DETECT_ONNX` 留空时 `DETECT_AUTO` 会自动发现它 —— 部署时漏配环境变量是最常见的
+「代码改了线上没生效」，所以不把它做成必填项。要关掉：`DETECT_ONNX=off` 或 `DETECT_AUTO=0`。
+
+三个历史坑，都只在「配了检测」后才会跑到，且都不会报错、只会让结果变差：
+
+1. **2026-10-15 线上 500**：
+
+   ```
+   onnxruntime ... Add node '/embeddings/Add'
+   Attempting to broadcast an axis by a dimension other than 1. 257 by 1370
+   ```
+
+   检测框裁出来的 crop 长宽比和原图差很多时，letterbox 缩放系数若按**原图**尺寸算就
+   会失效，把 crop 的一边缩得远超输入边长（224 的模型收到 1370 宽）。已修：`_letterbox`
+   一律按**传进来的那张图**算缩放，`_to_nchw` 出口再自检形状。
+
+2. **2026-10-17 坐标格式**：模型输出是 **cxcywh**（中心点 + 宽高），旧代码按 xyxy 读。
+   640×440 的图上会把「整只猫」读成右下角 80×60 的一小块 —— crop 出来是胡须和胸口，
+   提特征等于随机采样。
+
+3. **2026-10-17 逆变换**：逆映射用的是 `w/size, h/size`（拉伸系数），而预处理是
+   **letterbox**（保比例 + 居中补边）。非方图必然整体错位，越扁错得越多。
+
+回归：`python -m unittest tests.test_detector_box`（20 项，含真模型 + 真猫图）
+和 `tests.test_analyze_frames`（7 项，含「不许每帧都检测」）。
+
+### 检测是怎么用起来的（`engine.analyze_frames`）
 
 ```
-onnxruntime ... Add node '/embeddings/Add'
-Attempting to broadcast an axis by a dimension other than 1. 257 by 1370
+检测（只跑一次，取中间帧；没框到再试首/尾，最多 3 次）
+  ├─ 外扩 8% 的框 → 逐帧裁剪 → 提特征 → 平均 → 归一化（DETECT_PAD）
+  └─ 紧绷框     → 选花色最清楚的一帧 → 色域分析
 ```
 
-原因不是模型坏了，是「检测框裁出来的 crop」长宽比和原图差很多时，预处理里的
-letterbox 缩放系数若按**原图**尺寸算就会失效，把 crop 的一边缩得远超输入边长
-（224 的模型收到 1370 宽）。修复后 `_letterbox` 一律按**传进来的那张图**算缩放，
-`_to_nchw` 出口再自检形状（不对就报「期望 (1,3,224,224)，实际 …」，一眼定位）。
+两个框不是笔误：**外扩能补回被切掉的耳尖/尾巴**（个体特征更完整），
+但每扩一圈都会带进背景 —— 实测 8% 外扩会把绿墙和木桌算进色域，白猫从「纯白」变成
+「颜色不集中」判不出来。所以「提特征用外扩框、数颜色用紧绷框」。
 
-真要开检测裁剪，注意两点：
-1. `DETECT_COLLAPSE_SQUARE=true` 时会把框扩成正方形（默认 false）；
-2. 改完先跑 `python server/tests/test_engine_shape.py`（12 项，不依赖 onnxruntime）。
+本机 16 核 CPU 实测（`tools/bench_detect.py` 可复测）：
+
+| 项目 | 不开检测 | 开检测 |
+|---|---|---|
+| 单帧 `features()` | 99ms | 172ms |
+| 8 帧 `analyze_frames()` | 794ms | **924ms** |
+| `/v1/recognize` 端到端 | 204ms | ~270ms |
+
+对比「每帧都检测」的旧写法（8 帧 1454ms），一次检测省掉约 530ms，更要紧的是
+**多帧共用同一个框** —— 每帧各裁各的，视野不一致（猫挪了、框抖了），平均出来的向量反而更糊。
 
 没有模型也想先跑通链路？直接 `docker compose up -d` 即可，服务会自动降级到占位引擎。
 
@@ -139,6 +173,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 | `POST /v1/recognize`   | **主接口**，云函数配的 `AI_ENDPOINT` 就指向它 |
 | `POST /v1/embed`       | 单图抽向量，调试用                        |
 | `POST /v1/index/build` | 批量建库，把每只猫多张照片平均成代表向量             |
+| `GET /v1/index/ids`    | 特征库里**真实存在**的猫 id（管理端「未录入」清单用）   |
 
 ### /v1/recognize 请求体
 
@@ -155,6 +190,71 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 ```
 
 响应与 `cloudfunctions/catcampus/lib/vision.js` 的契约一致，前端不需要改一行代码。
+
+---
+
+## 毛色 / 花纹 / 品种识别
+
+识别结果除了「是不是这只猫」，还会给出**花色**。有两条来源，按顺序尝试：
+
+| 层 | 实现 | 依赖 | 何时使用 |
+| --- | --- | --- | --- |
+| 1 | CLIP 零样本分类（`USE_CLIP=1`） | torch + open_clip（+600MB） | 装了就用，置信度 ≥ `ATTR_CONF_MIN`（默认 0.5）才采信 |
+| 2 | `app/attrs.py` 色域分析 | **无**（numpy + pillow，必装项） | 第 1 层没装 / 置信度不够 / 抛异常 |
+
+第 2 层单图约 5ms，确定性输出（无随机采样），同一张图永远同一个结论。
+
+**输出字段**
+
+```json
+{
+  "features": {
+    "color": "orange",          // 主花色，取值 = miniprogram/utils/const.js 的 PATTERN 枚举
+    "pattern": "tabby",         // 纹理（tabby/solid/cow/calico/tortoiseshell…），只用于展示
+    "breed": "橘狸花",           // 花色类型（民间说的"品种"），服务端算好中文
+    "attrSource": "heuristic",  // clip / api / heuristic
+    "confidence": 0.78          // **属性置信度**，不是身份匹配分
+  },
+  "meta": {
+    "identified": false,        // Top1 < IDENTIFY_MIN(50)，前端改文案「没认出是哪只，但看起来是…」
+    "attrPalette": [{"key":"orange","label":"橘","ratio":0.61}],
+    "attrReason": ""            // 判不出来时的原因，空 = 正常
+  }
+}
+```
+
+⚠️ `color` 和 `pattern` 是**两个独立维度**：前者要能回填 `cats.pattern` 做筛选，所以
+必须与前端枚举逐值对齐；后者只描述纹理。混成一个字段会让界面出现 `solid` 这种
+前端枚举里没有的英文裸值（早期踩过，`test_attrs.py` 有断言锁住）。
+
+**判不出来就说判不出来**：有效猫色区域低于 `ATTR_MIN_COVERAGE`（默认 22%）时返回
+空值 + `attrReason`，绝不硬编一个"看起来合理"的颜色。伪造属性比没有属性危害大 ——
+用户会当真。
+
+### 可选：接远程属性接口
+
+配 `ATTR_API_URL` 即可把图片 POST 给自建服务 / 公开 API / 云函数：
+
+```
+POST {ATTR_API_URL}
+Authorization: Bearer {ATTR_API_TOKEN}     # 配了 token 才带
+{"image": "<base64 jpeg>", "want": ["color", "pattern", "breed"]}
+
+→ {"color": "orange", "pattern": "tabby", "breed": "橘猫", "confidence": 0.82}
+```
+
+传 base64 而不是 URL，是因为识别服务多为内网实例，对方未必能回连下载我们的临时链接。
+超时 4s（`ATTR_API_TIMEOUT`），任何失败都会静默降级到本地色域分析 —— 远程是加分项，
+不是单点故障。**留空则完全离线运行，不发任何网络请求。**
+
+### 为什么不用 CLIP 一条路走到底
+
+CLIP 要 torch + open_clip，镜像多 ~600MB；线上为了压体积基本都关着，于是
+`tags` 里只剩「检测 / 帧数」两张卡，用户上传白猫看不到任何毛色信息（2026-10-17 现场）。
+而它对 9 个毛色 × 7 个花纹做 softmax，50% 以下基本等于猜 —— 这时"数像素"反而更可靠：
+橘猫就是橘色占多数，不需要语义理解。
+
+`/health` 的 `attrSource` 会告诉你当前走的是哪条路。
 
 ---
 
@@ -330,8 +430,14 @@ python tools/_realcat_probe.py
 这是自建相对云函数最大的优势：微信云函数的 Node 环境**没有 ffmpeg**，  
 以前只能用封面帧凑合；自建服务器可以任意装系统包，真抽帧。
 
-流程：`ffprobe` 读时长 → 按「总时长 / 目标帧数」定抽帧速率 → 抽最多 8 帧 →  
-每帧独立检测提取 → **向量平均后再归一化** → 检索。多帧平均比单帧稳得多。
+流程：`ffprobe` 读时长 → 按「总时长 / 目标帧数」定抽帧速率 → 抽最多 8 帧 →
+**检测一次**（取中间帧，没框到再试首/尾）→ 所有帧复用同一个框裁剪 →
+**向量平均后再归一化** → 检索。
+
+检测只跑一次而不是每帧一次：相邻帧几乎一样，逐帧检测白花 N×58ms，换来的框却基本重合；
+更关键的是**复用同一个框，多帧平均才有意义** —— 每帧各裁各的，视野不一致（猫挪了、框抖了），
+平均出来的向量反而更糊。花色则反过来，取**置信度最高的那一帧**、不做平均
+（视频里的糊帧会把橘猫的冲淡成「灰橘」）。
 
 ---
 

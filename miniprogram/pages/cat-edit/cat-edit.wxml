@@ -106,7 +106,8 @@
       <view class="upload-box" wx:for="{{photosView}}" wx:key="*this" data-index="{{index}}" bindtap="removePhoto">
         <image wx:if="{{item}}" src="{{item}}" mode="aspectFill" />
       </view>
-      <view class="upload-box" bindtap="choosePhotos">
+      <!-- 相册上限 5 张（全部用于建特征库）：满了就藏起「+」，靠删除腾位置 -->
+      <view class="upload-box" wx:if="{{photosView.length < 5}}" bindtap="choosePhotos">
         <view>
           <view class="plus">+</view>
           <view class="small muted">相册</view>

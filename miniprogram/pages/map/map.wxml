@@ -15,6 +15,7 @@
     enable-poi="{{false}}"
     enable-building="{{false}}"
     bindmarkertap="onMarkerTap"
+    bindregionchange="onRegionChange"
   ></map>
 
   <!-- 卡通化图层：暖色柔光 + 手绘圆点纹理（纯装饰，pointer-events 穿透） -->
@@ -30,9 +31,13 @@
     </view>
   </view>
 
-  <view class="map-hint" wx:if="{{!cats.length && !loading}}">
-    <text wx:if="{{outsideCount}}">本校范围内暂无点位（有 {{outsideCount}} 只猫在范围外）</text>
-    <text wx:elif="{{school}}">这块校园里还没有猫点位，成员可在猫档案里填写常驻位置</text>
+  <!-- 越界提示：有猫越界时就显示（不再只在「一个点位都没有」时才出现）。
+       这些点位已被服务端回退到档案常驻位置或按真实打卡位置显示，不会消失。 -->
+  <view class="map-hint" wx:if="{{outsideCount && !loading}}">
+    <text>有 {{outsideCount}} 只猫的最近打点在校园范围外，已按档案位置显示</text>
+  </view>
+  <view class="map-hint" wx:elif="{{!cats.length && !loading}}">
+    <text wx:if="{{school}}">这块校园里还没有猫点位，成员可在猫档案里填写常驻位置</text>
     <text wx:else>还没有绑定学校，地图展示全部点位</text>
   </view>
 
@@ -194,7 +199,8 @@
             <text class="small muted">{{item.timeText}}</text>
             <view class="tag {{item.feedTag}} small">{{item.feedLabel}}</view>
           </view>
-          <view class="small muted" wx:if="{{item.note}}">{{item.note}}</view>
+          <!-- 结构化标签（合规改造：替代原自由文本 note） -->
+          <view class="small muted" wx:if="{{item.tagText}}">{{item.tagText}}</view>
           <image class="rec-photo" wx:if="{{item.photo}}" src="{{item.photo}}" mode="aspectFill" />
         </view>
         <view class="more-link" bindtap="goDetailFromPopup">查看完整档案与全部记录 ›</view>

@@ -23,6 +23,7 @@ else:
 
 put = _backend.put
 get = _backend.get
+delete = _backend.delete
 ids = _backend.ids
 load = _backend.load
 count = _backend.count

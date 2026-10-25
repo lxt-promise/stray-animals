@@ -49,6 +49,15 @@ Page(Object.assign({
     confirmedId: '',        // 已人工确认的猫
     confirming: false,
     error: '',
+    // 识别计费（规则：首次免费 → 20 猫粮/次，每天最多 10 次）。
+    // 必须在**选素材之前**就让用户看到要花多少 —— 选完图才发现付不起，
+    // 白等一次上传，且「点了没反应」的体感极差。
+    wallet: {
+      food: 0, cost: 20, free: true, waived: false, left: 10, limit: 10,
+      // 默认中性文案：pointsSummary 失败时不能写成「首次识别免费」——
+      // 那会给出一个未经核实的结论，用户按它去识别却可能被扣费。
+      hint: '识别 20 猫粮值/次 · 每天 10 次'
+    },
     history: []             // 历史识别记录（最新 5 条）
   },
 
@@ -57,6 +66,69 @@ Page(Object.assign({
     this._workingSince = 0
     if (options.mode === 'video') this.setData({ mode: 'video' })
     this.loadHistory()
+  },
+
+  onShow() {
+    // 每次回到本页都刷新余额：用户可能刚从「我的」页赚了猫粮再回来
+    this.loadWallet()
+  },
+
+  /** 拉识别计费信息：余额 / 本次价格 / 今日剩余次数 */
+  async loadWallet() {
+    try {
+      const s = await app.callApi('pointsSummary', {})
+      const rec = s.recognize || {}
+      const free = !!rec.free
+      // 超管免消耗由云端下发（前端无从判断超管身份：那要看环境变量里的 openid 白名单）
+      const waived = !!rec.waived
+      const cost = waived ? 0 : (Number(rec.cost) || 20)
+      const left = rec.left == null ? 10 : Number(rec.left)
+      const food = Number(s.food) || 0
+      // 文案在这里拼好：WXML 的 mustache 不做字符串拼接
+      const hint = waived
+        ? '超级管理员免消耗 · 不限次数'
+        : (free
+          ? '首次识别免费'
+          : '本次消耗 ' + cost + ' 猫粮值 · 今日还剩 ' + left + ' 次')
+      this.setData({ wallet: { food, cost, free, waived, left, limit: Number(rec.limit) || 10, hint } })
+    } catch (e) {
+      // 读失败保持默认值（free:true）——真到扣费那一步云端还会再校验，
+      // 这里不该因为「余额查询失败」就拦住用户
+      console.warn('[recognize] 计费信息读取失败', e && e.message)
+    }
+  },
+
+  /**
+   * 识别前的前置校验。
+   *
+   * 只用本地已有信息做一次「明显付不起」的拦截，**不代替云端校验**：
+   * 并发下单靠云端事务保证，这里只是省掉「传完图才报错」的坏体验。
+   *
+   * 超管直接放行：云端既不扣猫粮也不计次，本地再拦一次只会让验收卡死。
+   */
+  ensureBillable() {
+    const w = this.data.wallet || {}
+    if (w.waived) return true
+    if (Number(w.left) <= 0) {
+      wx.showModal({
+        title: '今日次数已用完',
+        content: '每天最多识别 ' + (w.limit || 10) + ' 次，明天再来～',
+        showCancel: false
+      })
+      return false
+    }
+    if (!w.free && Number(w.food) < Number(w.cost)) {
+      wx.showModal({
+        title: '猫粮值不足',
+        content: '本次识别需要 ' + w.cost + ' 猫粮值，当前 ' + w.food + '。\n做打卡、建档案都能赚猫粮值。',
+        confirmText: '去赚猫粮',
+        success: r => {
+          if (r.confirm) wx.switchTab({ url: '/pages/mine/mine' })
+        }
+      })
+      return false
+    }
+    return true
   },
 
   /* ==================== 历史识别记录 ====================
@@ -97,10 +169,44 @@ Page(Object.assign({
    * hydrateCats 会额外产出 avatarId（原始 fileID）——
    * 渲染用 avatar（https 缩略），兜底重换链用 avatarId。
    */
+  /**
+   * 预计算展示字段。
+   *
+   * WXML 的 mustache 是**编译期白名单**，`map / join / indexOf` 会被静默忽略、
+   * 整段退化成 false（"点击有回调但界面没反应"的经典病根）。所以属性摘要
+   * 必须在 JS 里拼好，模板只做取值。
+   *
+   * 为什么单独摘出属性：毛色/花纹/品种是用户唯一能自己校验的信息 ——
+   * 身份没认出来时，它是这次识别**唯一有价值的产出**，必须显眼地给出来。
+   */
+  decorate(result) {
+    const f = (result && result.features) || {}
+    const tags = Array.isArray(f.tags) ? f.tags : []
+    const ATTR_KEYS = { '品种': 1, '毛色': 1, '花纹': 1 }
+    const vals = []
+    tags.forEach(t => {
+      if (t && ATTR_KEYS[t.k] && t.v) vals.push(String(t.v))
+    })
+    const attrText = vals.join(' · ')
+    const hasAttr = !!attrText
+    // 摘要把「品种」放第一位（服务端保证顺序），它是最像"结论"的那个词
+    const head = hasAttr ? attrText.split(' · ')[0] : ''
+    return {
+      attrText,
+      hasAttr,
+      // 判不出属性时给一句人话原因。服务端 meta.attrReason 里带着具体数字
+      //（"画面里猫体区域不足 12%"），比笼统的"识别失败"有用得多。
+      attrHint: hasAttr ? ''
+        : (result.attrReason || '这次没能判断出毛色和花纹，换一张更清楚的正面照再试。'),
+      // 没认出是哪只、但看出了花色 → 标题直接说花色，比「档案库里没有它」信息量高
+      guessTitle: hasAttr ? ('看起来是「' + head + '」') : '档案库里没有它'
+    }
+  },
+
   withPhotoUrls(result) {
     if (!result || !Array.isArray(result.candidates)) return result
     const apply = cands => this.setData({ 'result.candidates': cands })
-    return Object.assign({}, result, {
+    return Object.assign({}, result, this.decorate(result), {
       candidates: photo.hydrateCats(result.candidates, { px: 200 }, apply)
     })
   },
@@ -210,6 +316,8 @@ Page(Object.assign({
       console.warn('[recognize] 识别状态疑似僵死，自动复位后重新选择')
       this.reset()
     }
+    // 计费前置校验：放在选素材**之前**。选完才发现付不起，等于白等一次上传。
+    if (!this.ensureBillable()) return
     const mode = this.data.mode
     let f = null
     try {
@@ -372,7 +480,15 @@ Page(Object.assign({
     if (this.data.stage === 'working') return
     // 记下开始时刻，供 choose 的僵死判定（见 WORKING_STALE_MS）
     this._workingSince = Date.now()
-    this.setData({ stage: 'working', progress: 8, stageText: '准备中…' })
+    // 视频要下载 + 抽帧 + 逐帧推理（服务端约 3.5s，是图片的 3 倍），
+    // 且几乎必然走「同步超时 → 轮询接手」这条路。先把预期说清楚，
+    // 否则用户看到进度条停在 92% 不动，只会以为卡死了。
+    const isVideo = this.data.mode === 'video'
+    this.setData({
+      stage: 'working',
+      progress: 8,
+      stageText: isVideo ? '视频处理中，约需 10~20 秒…' : '准备中…'
+    })
 
     // 阶段动画（与真实请求并行，接口先返回则直接跳出）。
     // 走 setProgress 保持单调；且最高只到 STAGE_CEIL(92)，绝不自己爬到 100 ——
@@ -448,6 +564,9 @@ Page(Object.assign({
       if (!result) throw new Error('识别未返回结果，请重试')
 
       clearInterval(timer)
+      // 扣费在云端已发生（首次免费也记了一笔流水），立刻刷新余额与剩余次数。
+      // 不 await：余额显示晚一拍不影响出结果，阻塞反而让"结果出现"更慢。
+      this.loadWallet()
       // 成功即入历史（最新 5 条），供之后在首页回看
       this.saveHistory(result, started.taskId)
       // 真正的终态才把进度点到 100（走 setProgress 保证与前面的单调序列衔接）
@@ -510,7 +629,7 @@ Page(Object.assign({
         if (transient >= 8 && !slow) {
           console.warn('[recognize] 连续多次未返回，转为慢速轮询等待后台完成')
         }
-        await sleep(slow ? 3000 : 2000)
+        await sleep(this.pollGap(n))
         continue
       }
       transient = 0
@@ -522,17 +641,37 @@ Page(Object.assign({
       // 反过来若轮询值更高（如 95），就顺滑地接着涨。100 只由「真出结果」那一下点亮。
       const polled = 40 + (Number(r.progress) || 0) * 0.55
       this.setProgress(Math.min(95, polled), this.pollStageText(r.progress))
-      await sleep(slow ? 3000 : 2000)
+      await sleep(this.pollGap(n))
     }
     throw new Error((lastErr && (lastErr.message || '识别超时')) || '识别超时，请稍后重试')
   },
 
-  /** 轮询阶段文案：把云端 progress 映射成用户能看懂的一句话 */
+  /**
+   * 轮询间隔。
+   *
+   * 前三轮用 1.2s 而不是 2s：实测一条识别通常在前两三轮询里就出结果，
+   * 固定 2s 等于给每次识别白加 2.4 秒。慢段（20 轮之后）保持 3s，
+   * 那是长尾，降频省调用、也让后台从容算完。
+   */
+  pollGap(n) {
+    if (n >= 20) return 3000
+    return n < 3 ? 1200 : 2000
+  },
+
+  /**
+   * 轮询阶段文案：把云端 progress 映射成用户能看懂的一句话。
+   *
+   * 视频要额外说明「慢是正常的」：它走的一定是轮询路径（服务端 3.5s，
+   * 超过云函数单次窗口），进度条会在 92% 附近停十几秒。文案里不给预期，
+   * 用户只能盯着不动的进度条怀疑是不是卡死了。
+   */
   pollStageText(p) {
     const v = Number(p) || 0
-    if (v < 30) return '正在做安全检测…'
-    if (v < 55) return '正在准备比对素材…'
-    if (v < 100) return '正在提取特征并比对…'
+    const slow = this.data.mode === 'video'
+    const tail = slow ? '（视频约需 10~20 秒）' : ''
+    if (v < 30) return '正在做安全检测…' + tail
+    if (v < 55) return '正在准备比对素材…' + tail
+    if (v < 100) return slow ? '正在逐帧提取特征并比对…' + tail : '正在提取特征并比对…'
     return '即将完成…'
   },
 
@@ -542,7 +681,9 @@ Page(Object.assign({
     wx.navigateTo({ url: '/pages/cat-detail/cat-detail?id=' + id })
   },
 
-  // 人工确认：把本次特征写进该猫档案，系统越用越准
+  // 人工确认：记一条标注样本（ai_samples）+ 解锁图鉴。
+  // ⚠️ 这里**不写特征库**，也别在界面/注释里暗示「确认会让系统变准」——
+  // 特征库只从档案照建（见云端 vision.confirm 的注释）。
   async confirmTop(e) {
     const catId = e.currentTarget.dataset.id
     if (!catId || !this.data.taskId || this.data.confirming) return

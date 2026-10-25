@@ -24,6 +24,10 @@ const COL = {
   task: 'tasks',
   fund: 'funds',
   apply: 'applies',
+  // 新建学校申请（用户提交 → 超管审核）。刻意与 applies 分开：
+  // 入社申请的审核动作是「改角色」，建校申请的审核动作是「建 school 文档 + 绑定申请人」，
+  // 混在一张表里 handleApply 必然要按 type 分叉，且入社申请的 pending 去重会把建校申请误挡。
+  schoolApply: 'school_applies',
   point: 'points',      // 猫粮流水（记录表，与 users 分离）
   aiTask: 'ai_tasks',   // AI 识别异步任务（难点 1：短视频异步化）
   aiSample: 'ai_samples', // 用户确认的识别样本（人机协同闭环，为后续训练攒数据）
@@ -120,7 +124,7 @@ function coll(name) {
 /**
  * 一次性把所有集合都建齐（部署后调一次即可；也可由 ensureAllCollections 幂等重跑）。
  *
- * 必须**并发**建，不能 for-await 串行 —— 14 个集合 × 每次约 400ms 的服务端往返
+ * 必须**并发**建，不能 for-await 串行 —— 十几个集合 × 每次约 400ms 的服务端往返
  * ≈ 5.6s，串行同样会顶穿调用预算。并发后总耗时约等于单次。
  */
 async function ensureAllCollections() {
@@ -262,8 +266,11 @@ function needBlur(cat) {
  */
 function sanitizeCat(cat, user) {
   if (!cat) return cat
-  if (isMember(user)) return cat
+  // saveToken 是「保存档案」的幂等标记（客户端超时重发时防止重复建档），
+  // 纯服务端内部字段，不下发给任何客户端。
   const out = Object.assign({}, cat)
+  delete out.saveToken
+  if (isMember(user)) return out
   if (out.location) {
     out.location = needBlur(cat) ? blurLocation(out.location) : Object.assign({}, out.location)
   }
@@ -282,20 +289,29 @@ function sanitizeCat(cat, user) {
  *   属社交-笔记范畴，个人主体未开放。
  *
  *   现在对外（非社团成员）只暴露**结构化的猫况聚合信息**：
- *     保留：catId / health / feedStatus / behaviors / count / createdAt（及模糊后的 location）
- *     移除：note（用户文字）、photos（用户图片）、reporter / reporterName（身份）
- *   成员（社团管理者）仍可见全字段 —— 他们需要原文与图片来核实存档。
+ *     保留：catId / health / feedStatus / behaviors / features / count / createdAt（及模糊后的 location）
+ *     移除：photos（用户图片）、reporter / reporterName（身份）
  *
- *   这样即使用户传了照片、填了补充，对公众也只是一条"某时某地某猫状态正常"的**登记记录**，
- *   不构成内容发布/传播。前端展示层同样不应渲染这些字段（见 sighting 列表页）。
+ *   第二次加严（可见性）：**非公开记录不对任何人下发**（除了本人与成员）。
+ *     记录落库带 visibility（private/public），默认 private。
+ *     虽然调用方（listSightings / homeInit）已按可见性过滤查询，
+ *     但这里再兜一道 —— 任何直接调用 sanitizeSighting 的路径都不会漏出私有记录。
+ *
+ *   成员（社团管理者）仍可见全字段 —— 他们需要原文与图片来核实存档。
+ *   本人的记录对本人可见全字段（复用 isMember 判断之前的 reporter 比对）。
  */
 function sanitizeSighting(s, user) {
   if (!s) return s
   if (isMember(user)) return s
+  // 本人可见自己的记录（含私有）——「我的打卡」列表要能看全
+  const mine = !!(user && s.reporter && user.openid && s.reporter === user.openid)
+  if (mine) return s
+  // 非公开记录：对外彻底不可见。返回 null，由调用方过滤掉。
+  // 老数据无 visibility 字段（改造前写入）→ 视为 private。
+  if (s.visibility !== 'public') return null
   const out = Object.assign({}, s)
   if (out.location) out.location = blurLocation(out.location)
   // 用户生成内容一律不下发（合规红线）
-  delete out.note
   delete out.photos
   delete out.reporter
   delete out.reporterName

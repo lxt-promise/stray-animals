@@ -247,6 +247,38 @@ def put(cat_id: str, school_id: str, emb: np.ndarray, source: str = "recognize")
         _cache[cat_id] = (school_id or "", vec)
 
 
+def delete(cat_id: str) -> bool:
+    """删掉一只猫的向量。删除猫档案时必须调用它。
+
+    否则：特征库按 `cat_id` 存对象，删档案不删文件 → 向量成**幽灵残留**。
+    检索时它仍会被返回，只能靠云函数 `shapeCandidates` 按 byId 过滤；
+    管理页「特征库已有 N 条向量」也会比对档案数多出几条，管理员对不上账
+    （2026-10-25 现场：6 个档案 7 条向量）。
+
+    失败**不影响删档**：返回 False 只记日志，清理靠后台「全部重建」兜底。
+    """
+    key = _safe_key(cat_id)
+    if key is None:
+        return False
+    _ensure_loaded()
+    with _lock:
+        hit = _cache.get(cat_id)
+    if hit is None:
+        # 缓存未命中不等于不存在（冷启动可能漏加载、或别的进程刚写入），
+        # 回源确认一次：删除是幂等操作，多问一次没有副作用，
+        # 但「本来就没入库」必须如实回 False，否则调用方以为清理成功。
+        if _fetch(key) is None:
+            return False
+    try:
+        _delete_keys([key])
+    except Exception as e:  # noqa: BLE001
+        log.warning("特征库删除失败 cat=%s: %s", cat_id, e)
+        return False
+    with _lock:
+        _cache.pop(cat_id, None)
+    return True
+
+
 def get(cat_id: str) -> Optional[np.ndarray]:
     """取一只猫的向量；没有返回 None。
 

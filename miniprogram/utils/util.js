@@ -103,6 +103,36 @@ function toast(title, icon) {
   wx.showToast({ title: String(title).slice(0, 20), icon: icon || 'none', duration: 1800 })
 }
 
+/**
+ * 报错专用提示：短的说 toast，长的弹窗。
+ *
+ * `toast` 会 `slice(0, 20)` —— 数据库错误 `document.update:fail -502001 database request fail`
+ * 被截成正好 20 个字符的 `document.update:fail`，真正的原因整段丢失，
+ * 用户和开发者都看不出为什么失败。错误信息一律走这里，别再被截断。
+ */
+function toastErr(e, fallback) {
+  const raw = (e && (e.message || e.errMsg)) || fallback || '操作失败'
+  const msg = String(raw)
+  if (msg.length > 12) {
+    wx.showModal({ title: '操作失败', content: msg.slice(0, 300), showCancel: false })
+    return
+  }
+  wx.showToast({ title: msg, icon: 'none', duration: 1800 })
+}
+
+/**
+ * 是否是「云函数调用超时」（-504003 Invoking task timed out）。
+ *
+ * 这类失败和普通业务错误有本质区别：**请求已经送到云端了**，云端此时还在
+ * 继续执行（客户端只是不等了）。所以建档这种写操作超时后，档案很可能已经写进库，
+ * 用户直接重试就会建出重复档案 —— 必须给出不同的提示。
+ */
+function isTimeoutErr(e) {
+  const s = String((e && (e.errMsg || e.message)) || '')
+  return s.indexOf('-504003') >= 0 || s.indexOf('timed out after') >= 0 ||
+    s.indexOf('TIME_LIMIT_EXCEEDED') >= 0
+}
+
 /** 需要社团权限才继续，否则提示并跳转 */
 function requireMember(app) {
   return requireRole(app, 'member')
@@ -238,9 +268,38 @@ function shareBehavior(opt) {
   return behavior
 }
 
+/**
+ * 目击记录的**结构化标签文案**（合规改造：替代原自由文本 note 的展示位）。
+ *
+ * 打卡页已无自由文字；列表要"有信息量"就靠这些枚举标签拼串。
+ * 顺序：健康 → 行为 → 特征 → 数量（有异常的在最前，方便一眼扫到）。
+ * 返回 string[]，调用方自行决定怎么渲染（拼串 / 单个 tag）。
+ */
+function sightTags(s) {
+  if (!s) return []
+  const out = []
+  if (s.health && s.health !== 'unknown') out.push(labelOf(C.HEALTH, s.health))
+  ;(s.behaviors || []).forEach(v => {
+    const hit = C.SIGHT_BEHAVIOR.filter(i => i.value === v)[0]
+    if (hit) out.push(hit.label)
+  })
+  ;(s.features || []).forEach(v => {
+    const hit = C.SIGHT_FEATURE.filter(i => i.value === v)[0]
+    if (hit) out.push(hit.label)
+  })
+  if (Number(s.count) > 1) out.push('共 ' + Number(s.count) + ' 只')
+  return out
+}
+
+/** 目击标签拼成一行短文案（列表副标题用，超长自动截断由 WXSS 处理） */
+function sightTagText(s, sep) {
+  return sightTags(s).join(sep || ' · ')
+}
+
 module.exports = {
   C, labelOf, itemOf, toDate, formatTime, fromNow, shortDate,
-  distance, distanceText, money, rarityOf, initialOf, toast,
+  distance, distanceText, money, rarityOf, initialOf, toast, toastErr, isTimeoutErr,
   requireMember, requireAdmin, requireRole, isAdminPlus,
-  showBusy, hideBusy, shareBehavior
+  showBusy, hideBusy, shareBehavior,
+  sightTags, sightTagText
 }

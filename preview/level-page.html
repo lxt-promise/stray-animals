@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>喵园 · 等级页预览（点等级标签后看到的页面）</title>
+<style>
+:root{
+  --bg:#FFF7ED; --card:#FFFFFF;
+  --text:#431407; --sub:#8C6A55; --weak:#B9A08C;
+  --brand:#F97316; --brand2:#FBBF24; --brand-dark:#C2410C;
+  --grad:linear-gradient(135deg,#FBBF24 0%,#F97316 100%);
+  --line:rgba(146,88,32,.1);
+  --shadow:0 10px 30px rgba(146,88,32,.1);
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased}
+body{
+  min-height:100vh;background:#FDF6EC;color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;
+  display:flex;align-items:flex-start;justify-content:center;gap:48px;padding:36px;flex-wrap:wrap;
+  background-image:radial-gradient(1000px 600px at 12% -10%,rgba(249,115,22,.10),transparent 60%),
+                   radial-gradient(900px 600px at 105% 10%,rgba(251,191,36,.10),transparent 60%);
+}
+.stage{display:flex;flex-direction:column;align-items:center;gap:14px}
+.stage-title{font-size:13px;color:var(--sub);letter-spacing:.4px}
+.phone{
+  width:390px;height:800px;background:var(--bg);border-radius:44px;position:relative;
+  box-shadow:0 24px 60px rgba(76,42,12,.18),0 0 0 10px #1b1310,0 0 0 12px #2a1c15;
+  overflow:hidden;display:flex;flex-direction:column;
+}
+.nav{
+  height:88px;display:flex;align-items:flex-end;justify-content:center;position:relative;
+  padding-bottom:14px;font-size:17px;font-weight:600;flex-shrink:0;
+}
+.nav .back{position:absolute;left:18px;bottom:12px;font-size:26px;color:var(--text);opacity:.75}
+.nav .caps{position:absolute;right:18px;bottom:16px;font-size:12px;color:var(--brand-dark)}
+.page{padding:8px 16px 24px;overflow:auto;flex:1}
+
+/* ===== 等级卡（对应 .lv-hero） ===== */
+.lv-hero{
+  position:relative;overflow:hidden;padding:16px 16px 20px;border-radius:20px;
+  background:linear-gradient(160deg,#FFF7ED 0%,#FFEDD5 58%,#FDE68A 100%);
+  border:1px solid rgba(249,115,22,.1);box-shadow:var(--shadow);
+}
+.lv-blob{position:absolute;border-radius:50%}
+.lv-blob.a{width:180px;height:180px;right:-62px;top:-74px;
+  background:radial-gradient(circle,rgba(251,191,36,.55),rgba(251,191,36,0) 70%)}
+.lv-blob.b{width:160px;height:160px;left:-58px;bottom:-80px;
+  background:radial-gradient(circle,rgba(249,115,22,.3),rgba(249,115,22,0) 70%)}
+.lv-top{position:relative;display:flex;align-items:center;justify-content:space-between}
+.lv-user{display:flex;align-items:center;min-width:0}
+.lv-avatar{width:40px;height:40px;border-radius:50%;background:#fff;border:2px solid #fff;
+  display:flex;align-items:center;justify-content:center;font-size:20px;box-shadow:0 2px 8px rgba(146,88,32,.12)}
+.lv-nick{margin-left:9px;font-size:15px;font-weight:600;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lv-rules-link{font-size:12px;color:var(--brand-dark);flex-shrink:0}
+.lv-badge{position:relative;display:inline-block;margin-top:16px;padding:6px 16px;border-radius:10px;
+  background:var(--grad);color:#fff;font-size:21px;font-weight:800;letter-spacing:.5px;
+  box-shadow:0 8px 18px rgba(249,115,22,.32)}
+.lv-cap{position:relative;margin-top:9px;font-size:12px;color:#A16207}
+.lv-value-row{position:relative;display:flex;align-items:baseline;margin-top:16px}
+.lv-value{font-size:40px;font-weight:800;line-height:1;color:var(--brand-dark)}
+.lv-value-lbl{margin-left:7px;font-size:13px;color:#A16207}
+.lv-track{position:relative;margin-top:12px;height:6px;border-radius:999px;background:rgba(194,65,12,.14);overflow:hidden}
+.lv-track-bar{height:100%;border-radius:999px;background:var(--grad)}
+.lv-next{position:relative;margin-top:7px;font-size:12px;color:#A16207}
+.lv-ladder{position:relative;display:flex;margin-top:22px}
+.lv-step{flex:1;display:flex;flex-direction:column;align-items:center}
+.lv-dot{width:7px;height:7px;border-radius:50%;background:rgba(194,65,12,.2)}
+.lv-step.done .lv-dot{background:rgba(249,115,22,.7)}
+.lv-step.on .lv-dot{width:13px;height:13px;margin-top:-3px;background:var(--brand-dark);
+  box-shadow:0 0 0 4px rgba(249,115,22,.16)}
+.lv-step-lbl{margin-top:5px;font-size:10px;color:var(--weak)}
+.lv-step.done .lv-step-lbl{color:var(--brand-dark);opacity:.75}
+.lv-step.on .lv-step-lbl{color:var(--brand-dark);font-weight:700;opacity:1}
+
+/* ===== 卡片 / 规则 ===== */
+.card{margin-top:12px;background:var(--card);border-radius:16px;padding:16px;box-shadow:var(--shadow);border:1px solid var(--line)}
+.card-title{font-size:15px;font-weight:700;margin-bottom:10px}
+.rule-block+.rule-block{margin-top:12px}
+.rule-title{font-size:13.5px;font-weight:700}
+.rule-line{font-size:12px;color:var(--sub);line-height:1.7;margin-top:4px}
+.tip{padding:12px 4px 4px;font-size:11.5px;color:var(--sub);line-height:1.7}
+
+/* 对比：旧版渲染的 undefined */
+.bad .lv-hero{background:#fff}
+.bad .row{display:flex;justify-content:space-between;font-size:12px;color:var(--sub)}
+.bad .title{font-size:15px;font-weight:700;color:var(--brand-dark);margin-bottom:8px}
+.bad .bar{height:6px;border-radius:999px;background:rgba(194,65,12,.14);margin:8px 0}
+.bad .bar i{display:block;height:100%;width:0;border-radius:999px;background:var(--grad)}
+.bad .und{color:#B42318;font-weight:700}
+.note{max-width:390px;font-size:12px;color:var(--sub);line-height:1.8}
+.note b{color:var(--text)}
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <div class="stage-title">升级后 · 点等级标签进入（Lv.3 进行中）</div>
+  <div class="phone">
+    <div class="nav"><span class="back">‹</span>等级与积分<span class="caps">—</span></div>
+    <div class="page">
+      <div class="lv-hero">
+        <div class="lv-blob a"></div><div class="lv-blob b"></div>
+        <div class="lv-top">
+          <div class="lv-user">
+            <div class="lv-avatar">🐱</div>
+            <div class="lv-nick">小明同学</div>
+          </div>
+          <div class="lv-rules-link">规则说明 ›</div>
+        </div>
+        <div class="lv-badge">Lv.3 猫界达人</div>
+        <div class="lv-cap">当前等级 · 只升不降</div>
+        <div class="lv-value-row"><span class="lv-value">620</span><span class="lv-value-lbl">积分值</span></div>
+        <div class="lv-track"><div class="lv-track-bar" style="width:24%"></div></div>
+        <div class="lv-next">再得 380 积分可升级</div>
+        <div class="lv-ladder">
+          <div class="lv-step done"><div class="lv-dot"></div><div class="lv-step-lbl">Lv.1</div></div>
+          <div class="lv-step done"><div class="lv-dot"></div><div class="lv-step-lbl">Lv.2</div></div>
+          <div class="lv-step on"><div class="lv-dot"></div><div class="lv-step-lbl">Lv.3</div></div>
+          <div class="lv-step"><div class="lv-dot"></div><div class="lv-step-lbl">Lv.4</div></div>
+          <div class="lv-step"><div class="lv-dot"></div><div class="lv-step-lbl">Lv.5</div></div>
+          <div class="lv-step"><div class="lv-dot"></div><div class="lv-step-lbl">Lv.6</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">规则说明</div>
+        <div class="rule-block">
+          <div class="rule-title">猫粮值（可增可减，用于消费）</div>
+          <div class="rule-line">新手礼包 +50（一次性）· 每日打卡 +5 · 建立档案 +15（含照片 +20）· 升级奖励 +50（每级）。每日上限 50，礼包与升级奖励不计入。</div>
+          <div class="rule-line">识别服务消耗 20 猫粮值/次，首次免费，每天最多 10 次。</div>
+        </div>
+        <div class="rule-block">
+          <div class="rule-title">积分值（只增不减，用于升级）</div>
+          <div class="rule-line">每日打卡 +5 · 投喂干粮 +2 / 零食 +3 / 罐头 +4 / 自制 +5 · 图鉴点亮新品种 +10。每日上限 150。</div>
+        </div>
+      </div>
+
+      <div class="tip">每日打卡 +5 · 投喂 +2~+5（按食物类型）· 图鉴点亮新品种 +10。每日上限 150。<br>积分只涨不降，决定等级称号；花猫粮不影响积分和等级。</div>
+    </div>
+  </div>
+</div>
+
+<div class="stage">
+  <div class="stage-title">满级状态（Lv.6 传奇喵侠）</div>
+  <div class="phone">
+    <div class="nav"><span class="back">‹</span>等级与积分<span class="caps">—</span></div>
+    <div class="page">
+      <div class="lv-hero">
+        <div class="lv-blob a"></div><div class="lv-blob b"></div>
+        <div class="lv-top">
+          <div class="lv-user">
+            <div class="lv-avatar">🐱</div>
+            <div class="lv-nick">超级管理员</div>
+          </div>
+          <div class="lv-rules-link">规则说明 ›</div>
+        </div>
+        <div class="lv-badge">Lv.6 传奇喵侠</div>
+        <div class="lv-cap">当前等级 · 只升不降</div>
+        <div class="lv-value-row"><span class="lv-value">5000</span><span class="lv-value-lbl">积分值</span></div>
+        <div class="lv-track"><div class="lv-track-bar" style="width:100%"></div></div>
+        <div class="lv-next">已达最高等级</div>
+        <div class="lv-ladder">
+          <div class="lv-step done"><div class="lv-dot"></div><div class="lv-step-lbl">Lv.1</div></div>
+          <div class="lv-step done"><div class="lv-dot"></div><div class="lv-step-lbl">Lv.2</div></div>
+          <div class="lv-step done"><div class="lv-dot"></div><div class="lv-step-lbl">Lv.3</div></div>
+          <div class="lv-step done"><div class="lv-dot"></div><div class="lv-step-lbl">Lv.4</div></div>
+          <div class="lv-step done"><div class="lv-dot"></div><div class="lv-step-lbl">Lv.5</div></div>
+          <div class="lv-step on"><div class="lv-dot"></div><div class="lv-step-lbl">Lv.6</div></div>
+        </div>
+      </div>
+      <div class="tip">积分只涨不降，决定等级称号；花猫粮不影响积分和等级。<br>已满级：再攒积分也不会改变称号，升级奖励不再发放。</div>
+    </div>
+  </div>
+</div>
+
+<div class="stage">
+  <div class="stage-title">修复前（你截图里的样子）</div>
+  <div class="phone bad">
+    <div class="nav"><span class="back">‹</span>我的<span class="caps">—</span></div>
+    <div class="page">
+      <div class="card">
+        <div class="row"><span class="title">Lv.1 · 猫语新手</span><span>0 / <span class="und">undefined</span> 分</span></div>
+        <div class="bar"><i></i></div>
+        <div class="row"><span>距 Lv.<span class="und">undefined</span> <span class="und">undefined</span> 还差 <span class="und">undefined</span> 分</span><span>今日 +0/150</span></div>
+      </div>
+      <div class="tip">原因：页面直接拼云端下发的 nextLv / nextName / toNext，云端少给一个字段就渲染成 undefined。<br>现在这些数字改由前端 utils/level.js 按积分本地计算，云端只提供 points / peakPoints。</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

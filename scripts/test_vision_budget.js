@@ -157,7 +157,16 @@ Module._load = function (request, parent, isMain) {
         async assertSightingSafe() {}
       }
     }
-    if (request === './points') return { async grant() { return { gained: 0 } } }
+    // 账本 stub：本测试只验证「预算与续跑」，不验证计费。
+    // vision.start() 现在会扣识别费，stub 缺 chargeRecognize 会 TypeError，
+    // 被 catch 后去删任务 → mock 没 remove → 每个场景假失败。
+    if (request === './points') {
+      return {
+        async grantPoint() { return { gained: 0 } },
+        async grantFood() { return { gained: 0 } },
+        async chargeRecognize() { return { cost: 0, free: true, balance: 0, used: 1, left: 9, limit: 10 } }
+      }
+    }
   }
   return origLoad.apply(this, arguments)
 }
@@ -248,6 +257,11 @@ async function run() {
       'C step 必须停在可续跑的位置，实际 ' + JSON.stringify(task.step))
 
     // 轮询接手（给足预算）应能从断点跑到 done
+    // ⚠️ 先把 AI 恢复成「快服务」：C 要验的是**断点续跑**（step 停在哪、能否接上），
+    //    不是「AI 永久超时后怎么办」。沿用 4000ms 的话每轮轮询都会超时，
+    //    最终只能降级本地引擎 —— 而本地降级现在**刻意不给候选**（假候选比空更糟，
+    //    见 vision.localFeatures 注释），断言就会误红。
+    aiBehavior.delay = 300
     let done = null
     for (let i = 0; i < 60; i++) {
       const t2 = Date.now()

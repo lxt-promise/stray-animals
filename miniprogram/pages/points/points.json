@@ -1,4 +1,6 @@
 {
   "navigationBarTitleText": "猫粮明细",
+  "enablePullDownRefresh": true,
+  "backgroundTextStyle": "dark",
   "usingComponents": {}
 }

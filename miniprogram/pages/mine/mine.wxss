@@ -1,26 +1,46 @@
+/* ===== 个人资料卡 =====
+   头像 + 昵称 + 等级/身份 + 所属学校。层级从大到小：昵称 > 标签 > 学校。
+   右上角一团柔光只是氛围装饰（pointer-events 由 view 天然不拦截点击）。 */
 .profile {
   display: flex;
   align-items: center;
+  position: relative;
+  overflow: hidden;
+  padding: 30rpx 28rpx;
+}
+.profile-glow {
+  position: absolute;
+  right: -60rpx;
+  top: -80rpx;
+  width: 260rpx;
+  height: 260rpx;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(251, 191, 36, .38) 0%, rgba(249, 115, 22, .12) 55%, transparent 72%);
+  pointer-events: none;
 }
 .profile .avatar {
-  width: 110rpx;
-  height: 110rpx;
+  width: 118rpx;
+  height: 118rpx;
   border-radius: 50%;
   background: var(--brand-light);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 48rpx;
-  margin-right: 24rpx;
+  font-size: 52rpx;
+  margin-right: 26rpx;
   overflow: hidden;
   flex-shrink: 0;
+  /* 头像描一圈暖色光环，比裸图更"有人样" */
+  box-shadow: 0 0 0 6rpx #fff, 0 8rpx 24rpx rgba(249, 115, 22, .22);
+  position: relative;
+  z-index: 1;
 }
 /* 头像本体是 <button open-type="chooseAvatar">：必须重置微信 button 的
    默认样式（padding / min-height / line-height / ::after 边框），
    否则内容被顶偏、圆形被裁掉 —— 表现就是「头像显示不全」。 */
 .profile .avatar.avatar-btn {
   padding: 0;
-  margin: 0 24rpx 0 0;
+  margin: 0 26rpx 0 0;
   min-height: 0;
   line-height: 1;
   border: none;
@@ -28,58 +48,228 @@
 }
 .profile .avatar.avatar-btn::after { border: none; }
 .profile .avatar image { width: 100%; height: 100%; }
-.p-name { font-size: 34rpx; font-weight: 600; }
-.p-role { margin-top: 10rpx; display: flex; align-items: center; gap: 12rpx; }
+.p-info { flex: 1; min-width: 0; position: relative; z-index: 1; }
 
-/* ===== 我的数据（三格统计卡） =====
-   wxml 用的是 .stat-card/.num/.lbl，此前从未定义过样式，
-   数字贴边、标签错位 —— 这里补齐：等分三格 + 内容居中 + 卡片化。 */
-.stat-grid { margin: 16rpx -8rpx 0; }   /* 覆盖全局的 margin:0 -8rpx，与上方资料卡留出间距 */
+/* 昵称输入框：此前完全没有样式，输入框自带下划线/高度把资料卡撑歪。
+   这里做成「看起来像标题、点上去才是输入框」的无框样式。 */
+.p-name-input {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.35;
+  height: 48rpx;
+  min-height: 0;
+  padding: 0;
+}
+.p-role { margin-top: 12rpx; display: flex; align-items: center; gap: 12rpx; flex-wrap: wrap; }
+/* 所属学校：一枚小圆点 + 校名，弱于标签但比灰字更有归属感 */
+.p-school {
+  display: inline-flex;
+  align-items: center;
+  gap: 10rpx;
+  margin-top: 14rpx;
+  font-size: 24rpx;
+  color: var(--text-sub);
+}
+.p-school-dot {
+  display: block;           /* text 默认 inline，宽高不生效会变成看不见的点 */
+  width: 10rpx;
+  height: 10rpx;
+  border-radius: 50%;
+  background: var(--brand);
+  flex-shrink: 0;
+}
+/* 操作提示：移到资料卡外，作为卡下的一行注释，不再挤在卡里抢注意力 */
+.edit-hint {
+  display: block;
+  margin: 12rpx 8rpx 0;
+  font-size: 22rpx;
+  color: var(--text-weak);
+}
+
+/* ===== 我的数据（三格统计卡）=====
+   横排版式：左侧浅橙圆角方块图标 + 右侧「标签 / 数值」两行；整格可点，标签后小箭头是「可点」暗示。
+   竖排在 33.33% 宽的格里要 96rpx 高才排得下，横排把图标挪到左边，卡矮了近一半。
+   配色：卡底用图标原来的浅橙（#FEF2E7），图标块再压深一档 —— 同色不同层；
+   这里与上面白底的资料卡相邻，浅橙卡刚好把「数据区」和「资料区」区分开。 */
+.stat-grid { margin: 20rpx -8rpx 0; }   /* 与上方资料卡留出间距 */
 .stat-card {
-  background: var(--card, #fff);
-  border: 2rpx solid var(--card-line, rgba(0,0,0,.05));
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  background: #FEF2E7;
+  border: 2rpx solid rgba(249, 115, 22, .18);
   border-radius: var(--radius-sm, 16rpx);
-  padding: 22rpx 8rpx;
+  padding: 20rpx 12rpx;
+  text-align: left;
+  box-shadow: 0 6rpx 16rpx rgba(249, 115, 22, .08);
+}
+.stat-ico {
+  flex: none;
+  width: 56rpx;
+  height: 56rpx;
+  line-height: 56rpx;
+  border-radius: 18rpx;
+  background: rgba(249, 115, 22, .20);
+  border: 2rpx solid rgba(249, 115, 22, .26);
+  font-size: 28rpx;
   text-align: center;
 }
+/* min-width:0 让文本区能在 flex 里被真正压缩，否则长标签会把卡片撑破 */
+.stat-body { flex: 1; min-width: 0; }
 .stat-card .num {
-  font-size: 44rpx;
+  font-size: 38rpx;
   font-weight: 700;
-  line-height: 1.2;
-  color: var(--brand);
+  line-height: 1.15;
+  color: var(--brand-dark);
+}
+/* 图鉴数的分母（「3/4」里的 /4）：小一号、弱一级。
+   同字号会让「3/4」挤满格子，和左右两格的单数字视觉重量不齐。 */
+.stat-card .num-sub {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: var(--text-weak);
+  margin-left: 1rpx;
+}
+/* 无数据态（未绑定学校 / 本校暂无档案）：不摆 0/0，弱化的破折号更诚实 */
+.stat-card .num.dim {
+  color: var(--text-weak);
+  font-weight: 600;
 }
 .stat-card .lbl {
-  font-size: 22rpx;
+  font-size: 21rpx;
   color: var(--text-sub);
-  margin-top: 6rpx;
+  line-height: 1.2;
+  margin-bottom: 4rpx;
+  white-space: nowrap;
 }
-
-.school-item {
-  padding: 20rpx;
-  background: var(--bg);
-  border-radius: 12rpx;
-  margin-bottom: 12rpx;
-  font-size: 28rpx;
+/* 三格统计都可点：标签后的小箭头是唯一的「可点」暗示，没有它就没人会去点。
+   用内联 text 而不是 ::after —— WXSS 的伪元素在小程序里行为不稳定。 */
+.stat-go {
+  font-size: 20rpx;
+  color: var(--text-weak);
+  margin-left: 2rpx;
 }
+.stat-hover { opacity: .62; transform: scale(.97); }
 
-.picker-value {
-  flex: 1;
+/* ===== 等级标签（双货币体系：积分只增不减，用于升级） ===== */
+/* 称号贴在头像旁：比统计卡更显眼，符合「称号显示在头像附近」的规则。
+   它同时是「积分明细」的唯一入口，所以带一个小箭头暗示可点。 */
+.lv-tag { font-weight: 600; display: flex; align-items: center; gap: 4rpx; }
+.lv-arrow { font-size: 24rpx; opacity: .75; line-height: 1; }
+
+/* ===== 规则说明（菜单项展开） ===== */
+.rule-block { padding: 8rpx 0 16rpx; border-bottom: 2rpx solid var(--line); }
+.rule-block:last-child { border-bottom: none; padding-bottom: 0; }
+.rule-title {
   font-size: 28rpx;
+  font-weight: 700;
   color: var(--brand-dark);
-  text-align: right;
+  margin-bottom: 8rpx;
+}
+.rule-line {
+  font-size: 24rpx;
+  color: var(--text-sub);
+  line-height: 1.75;
 }
 
-/* 地图范围：两个动作并排（选择中心点 / 保存范围） */
-.range-actions {
+/* ===== 学校卡 =====
+   三层：学校标识（校徽 + 校名 + 校区/城市小标签） → 简介 → 换校条。
+   这里只承担「我是哪所学校的」，地图中心/范围属于后台配置，已不在个人页出现。 */
+.school-hero {
   display: flex;
+  align-items: center;
   gap: 20rpx;
-  margin-top: 20rpx;
+  padding: 4rpx 0 6rpx;
 }
-.range-actions .btn {
-  flex: 1;
-  margin: 0;
-  width: auto;
+.school-logo {
+  width: 76rpx;
+  height: 76rpx;
+  border-radius: 22rpx;
+  background: linear-gradient(135deg, rgba(251,191,36,.22) 0%, rgba(249,115,22,.18) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 36rpx;
+  flex-shrink: 0;
 }
+.school-hero-main { flex: 1; min-width: 0; }
+.school-name {
+  font-size: 32rpx;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.school-chips { display: flex; align-items: center; gap: 10rpx; margin-top: 8rpx; flex-wrap: wrap; }
+/* 校区/城市小标签：实心=校区（主信息）、描边=城市（次要信息） */
+.chip {
+  font-size: 21rpx;
+  line-height: 1;
+  padding: 8rpx 14rpx;
+  border-radius: 999rpx;
+  color: var(--text-sub);
+  background: rgba(146, 88, 32, .06);
+  border: 2rpx solid var(--card-line);
+}
+.chip.solid {
+  background: var(--brand-light);
+  border-color: rgba(249, 115, 22, .26);
+  color: var(--brand-dark);
+  font-weight: 600;
+}
+.school-intro {
+  margin-top: 16rpx;
+  padding: 16rpx 20rpx;
+  background: var(--bg);
+  border-radius: 14rpx;
+  font-size: 25rpx;
+  color: var(--text-sub);
+  line-height: 1.7;
+}
+/* 未绑定学校：先给标题再说影响，比一整段灰字好读 */
+.school-empty { padding: 2rpx 0 6rpx; }
+.school-empty-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8rpx;
+}
+.school-empty .small { line-height: 1.7; }
+
+/* 换校条：左侧图标 + 主/副两行，右侧学校数量；虚线边框暗示"可点开选择" */
+.school-pick {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  margin-top: 22rpx;
+  padding: 20rpx 22rpx;
+  background: var(--bg);
+  border: 2rpx dashed rgba(249, 115, 22, .35);
+  border-radius: 18rpx;
+}
+.school-pick-left { display: flex; align-items: center; gap: 16rpx; min-width: 0; }
+.school-pick-ico {
+  display: block;           /* text 当 flex item 时块化，显式写出来避免不同基础库表现不一 */
+  width: 52rpx;
+  height: 52rpx;
+  line-height: 48rpx;
+  text-align: center;
+  border-radius: 50%;
+  background: #fff;
+  color: var(--brand);
+  font-size: 26rpx;
+  flex-shrink: 0;
+}
+.school-pick-txt { flex: 1; min-width: 0; }
+.school-pick-main { font-size: 29rpx; font-weight: 600; color: var(--brand-dark); line-height: 1.3; }
+.school-pick-sub { font-size: 21rpx; color: var(--text-weak); margin-top: 4rpx; }
+.school-pick-side { font-size: 23rpx; color: var(--text-weak); flex-shrink: 0; }
+/* 「校园管理 ›」是标题行里唯一可点的文字，热区太小会点不到 */
+.school-card .card-title .more { padding: 10rpx 0 10rpx 24rpx; }
 
 .my-item {
   padding: 18rpx 0;
@@ -103,11 +293,25 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 20rpx;
   padding: 24rpx 0;
   border-bottom: 2rpx solid var(--line);
   font-size: 30rpx;
 }
 .menu-item:last-child { border-bottom: none; }
+/* 菜单图标：统一 56rpx 圆角方块，比裸 emoji 更整齐，也不会让文字基线偏移 */
+.mi-ico {
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 16rpx;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 27rpx;
+  flex-shrink: 0;
+}
+.mi-txt { flex: 1; min-width: 0; font-size: 30rpx; }
 .menu-item .arrow { color: var(--text-weak); font-size: 36rpx; transition: transform .25s; }
 /* 展开态（我的打卡）：箭头旋转 90° 指向下方，并点色提示 */
 .menu-item .arrow.open { transform: rotate(90deg); color: var(--brand); }
@@ -132,12 +336,6 @@
   font-size: 30rpx;
 }
 .contact-hit::after { border: none; }
-
-.tip {
-  padding: 24rpx;
-  line-height: 1.7;
-  text-align: center;
-}
 
 /* ===== 工作台（从底部 tab 迁移至此） ===== */
 .wb-stat-row {
@@ -198,7 +396,29 @@
   white-space: nowrap;
 }
 
-/* ===== 图鉴进度（对齐预览） ===== */
+/* ===== 建校申请（状态条 + 新建入口） ===== */
+/* 「申请新建」入口：视觉上是一条轻量菜单项，不与上面下拉抢注意力 */
+.school-apply-toggle {
+  margin-top: 10rpx;
+  padding: 22rpx 0;
+  font-size: 27rpx;
+  color: var(--brand-dark);
+}
+/* 审核中 / 被驳回的状态条 */
+.apply-state {
+  margin-top: 16rpx;
+  padding: 16rpx 20rpx;
+  background: rgba(249, 115, 22, .08);
+  border-radius: 12rpx;
+  color: var(--brand-dark);
+  line-height: 1.6;
+}
+.apply-state.rejected {
+  background: rgba(180, 35, 24, .07);
+  color: #B42318;
+}
+
+/* ===== 图鉴进度 ===== */
 .progress {
   height: 16rpx;
   background: rgba(146, 88, 32, .08);
@@ -212,28 +432,4 @@
   border-radius: 8rpx;
   transition: width .4s;
 }
-.dex-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16rpx;
-  margin-top: 24rpx;
-}
-.dex-item {
-  width: 110rpx;
-  height: 110rpx;
-  border-radius: 16rpx;
-  background: var(--brand-light);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 40rpx;
-  overflow: hidden;
-  border: 2rpx solid rgba(249, 115, 22, .25);
-}
-.dex-item image { width: 100%; height: 100%; }
-.dex-item.locked {
-  background: rgba(146, 88, 32, .06);
-  border-color: var(--card-line);
-  color: var(--text-weak);
-  opacity: .55;
-}
+

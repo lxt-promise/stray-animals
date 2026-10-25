@@ -19,6 +19,7 @@
 const core = require('./lib/core')
 const sec = require('./lib/security')
 const points = require('./lib/points')
+const level = require('./lib/level')
 const tnr = require('./lib/tnr')
 const vision = require('./lib/vision')
 const maplib = require('./lib/map')
@@ -38,6 +39,11 @@ const {
 const ACTIONS = {
   /* 用户 & 学校 */
   'login':          { role: 'public', handler: login },
+  // 预热：不做任何业务，只为了让云函数实例提前起来。
+  // 背景（2026-10-24）：第一次点「保存档案」必报 -504003、点第二遍才成功 ——
+  // 典型的冷启动（1~1.5s）叠加业务耗时顶破客户端 3s 预算。
+  // 进入建档 / 打卡等重页面时先 ping 一下，把冷启动挪到用户填表的那几十秒里。
+  'ping':           { role: 'public', handler: () => ({ pong: true, at: Date.now() }) },
   'updateProfile':  { role: 'user',   handler: updateProfile },
   // 启动聚合：一次调用拿齐 user + school + 首页概览。
   // 原来是 login → getSchool → getOverview 三次**串行**云调用，冷启动首页统计要等三轮。
@@ -49,12 +55,26 @@ const ACTIONS = {
   'listSchools':    { role: 'public', handler: listSchools },
   'getSchool':      { role: 'public', handler: getSchool },
   'bindSchool':     { role: 'user',   handler: bindSchool },
+  // 选校 / 新建学校申请：已有学校直接绑定，没有的落一条待审申请（超管审核后建校并绑定）
+  'applySchool':    { role: 'user',   handler: applySchool },
+  'mySchoolApply':  { role: 'user',   handler: mySchoolApply },
+  'listSchoolApplies':  { role: 'admin', handler: listSchoolApplies },
+  'handleSchoolApply':  { role: 'admin', handler: handleSchoolApply },
+  // 校园管理（超管）：列表带档案数/成员数，便于判断哪所校区是空壳、哪所可以直接改
+  'listSchoolsAdmin':   { role: 'admin', handler: listSchoolsAdmin },
+  // 重复档案检测（超管）：同校同名的疑似重复建档，用于清理「超时重试」造成的历史脏数据
+  'findDuplicateCats':  { role: 'admin', handler: findDuplicateCats },
+
+  /* 图鉴收集（按本校统计） */
+  'listDex':        { role: 'user',   handler: listDex },
 
   /* 概览 */
   'getOverview':    { role: 'public', handler: getOverview },
 
   /* 猫档案：建档 / 改档属「管理员以上」权限（社团成员只能打卡、认领，不能改档案） */
   'listCats':       { role: 'public', handler: listCats },
+  // 只读诊断：猫谱筛选失效时用它区分「没写花色 / 值域外 / 查询报错 / 真没有」
+  'diagnoseCatFilters': { role: 'admin', handler: diagnoseCatFilters },
   'getCat':         { role: 'public', handler: getCat },
   'saveCat':        { role: 'admin',  handler: saveCat },
   'removeCat':      { role: 'admin',  handler: removeCat },
@@ -69,12 +89,27 @@ const ACTIONS = {
   'autoIndexCat':       { role: 'admin',  handler: (u, e) => vision.buildIndexAuto(u, e) },
   // 全量建库（所有校区）。role=admin：跨校区动作，且会跑满云函数预算，权限收紧。
   'buildAiIndexAll':    { role: 'admin',  handler: (u, e) => vision.buildIndexAll(e || {}) },
+  // 特征库体检：档案总数 / 已录入 / 未录入清单（查识别服务的真实 id 列表，不信 aiIndexAt 记账）
+  'indexStatus':        { role: 'admin',  handler: (u, e) => vision.indexStatus(u, e) },
+  // 手动录入单只：force 重算 + 8s 超时（用户点「录入」就是要确保它进库）
+  'indexOneCat':        { role: 'admin',  handler: (u, e) => vision.indexOneCat(u, e) },
+  // 识别引擎体检（检测模型是否生效 / 花色链路 / 特征库只数）。
+  // 与 indexStatus 分开：失败互不连累，且 indexStatus 要扫 500 条档案，不该被它拖慢。
+  'engineHealth':       { role: 'admin',  handler: (u, e) => vision.engineHealth(u, e) },
+  // 确认样本库：用户「识别 → 点确认」留下的样本。后台查看 / 排除 / 改判归属 / 手动并入特征库。
+  // 建库只在后台手动触发 —— 自动并入会把「认错猫的确认」灌进特征库，必须有人把关。
+  'listSamples':            { role: 'admin', handler: (u, e) => vision.listSamples(u, e) },
+  'updateSample':           { role: 'admin', handler: (u, e) => vision.updateSample(u, e) },
+  'deleteSample':           { role: 'admin', handler: (u, e) => vision.deleteSample(u, e) },
+  'buildIndexFromSamples':  { role: 'admin', handler: (u, e) => vision.buildIndexFromSamples(u, e) },
 
   /* 目击打卡 */
   'addSighting':    { role: 'user',   handler: addSighting },
   'listSightings':  { role: 'public', handler: listSightings },
   'updateSighting': { role: 'user',   handler: updateSighting },
   'deleteSighting': { role: 'user',   handler: deleteSighting },
+  // 打卡可见性策略（仅超级管理员可改；默认 false = 全部仅内部可见）
+  'setSightingVisibilityPolicy': { role: 'admin', handler: setSightingVisibilityPolicy },
 
   /* TNR */
   'listTnr':        { role: 'member', handler: listTnr },
@@ -99,10 +134,14 @@ const ACTIONS = {
 
   /* 地图 & 积分 */
   'listMapPoints':  { role: 'public', handler: (u, e) => maplib.mapPoints(u, e) },
+  // 排查「某只猫为什么没上图」：逐只给出点位来源与缺失原因（仅超管）
+  'diagnoseMapPoints': { role: 'admin', handler: (u, e) => { requireSuper(u); return maplib.diagnoseMapPoints(u, e) } },
   'pointsSummary':  { role: 'user',   handler: (u, e) => points.summary(u) },
   'listPoints':     { role: 'user',   handler: (me, e) => points.history(me.openid, e) },
   // 一次性迁移：把 users.points 的历史余额补记进 points 流水（幂等，可重复调用）
   'backfillPoints': { role: 'admin',  handler: backfillPointsLedger },
+  // 一次性回填：给 schoolId 为空的历史打卡记录补归属（幂等、分片，仅超管）
+  'backfillSightingSchool': { role: 'admin', handler: backfillSightingSchoolId },
   // 一键生成「游客体验数据」：给审核员看到非空页面（幂等，仅超管）
   'seedDemoData':   { role: 'admin',  handler: seedDemoData },
   // 排查用：列出猫档案的原始 avatar/photos 值 + 每个 fileID 的官方换链结果。
@@ -225,11 +264,15 @@ async function runTimer(name, event) {
     //
     // 只挂在定时器白名单里（需要运维在控制台手工触发），不进 ACTIONS ——
     // 全量重算是重活，不该由小程序端一个按钮就发起。
-    aiIndexRebuild: () => vision.buildIndexAll({
-      budgetMs: budget,
-      photosPerCat: Number(event && event.photosPerCat) || 3,
-      force: true
-    })
+    aiIndexRebuild: () => {
+      const o = { budgetMs: budget, force: true }
+      const pc = Number(event && event.photosPerCat)
+      // 不传就用全局视图上限（vision.INDEX_PHOTOS）。
+      // 这里曾经写死 5：于是「定时全量重建」和「后台手动录入」两个入口用了两套张数，
+      // 调阈值时只改常量，定时任务这边纹丝不动 —— 两边口径必须同源。
+      if (pc > 0) o.photosPerCat = pc
+      return vision.buildIndexAll(o)
+    }
   }
 
   const fn = TABLE[name]
@@ -275,6 +318,66 @@ async function getMe(openid) {
 
 /* ==================== 用户 & 学校 ==================== */
 
+/**
+ * 登录后的账户初始化：新手礼包 + 超级管理员礼遇。
+ *
+ * 两步都是「发钱」而不是「读数据」，因此单独抽出来给三条登录路径共用 ——
+ * 否则以后再加权益时必然漏掉某条分支（「从打卡记录重建档案」那条最容易漏，
+ * 而它恰好是新用户/数据被清理后最常走到的路径）。
+ * 任何一步失败都降级为「没发」，绝不阻断登录。
+ */
+async function bootAccount(user) {
+  const gift = await points.claimGift(user)
+    .catch(e => {
+      console.warn('[login] 新手礼包发放失败，已忽略', e && e.message)
+      return { gained: 0 }
+    })
+  const boost = await points.grantAdminPrivilege(user)
+    .catch(e => {
+      console.warn('[login] 超管礼遇发放失败，已忽略', e && e.message)
+      return { applied: false }
+    })
+  const basePoints = Number(user.points) || 0
+  const baseFood = Number(user.food) || 0
+  return {
+    giftGained: gift.gained || 0,
+    // 礼遇返回的是「发放后的绝对值」（内部已按 max 合并原有余额），直接采用；
+    // 没触发礼遇时，登录快照 + 刚发的礼包就是当前余额。
+    points: boost.applied ? boost.points : basePoints,
+    food: boost.applied ? boost.food : baseFood + (gift.gained || 0),
+    level: boost.applied ? boost.level : (Number(user.level) || level.levelOf(basePoints).lv),
+    peakPoints: boost.applied
+      ? Math.max(boost.points, Number(user.peakPoints) || 0)
+      : Math.max(Number(user.peakPoints) || 0, basePoints)
+  }
+}
+
+/**
+ * 打卡次数自愈：**只在已经为负时**触发一次 count() 重算。
+ *
+ * 成因：早期 deleteSighting 无条件给「操作者」`_.inc(-1)`。超管在后台
+ * 删掉两条别人的打卡记录后，自己的次数就变成 -2（本机实测数据）。
+ * 计数是派生值，重算比「+2 补回来」可靠 —— 后者要求你知道少减了几次。
+ */
+async function repairSightingCount(user) {
+  const cur = Number(user.sightingCount) || 0
+  if (cur >= 0) return cur
+  const openid = user.openid
+  if (!openid) return 0
+  const c = await db.collection(COL.sighting).where({ reporter: openid }).count()
+    .catch(e => {
+      console.warn('[login] 打卡次数重算失败，沿用旧值', e && e.message)
+      return null
+    })
+  if (!c) return cur
+  const real = c.total || 0
+  await db.collection(COL.user).doc(user._id)
+    .update({ data: { sightingCount: real } })
+    .catch(() => {})
+  console.log('[login] 打卡次数为负，已重算', openid, cur, '→', real)
+  return real
+}
+
 async function login(me, event, ctx) {
   const openid = ctx && ctx.openid
   if (!openid) throw new AppError('无法获取用户身份', 401)
@@ -297,9 +400,24 @@ async function login(me, event, ctx) {
         return null
       })
     const cur = merged || me
+    // 新手礼包 + 超管礼遇（见 bootAccount）。两者都是「一次性」：
+    // claimGift 用 giftAt、礼遇用 adminGrantAt 做条件更新抢占，并发登录不会重复发。
+    // 显式带上 openid：老档案缺这个字段时，isSuper 判不出来会导致超管礼遇延后一次登录才发。
+    const withOpenid = Object.assign({}, cur, { openid })
+    const acc = await bootAccount(withOpenid)
+    // 打卡次数是派生值，历史上被误减成过负数（见 repairSightingCount）。
+    // 只在负数时重算，正常用户不多付一次 count。
+    const sightingCount = await repairSightingCount(withOpenid)
     return Object.assign({}, cur, {
       openid,
       isSuper: isSuper({ openid }),
+      points: acc.points,
+      // 老文档没有这些字段，补上算好的值，避免前端直接读 undefined
+      peakPoints: acc.peakPoints,
+      level: acc.level,
+      food: acc.food,
+      sightingCount,
+      giftGained: acc.giftGained,
       pointsToday: cur.pointsDay === dayKey() ? (cur.pointsToday || 0) : 0
     })
   }
@@ -310,7 +428,13 @@ async function login(me, event, ctx) {
       return null
     })
   if (rebuilt) {
+    const acc = await bootAccount(rebuilt)
     return Object.assign({}, rebuilt, {
+      points: acc.points,
+      peakPoints: acc.peakPoints,
+      level: acc.level,
+      food: acc.food,
+      giftGained: acc.giftGained,
       pointsToday: rebuilt.pointsDay === dayKey() ? (rebuilt.pointsToday || 0) : 0
     })
   }
@@ -325,19 +449,53 @@ async function login(me, event, ctx) {
     avatarUrl: event.avatarUrl || '',
     role: (isFirst || superHere) ? 'admin' : 'visitor',
     schoolId: event.schoolId || '',
+    // 积分值：只增不减，判等级的依据（peakPoints 记历史最高）
     points: 0,
     pointsDay: '',
     pointsToday: 0,
+    peakPoints: 0,
+    level: 1,
+    // 猫粮值：可增可减的流通货币，下限 0
+    food: 0,
+    foodDay: '',
+    foodToday: 0,
+    // 识别计费计数（每日重置）
+    recognizeDay: '',
+    recognizeToday: 0,
+    // ⚠️ 不写 giftAt：claimGift 用 `giftAt 不存在` 判断「还没领过」，
+    // 写了 null 会让条件更新永远匹配不上，礼包静默发不出去。
     sightingCount: 0,
     catSeen: [],
     createdAt: now,
     lastSeenAt: now
   }
   const add = await db.collection(COL.user).add({ data: doc })
-  return Object.assign({}, doc, { _id: add._id, openid, isSuper: superHere })
+  const created = Object.assign({}, doc, { _id: add._id, openid, isSuper: superHere })
+  const acc = await bootAccount(created)
+  return Object.assign({}, created, {
+    points: acc.points,
+    peakPoints: acc.peakPoints,
+    level: acc.level,
+    food: acc.food,
+    giftGained: acc.giftGained
+  })
 }
 
 const ROLE_RANK = { visitor: 0, member: 1, admin: 2 }
+
+/**
+ * 按 openid 找用户档案。
+ * 主键是自建的 `openid`（云函数里 `_openid` 不可靠），但仍用 `_.or` 兜底老档案 ——
+ * 只会写 `_openid` 的那批文档若匹配不上，删除记录时就找不到作者、计数回退会落空。
+ */
+async function findUserByOpenid(openid) {
+  if (!openid) return null
+  const res = await db.collection(COL.user)
+    .where(_.or([{ openid }, { _openid: openid }]))
+    .limit(1).get()
+    .catch(() => null)
+  return (res && res.data && res.data[0]) || null
+}
 
 /** 合并同一 openid 的重复用户档案：保留最早的文档为主档，删掉其余 */
 async function mergeDuplicateUsers(openid) {
@@ -350,12 +508,18 @@ async function mergeDuplicateUsers(openid) {
   const sorted = docs.slice().sort((a, b) =>
     new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
   const keep = sorted[0]
-  let points = 0, sightingCount = 0
+  let points = 0, food = 0, sightingCount = 0, peakPoints = 0, lv = 1
   let role = 'visitor', schoolId = '', nickName = '', avatarUrl = ''
+  let giftAt = null
   const seen = new Set()
   for (const d of sorted) {
     points += Number(d.points) || 0
+    food += Number(d.food) || 0
     sightingCount += Number(d.sightingCount) || 0
+    // 等级按历史最高：取各档 peakPoints 与 points 的最大值，绝不因合并而掉级
+    peakPoints = Math.max(peakPoints, Number(d.peakPoints) || 0, Number(d.points) || 0)
+    lv = Math.max(lv, Number(d.level) || 0)
+    if (d.giftAt && (!giftAt || new Date(d.giftAt) < new Date(giftAt))) giftAt = d.giftAt
     if ((ROLE_RANK[d.role] || 0) > (ROLE_RANK[role] || 0)) role = d.role
     ;(d.catSeen || []).forEach(id => seen.add(id))
     if (!schoolId && d.schoolId) schoolId = d.schoolId
@@ -365,6 +529,9 @@ async function mergeDuplicateUsers(openid) {
   const mergedDoc = {
     openid,
     points,
+    food,
+    peakPoints,
+    level: lv,
     sightingCount,
     role,
     schoolId,
@@ -373,6 +540,9 @@ async function mergeDuplicateUsers(openid) {
     catSeen: Array.from(seen),
     lastSeenAt: new Date()
   }
+  // 只在真有领取时间时写：写 null 会让 claimGift 的
+  // `giftAt 不存在` 条件永远不匹配，礼包就再也发不出来了
+  if (giftAt) mergedDoc.giftAt = giftAt
   await db.collection(COL.user).doc(keep._id).update({ data: mergedDoc })
   for (const d of sorted) {
     if (d._id !== keep._id) {
@@ -401,9 +571,18 @@ async function rebuildUserFromRecords(openid, now) {
     avatarUrl: '',
     role: isSuper({ openid }) ? 'admin' : 'member',
     schoolId: '',
+    // 历史打卡记录里的 points 是旧口径（单货币），一律并入积分值：
+    // 它只增不减，作为等级依据是安全的；猫粮从 0 起算，由登录礼包补 50。
     points,
     pointsDay: '',
     pointsToday: 0,
+    peakPoints: points,
+    level: level.levelOf(points).lv,
+    food: 0,
+    foodDay: '',
+    foodToday: 0,
+    recognizeDay: '',
+    recognizeToday: 0,
     sightingCount: list.length,
     catSeen: Array.from(seen),
     createdAt: now,
@@ -446,6 +625,8 @@ async function createSchool(me, event) {
     bounds: geo.bounds,     // { sw:{lat,lng}, ne:{lat,lng} } 校园可视范围（地图只展示这块）
     scale: geo.scale,       // 进入地图时的缩放级别
     intro: event.intro || '',
+    // 显式传 hidden 就以入参为准（建测试校园时直接勾上，别等它出现在用户下拉里才发现）
+    hidden: event.hidden === undefined || event.hidden === null ? false : !!event.hidden,
     createdBy: me.openid,
     createdAt: new Date()
   }
@@ -466,6 +647,11 @@ async function updateSchool(me, event) {
   if (typeof event.campus === 'string') patch.campus = event.campus
   if (typeof event.city === 'string') patch.city = event.city
   if (typeof event.intro === 'string') patch.intro = event.intro
+
+  // 是否对普通用户隐藏（测试校园 / 未开放校区）。
+  // ⚠️ 必须显式 `undefined` 判断：`event.hidden || false` 会把 `hidden: false`
+  // （超管想**取消**隐藏）当成「没传」，字段永远改不回可见。
+  if (event.hidden !== undefined && event.hidden !== null) patch.hidden = !!event.hidden
 
   // ⚠️ 必须用 `!== undefined` 判断，不能只用真值判断。
   // 客户端把 `center` / `scale` 以 undefined 传进来时（例如只调了 getSchool 没带 center），
@@ -558,9 +744,79 @@ function normalizeSchoolGeo(src) {
   return { center, bounds, scale }
 }
 
-async function listSchools() {
+/**
+ * 学校是否对**普通用户**隐藏（超管永远看得见）。
+ *
+ * 两条判定，显式字段优先：
+ *  1. `hidden === true` → 隐藏（超管在后台开关里设置，精确控制）
+ *  2. 没设 hidden 但校名含「测试」→ 隐藏（兜底）
+ *
+ * 为什么要有第 2 条兜底：测试校园是超管自己建的，建的时候没人会记得先去勾
+ * 「隐藏」，等到它出现在全校学生的选校下拉里才发现 —— 而此时已经有人绑上去了。
+ * 名字兜底让「叫测试的校园」从建好那一刻起就不进用户视野，不需要任何数据迁移。
+ *
+ * 为什么显式 `hidden: false` 能**取消**名字兜底：兜底是启发式，必须给超管最终
+ * 决定权，否则将来真出现一所名字带「测试」的正式校区就永远翻不了案。
+ */
+const SCHOOL_HIDDEN_NAME_RE = /测试|test/i
+function isSchoolHidden(s) {
+  if (!s) return false
+  if (s.hidden !== undefined && s.hidden !== null) return !!s.hidden
+  return SCHOOL_HIDDEN_NAME_RE.test(String(s.name || ''))
+}
+
+/**
+ * 用户选校列表（公开接口）。
+ *
+ * ⚠️ 这里是**唯一**的「普通用户能看见哪些学校」出口 —— 选校下拉、换校都走它。
+ * 测试校园必须在这里被滤掉：一旦让它进下拉，用户绑上去之后首页/地图/图鉴
+ * 全都指向测试数据，再想摘干净要动用户表。
+ *
+ * 超管不过滤：后台要能看到并编辑它（否则隐藏的学校就成了改不了的僵尸数据）。
+ */
+async function listSchools(me) {
+  const showAll = isSuper(me)
   const res = await db.collection(COL.school).orderBy('createdAt', 'asc').limit(50).get()
-  return res.data
+  const list = res.data || []
+  return showAll ? list : list.filter(s => !isSchoolHidden(s))
+}
+
+/**
+ * 超管：校园列表（含每所校区的档案数与绑定用户数）。
+ *
+ * 为什么不复用 listSchools：那是用户选校用的**公开**接口，只回校名/校区；
+ * 后台还需要「这所学校到底有没有数据」—— 只回一行校名的话，管理员看到
+ * 五所学校也不能判断哪所是空壳、哪所可以动手改。
+ *
+ * 为什么要 count 而不是把 cats/users 拉回来数：count 只回一个数字，
+ * 几万条档案和零条档案的耗时一样；拉回来在函数里筛，等于把数据全搬进内存，
+ * 还要吃客户端约 3s 的预算。
+ *
+ * `-1` = 该计数读取失败（集合不存在 / 权限 / 超时），前端显示「—」而不是「0」。
+ * 「0 只猫」和「数不出来」在后台是两件事，混在一起会让管理员以为档案丢了。
+ */
+async function listSchoolsAdmin(me) {
+  requireSuper(me)
+  const res = await db.collection(COL.school).orderBy('createdAt', 'asc').limit(50).get()
+  const list = res.data || []
+  if (!list.length) return []
+
+  // 并行发 2N 个 count：串行会是 2N 次往返，5 所学校就要 10 个来回。
+  // 单校 count 失败只影响那一格，不能连累整张表（一所学校的集合异常不该让后台空白）。
+  const stats = await Promise.all(list.map(async s => {
+    const [catRes, userRes] = await Promise.all([
+      db.collection(COL.cat).where({ schoolId: s._id }).count().catch(() => null),
+      db.collection(COL.user).where({ schoolId: s._id }).count().catch(() => null)
+    ])
+    return {
+      catCount: catRes && Number.isFinite(Number(catRes.total)) ? Number(catRes.total) : -1,
+      userCount: userRes && Number.isFinite(Number(userRes.total)) ? Number(userRes.total) : -1
+    }
+  }))
+
+  // 后台**不做隐藏过滤** —— 超管要能看见并编辑被隐藏的校区，
+  // 否则一所隐藏学校就成了改不动的僵尸数据。只额外回一个算好的 hidden 供 UI 打标。
+  return list.map((s, i) => Object.assign({}, s, stats[i], { hidden: isSchoolHidden(s) }))
 }
 
 /**
@@ -639,9 +895,169 @@ function needsGeoRepair(s) {
   return !geoCenterValid(s.center) || !geoScaleValid(s.scale) || !(s.bounds && s.bounds.sw && s.bounds.ne)
 }
 
+/**
+ * 绑定学校前的准入校验：存在性 + 是否对普通用户可见。
+ *
+ * 可见性这一条不能只做在 listSchools 里 —— 那是「下拉里看不见」，
+ * 而 applySchool/bindSchool 是**按 id 直接绑**，知道 id 就能绕过下拉。
+ * 只挡 UI 不挡接口的话，隐藏形同虚设（用户拿到 id 照样能绑进测试校园）。
+ */
+async function assertSchoolBindable(me, schoolId) {
+  const s = await db.collection(COL.school).doc(schoolId).get()
+  if (!s.data) throw new AppError('学校不存在', 404)
+  if (!isSuper(me) && isSchoolHidden(s.data)) {
+    throw new AppError('该校园未开放', 403)
+  }
+  return s.data
+}
+
 async function bindSchool(me, event) {
-  await db.collection(COL.user).doc(me._id).update({ data: { schoolId: event.schoolId || '' } })
-  return { schoolId: event.schoolId || '' }
+  const schoolId = event.schoolId || ''
+  // 校验存在性：绑定一个已删除/手填的 schoolId 后，用户的所有列表都会 where({schoolId})
+  // 查不到东西，界面表现为「学校有了、数据全空了」，比直接报错更难排查。
+  if (schoolId) await assertSchoolBindable(me, schoolId)
+  await db.collection(COL.user).doc(me._id).update({ data: { schoolId } })
+  return { schoolId }
+}
+
+/**
+ * 选校 / 申请新建学校。
+ *
+ * 两条路，差别只在「要不要人审」：
+ *  1. 传 `schoolId`：绑到**已存在**的学校，立即生效。
+ *     学校文档本身是超管建过的（或审核通过的申请建的），不需要再核一遍。
+ *  2. 传 `name`：本校还没建档，落一条 `school_applies` 待审，
+ *     超管通过后才真正建校并绑定申请人。
+ *
+ * ⚠️ 刻意**不**在这里预建 schools 文档：预建的话它会立刻出现在 listSchools 里，
+ * 别的用户能选到一所「还没人审过」的学校，审核就形同虚设。
+ *
+ * ⚠️ 同一用户只保留一条待审：连点/反复提交会把审核列表刷满，
+ * 管理员处理掉一条又冒出三条，最后没人愿意审。
+ */
+async function applySchool(me, event) {
+  if (event.schoolId) {
+    const s = await assertSchoolBindable(me, event.schoolId)
+    await db.collection(COL.user).doc(me._id).update({ data: { schoolId: event.schoolId } })
+    return { status: 'bound', schoolId: event.schoolId, schoolName: s.name || '' }
+  }
+
+  const name = String(event.name || '').trim()
+  if (!name) throw new AppError('请填写学校名称')
+
+  const dup = await db.collection(COL.schoolApply)
+    .where({ openid: me.openid, status: 'pending' }).limit(1).get()
+  if (dup.data.length) return { status: 'pending', apply: dup.data[0] }
+
+  const okText = await sec.checkText(
+    [name, event.campus, event.city, event.intro].filter(Boolean).join(' '))
+  if (!okText) throw new AppError('内容未通过安全检测')
+
+  const doc = {
+    openid: me.openid,
+    _openid: me.openid,
+    nickName: me.nickName || '',
+    name,
+    campus: String(event.campus || '').trim(),
+    city: String(event.city || '').trim(),
+    intro: String(event.intro || '').trim(),
+    status: 'pending',
+    createdAt: new Date()
+  }
+  const add = await db.collection(COL.schoolApply).add({ data: doc })
+  return { status: 'submitted', apply: Object.assign({}, doc, { _id: add._id }) }
+}
+
+/** 我最近一条建校申请（前端用它显示「审核中 / 被驳回」状态） */
+async function mySchoolApply(me) {
+  const res = await db.collection(COL.schoolApply)
+    .where({ openid: me.openid }).orderBy('createdAt', 'desc').limit(5).get()
+  const list = res.data || []
+  const pick = st => list.filter(a => a.status === st)[0] || null
+  return {
+    pending: pick('pending'),
+    rejected: pick('rejected'),
+    approved: pick('approved'),
+    schoolId: me.schoolId || ''
+  }
+}
+
+/** 待审的建校申请（仅超管） */
+async function listSchoolApplies(me, event) {
+  requireSuper(me)
+  const res = await db.collection(COL.schoolApply)
+    .where({ status: (event && event.status) || 'pending' })
+    .orderBy('createdAt', 'desc').limit(50).get()
+  return res.data || []
+}
+
+/**
+ * 审核建校申请（仅超管）。
+ *
+ * 并发安全：两个管理员同时点「通过」时，用**条件更新**抢占（status='pending' 才写），
+ * 只有一份能把状态推进到 approving，另一份拿到 updated=0 直接报「已处理」。
+ * 否则会给同一条申请建出两所学校，其中一所没有任何人绑定。
+ *
+ * 建校失败要把状态退回 pending：卡在 approving 的申请既不在待审列表、
+ * 也不能再被通过，等于永久丢失（用户会一直看到「审核中」）。
+ */
+async function handleSchoolApply(me, event) {
+  requireSuper(me)
+  if (!event.id) throw new AppError('缺少申请 ID')
+  const now = new Date()
+  const handler = me.nickName || ''
+
+  if (!event.approve) {
+    const r = await db.collection(COL.schoolApply)
+      .where({ _id: event.id, status: 'pending' })
+      .update({ data: { status: 'rejected', handler, handledAt: now } })
+    if (!r.stats || !r.stats.updated) throw new AppError('该申请已处理', 409)
+    return { status: 'rejected' }
+  }
+
+  const claim = await db.collection(COL.schoolApply)
+    .where({ _id: event.id, status: 'pending' })
+    .update({ data: { status: 'approving', handler, handledAt: now } })
+  if (!claim.stats || !claim.stats.updated) throw new AppError('该申请已处理', 409)
+
+  const apply = (await db.collection(COL.schoolApply).doc(event.id).get()).data
+  try {
+    // 审核时再检一次：管理员可能直接点通过没细看名字，用户填的学校名会展示给全校
+    const okText = await sec.checkText([apply.name, apply.campus, apply.city, apply.intro]
+      .filter(Boolean).join(' '))
+    if (!okText) throw new AppError('申请内容未通过安全检测')
+
+    const geo = normalizeSchoolGeo({})
+    const schoolDoc = {
+      name: apply.name,
+      campus: apply.campus || '',
+      city: apply.city || '',
+      intro: apply.intro || '',
+      center: geo.center,
+      bounds: geo.bounds,
+      scale: geo.scale,
+      createdBy: apply.openid,
+      fromApplyId: event.id,
+      createdAt: now
+    }
+    const add = await db.collection(COL.school).add({ data: schoolDoc })
+    // 绑定申请人（listSchools 里可能还没出现过这所学校，但申请人自己要有归属）
+    const users = await db.collection(COL.user).where({ openid: apply.openid }).limit(1).get()
+    if (users.data[0]) {
+      await db.collection(COL.user).doc(users.data[0]._id)
+        .update({ data: { schoolId: add._id } })
+    }
+    await db.collection(COL.schoolApply).doc(event.id).update({
+      data: { status: 'approved', schoolId: add._id, handledAt: new Date() }
+    })
+    return { status: 'approved', schoolId: add._id, school: Object.assign({}, schoolDoc, { _id: add._id }) }
+  } catch (e) {
+    // 退回待审：卡在 approving 等于永久丢失（待审列表看不到、也不能再通过）
+    await db.collection(COL.schoolApply).doc(event.id)
+      .update({ data: { status: 'pending', handler: '', handledAt: null } })
+      .catch(() => {})
+    throw e
+  }
 }
 
 /* ==================== 概览统计 ==================== */
@@ -652,13 +1068,14 @@ async function getOverview(me, event) {
   const where = schoolId ? { schoolId } : {}
   const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
 
-  const [catAll, catOnCampus, sterilized, sightingMonth, tnrMonth, taskOpen, funds, recent] = await Promise.all([
+  // 首页已不再展示「待办任务 / 本月 TNR / TNR 进展」，这两次 count 一并去掉：
+  // 概览是打开小程序就要跑的接口，少两次 DB 往返就少一份顶穿预算的风险。
+  // 社团运营数据在「工作台」按需拉，不该压在首页首屏上。
+  const [catAll, catOnCampus, sterilized, sightingMonth, funds, recent] = await Promise.all([
     db.collection(COL.cat).where(Object.assign({}, where, { status: _.nin(['rainbow', 'adopted']) })).count(),
     db.collection(COL.cat).where(Object.assign({}, where, { status: 'campus' })).count(),
     db.collection(COL.cat).where(Object.assign({}, where, { sterilized: 'yes', status: _.nin(['rainbow', 'adopted']) })).count(),
     db.collection(COL.sighting).where(Object.assign({}, where, { createdAt: _.gte(monthStart) })).count(),
-    db.collection(COL.tnr).where(Object.assign({}, where, { createdAt: _.gte(monthStart) })).count(),
-    db.collection(COL.task).where(Object.assign({}, where, { status: 'open' })).count(),
     isMember(me) ? listFundSummary(schoolId) : Promise.resolve({ income: 0, expense: 0 }),
     // 最近目击与上面的统计是**互不依赖**的，必须一起并行：
     // 早先它单独 await 排在 7 个 count 后面，白多一次串行 DB 往返。
@@ -674,7 +1091,10 @@ async function getOverview(me, event) {
   }
 
   // 首页「最新目击」缩略图换 https（同 listSightings，客户端读不到他人私有文件）
-  const recentOut = recentData.map(s => Object.assign({}, s, { cat: catMap[s.catId] || null }))
+  // 可见性：非公开记录不下发（同 listSightings 口径，避免私有记录从首页漏出）
+  const recentOut = recentData
+    .filter(s => isMember(me) || s.visibility === 'public' || (me && s.reporter === me.openid))
+    .map(s => Object.assign({}, s, { cat: catMap[s.catId] || null }))
   await maplib.attachSightingMediaUrls(recentOut)
 
   const alive = catAll.total || 0
@@ -684,11 +1104,18 @@ async function getOverview(me, event) {
     sterilized: sterilized.total || 0,
     sterilizedRate: alive ? Math.round((sterilized.total / alive) * 100) : 0,
     sightingMonth: sightingMonth.total || 0,
-    tnrMonth: tnrMonth.total || 0,
-    taskOpen: taskOpen.total || 0,
     fund: funds,
     recent: recentOut,
-    me: me ? { role: me.role, points: me.points || 0, sightingCount: me.sightingCount || 0, nickName: me.nickName } : null
+    // food 是首页那张「我的猫粮值」卡的数值来源；积分（points）在「我的」页看
+    me: me ? {
+      role: me.role,
+      points: me.points || 0,
+      peakPoints: Math.max(Number(me.peakPoints) || 0, Number(me.points) || 0),
+      level: Number(me.level) || level.levelOf(Number(me.points) || 0).lv,
+      food: me.food || 0,
+      sightingCount: me.sightingCount || 0,
+      nickName: me.nickName
+    } : null
   }
 }
 
@@ -712,11 +1139,24 @@ async function listFundSummary(schoolId) {
 
 /* ==================== 猫档案 ==================== */
 
+/**
+ * 猫档案列表。
+ *
+ * ⚠️ **未绑定学校时返回空**（2026-10-25 修）：原来 `where` 里没有 schoolId，
+ * 查询就退化成「全环境所有猫」—— 一个刚注册、还没选学校的用户打开猫谱，
+ * 能看到所有学校的全部档案。猫档案是按校运营的内容，跨校可见既不合规也不合理。
+ *
+ * 与 listDex 保持同一口径：回 `needSchool:true` + 空列表，让前端能明确提示
+ * 「绑定学校后可见」，而不是给一个空列表让人以为「本校一只猫都没有」。
+ *
+ * 管理端不受影响：超管显式传 `schoolId` 时 assertSchool 放行，后台照常可查。
+ */
 async function listCats(me, event) {
   const schoolId = resolveSchoolId(me, event)
   assertSchool(me, schoolId)
-  const where = {}
-  if (schoolId) where.schoolId = schoolId
+  if (!schoolId) return { needSchool: true, list: [], hasMore: false, page: 1 }
+
+  const where = { schoolId }
   if (event.status) where.status = event.status
   if (event.sterilized) where.sterilized = event.sterilized
   if (event.pattern) where.pattern = event.pattern
@@ -741,6 +1181,173 @@ async function listCats(me, event) {
   }
 }
 
+/**
+ * 猫谱筛选诊断（超管）。
+ *
+ * 现象：「选橘猫显示没查到」。可能的原因有四种，界面上长得一模一样：
+ *  ① 档案压根没写 pattern（建档时没动花色选择器 → 默认 other）
+ *  ② 写的是值域外的值（AI 回传/历史脏数据对不上前端 PATTERN）
+ *  ③ 查询本身挂了（where + orderBy 缺复合索引 → 云开发直接报错，前端落空态）
+ *  ④ 真的没有这个花色的猫
+ * 只给「查不到」这个结果没法区分，所以这里把分布、脏值、查询是否报错全摊开。
+ *
+ * 只读、不写库。查三次：分布一次、带排序探针一次、不带排序对照一次。
+ */
+async function diagnoseCatFilters(me, event) {
+  const schoolId = event.schoolId || (me && me.schoolId) || ''
+  if (!schoolId) return { needSchool: true, schoolId: '' }
+
+  let schoolName = ''
+  try {
+    const s = await db.collection(COL.school).doc(schoolId).get()
+    schoolName = (s.data && s.data.name) || ''
+  } catch (e) { schoolName = '' }
+
+  const proj = { _id: true, name: true, pattern: true, status: true, sterilized: true, updatedAt: true }
+  let rows = []
+  try {
+    const r = await db.collection(COL.cat).where({ schoolId }).field(proj).limit(300).get()
+    rows = r.data || []
+  } catch (e) {
+    return { schoolId, schoolName, error: '读取猫档案失败：' + ((e && e.message) || e) }
+  }
+
+  const known = Object.keys(PATTERN_LABELS)
+  const tally = (key) => {
+    const m = {}
+    rows.forEach(c => {
+      // 空串也要归到「(空)」：建档时花色选择器没动过往往落的是空串，
+      // 它和缺字段一样「筛选永远选不中」，混在真实值里看不出来
+      const raw = c[key]
+      const v = (raw === undefined || raw === null || raw === '') ? '(空)' : String(raw)
+      m[v] = (m[v] || 0) + 1
+    })
+    return m
+  }
+  // 值域外的 pattern：筛选一定选不中它们，且界面上看不出来
+  const dirty = rows
+    .filter(c => !c.pattern || known.indexOf(String(c.pattern)) < 0)
+    .map(c => ({ catId: c._id, name: c.name || '', pattern: c.pattern === undefined ? null : c.pattern }))
+  const missingUpdatedAt = rows.filter(c => !c.updatedAt).length
+  // pattern='other' 往往是「建档时花色选择器没动过」，而不是真的「其他」。
+  // 「选橘猫查不到」最常见的真相就是橘猫被存成了 other —— 单独列出来，
+  // 和真·脏值区分开（脏值是值域外，这个在值域内但几乎等于没标）。
+  const otherCats = rows
+    .filter(c => c.pattern === 'other')
+    .map(c => ({ catId: c._id, name: c.name || '' }))
+
+  // 探针：用「数量最多且非 other」的花色实跑一次正式链路同款查询，看是不是查询本身报错
+  const byPattern = tally('pattern')
+  const probeValue = Object.keys(byPattern)
+    .filter(v => v !== 'other' && v !== '(空)')
+    .sort((a, b) => byPattern[b] - byPattern[a])[0] || ''
+
+  let probe = null
+  if (probeValue) {
+    probe = { value: probeValue, expected: byPattern[probeValue] }
+    try {
+      const r = await db.collection(COL.cat)
+        .where({ schoolId, pattern: probeValue })
+        .orderBy('updatedAt', 'desc').limit(50).get()
+      probe.count = (r.data || []).length
+      probe.error = ''
+    } catch (e) {
+      probe.count = -1
+      probe.error = (e && e.message) || String(e)
+      // 不带排序再跑一次对照：能返回 = 缺 (schoolId, pattern, updatedAt) 复合索引
+      try {
+        const r2 = await db.collection(COL.cat)
+          .where({ schoolId, pattern: probeValue }).limit(50).get()
+        probe.countNoOrder = (r2.data || []).length
+      } catch (e2) {
+        probe.countNoOrder = -1
+      }
+    }
+  }
+
+  return {
+    schoolId, schoolName,
+    cats: rows.length,
+    byPattern, byStatus: tally('status'), bySterilized: tally('sterilized'),
+    dirtyPatternCount: dirty.length,
+    dirtyPattern: dirty.slice(0, 10),
+    // 未标注花色（pattern=other）：筛选选不中它们，界面上也看不出来
+    otherPatternCount: otherCats.length,
+    otherPattern: otherCats,
+    missingUpdatedAt,
+    probe
+  }
+}
+
+/** 图鉴一次最多取多少只（云函数里单次 get 上限 1000，这里留足余量给换链） */
+const DEX_MAX = 200
+
+/**
+ * 图鉴收集：**按用户当前绑定的学校**统计。
+ *
+ * 为什么不能继续用「我的」页那套 listCats：
+ *  1. 未绑定学校时 listCats 的 where 是空的 → 返回**全环境**的猫，
+ *     新用户看到「0 / 4」，其实是别校的猫，凭空给他一个进度条；
+ *  2. 已收集数按全局 `catSeen` 算，用户换过学校后会出现「已收集 7 / 总数 4」——
+ *     旧学校拍到的猫被算进了新学校的图鉴。
+ *
+ * 所以这里必须两件事一起做：按 schoolId 取猫、按「本校猫 id ∩ catSeen」算已收集。
+ *
+ * `brief=true` 只回计数（「我的」页只需要 4/12 这个数），走 `.field({_id:true})`
+ * 不取头像、也不换临时链接 —— 少一次 getTempFileURL 批量调用。
+ */
+async function listDex(me, event) {
+  const schoolId = resolveSchoolId(me, event)
+  if (!schoolId) {
+    return { needSchool: true, schoolId: '', total: 0, seen: 0, percent: 0, list: [] }
+  }
+  const brief = !!(event && event.brief)
+  const where = { schoolId }
+
+  const [cnt, res] = await Promise.all([
+    db.collection(COL.cat).where(where).count(),
+    (brief
+      ? db.collection(COL.cat).where(where).field({ _id: true })
+      : db.collection(COL.cat).where(where).orderBy('createdAt', 'desc').limit(DEX_MAX)
+    ).get()
+  ])
+
+  const userSeen = new Set(Array.isArray(me && me.catSeen) ? me.catSeen : [])
+  const rows = res.data || []
+  const total = Number(cnt.total) || 0
+  const percent = (n) => (total ? Math.min(100, Math.round(n / total * 100)) : 0)
+
+  if (brief) {
+    const seen = rows.filter(r => userSeen.has(r._id)).length
+    return { brief: true, needSchool: false, schoolId, total, seen, percent: percent(seen), list: [] }
+  }
+
+  // 头像口径与 listCats 一致：没设 avatar 就用 photos[0] 顶（否则档案有图、图鉴空白）
+  const list = rows.map(c => ({
+    id: c._id,
+    name: c.name || '未命名',
+    pattern: c.pattern || '',
+    avatar: c.avatar || (Array.isArray(c.photos) && c.photos[0]) || '',
+    unlocked: userSeen.has(c._id)
+  }))
+  // 原始 fileID 另存一份：换链后的 https 过期时，前端还能凭它重新换（临时链接 ≠ 拼接错）
+  list.forEach(it => { it.avatarId = it.avatar })
+  await maplib.attachCatMediaUrls(list, { photos: false })
+
+  const seen = list.filter(it => it.unlocked).length
+  return {
+    brief: false,
+    needSchool: false,
+    schoolId,
+    total,
+    seen,
+    percent: percent(seen),
+    // 超过 DEX_MAX 时如实告知，而不是让前端以为「本校只有 200 只」
+    truncated: total > rows.length,
+    list
+  }
+}
+
 async function getCat(me, event) {
   if (!event.id) throw new AppError('缺少猫 ID')
   const res = await db.collection(COL.cat).doc(event.id).get()
@@ -754,9 +1361,11 @@ async function getCat(me, event) {
       : Promise.resolve({ data: [] })
   ])
   const catOut = sanitizeCat(cat, me)
-  const sightOut = sightings.data.map(s => sanitizeSighting(s, me))
+  // 可见性过滤：非公开记录对外不可见（sanitizeSighting 返回 null → 剔除）
+  const sightOut = sightings.data.map(s => sanitizeSighting(s, me)).filter(Boolean)
   // 档案详情：头像 + 相册 + 目击照片一并换 https（详情页照片多，上限内一次批量够用）
-  await maplib.attachCatMediaUrls([catOut])
+  // ids:true → 额外带一份原始 fileID（photoIds），供前端预览时重新换链 / 云下载
+  await maplib.attachCatMediaUrls([catOut], { ids: true })
   await maplib.attachSightingMediaUrls(sightOut)
   return {
     cat: catOut,
@@ -767,18 +1376,104 @@ async function getCat(me, event) {
   }
 }
 
+/** 错误文本：云开发的 errMsg 往往带错误码与原因，比 message 有用 */
+function errText(e) {
+  if (!e) return ''
+  if (typeof e === 'string') return e
+  return String(e.errMsg || e.message || e)
+}
+
+/**
+ * 更新档案文档：把真实错误带出来，并对瞬时故障重试一次。
+ *
+ * 现场（2026-10-24「新增照片后保存报 document.update:fail」）：客户端 toast
+ * 会 `slice(0, 20)` —— `document.update:fail` 正好 20 个字，后面的
+ * `-502001 database request fail` 之类的真原因全被切掉，只能靠猜。
+ *
+ * 这里做三件事：
+ *  ① 失败时把完整 errMsg + 字段清单打进日志（含旧档案快照，便于对比哪个字段变了）；
+ *  ② 隔 300ms 重试一次 —— -502001 多为云开发侧瞬时抖动，重试几乎必成；
+ *  ③ 仍失败就把原因原样抛给前端（前端用弹窗展示，不再被截断）。
+ */
+async function updateCatDoc(id, payload, existing) {
+  const write = () => db.collection(COL.cat).doc(id).update({ data: payload })
+  try {
+    await write()
+    return
+  } catch (e) {
+    const msg = errText(e)
+    console.error('[saveCat] 更新失败', msg,
+      '| 字段:', Object.keys(payload).join(','),
+      '| 照片:', (payload.photos || []).length,
+      '| 头像:', String(payload.avatar || '').slice(0, 60))
+    if (existing) {
+      console.error('[saveCat] 旧档案快照',
+        'photos=', (existing.photos || []).length,
+        'avatar=', String(existing.avatar || '').slice(0, 60))
+    }
+    await new Promise(r => setTimeout(r, 300))
+    try {
+      await write()
+      console.warn('[saveCat] 重试后更新成功（首次为瞬时故障）:', msg)
+    } catch (e2) {
+      throw new AppError('保存失败：' + (errText(e2) || msg || '数据库拒绝写入'), 500)
+    }
+  }
+}
+
+/**
+ * 保存档案时，图片安全检测最多花多久（毫秒）。
+ *
+ * 客户端 `callFunction` 有约 3s 硬预算（-504003），而这一路上还要
+ * getMe + 文本检测 + 写库 + 发猫粮。图片检测（下载原图 + 同步送检）是唯一
+ * 耗时不可控的一步，给它 1000ms 上限；超了就转「异步媒体检测」放行，
+ * 保证「点一次就保存成功」而不是「点第二遍才成功」。
+ */
+const SAVE_IMG_BUDGET_MS = 1000
+
 async function saveCat(me, event) {
+  const t0 = Date.now()
   const d = event.data || {}
   if (!d.name) throw new AppError('请填写猫咪名字')
 
-  const textOk = await sec.checkText([d.name, d.alias, d.note, d.internalNote, d.colorNote].filter(Boolean).join(' '))
-  if (!textOk) throw new AppError('文字内容未通过安全检测，请修改后重试')
+  // ① 文本检测**先发出去**：它与「读旧档案 / 图片检测」互不依赖。
+  //    旧写法全程串行（文本 → 读档案 → 下载图 → 同步送检 → 写库 → 发猫粮），
+  //    实测 2.5~3.5s；冷启动再加 1s 就必然撞上客户端 3s 硬预算（-504003）。
+  //    现场症状正是「点第一遍超时、点第二遍成功」——第二遍容器已经热了。
+  const textP = sec.checkText(
+    [d.name, d.alias, d.note, d.internalNote, d.colorNote].filter(Boolean).join(' '))
 
   const photos = (d.photos || []).slice(0, 9)
-  if (photos.length) {
-    const okImg = await sec.checkImage(photos[0])
-    if (!okImg) throw new AppError('图片未通过安全检测')
+  // 已存在的档案先读一次：既用来判断「哪些照片是新加的」，也能在更新失败时打出对照。
+  let existing = null
+  if (d._id) {
+    existing = (await db.collection(COL.cat).doc(d._id).get().catch(() => ({ data: null }))).data
+    // 档案被删（或 id 传错）时 update 只会静默返回 updated:0，
+    // 用户看到的是「保存成功但其实什么都没保存」——比报错更糟。直接拦住。
+    if (!existing) throw new AppError('这只猫的档案不存在（可能已被删除），请返回列表重试', 404)
   }
+
+  // ② 挑出需要过图片检测的新图（老图入库时已检过），检测同样先发出去
+  let imgP = null
+  if (photos.length) {
+    const oldPhotos = (existing && Array.isArray(existing.photos)) ? existing.photos : null
+    // 候选 = 「客户端说是新传的」∪「库里原来没有的」。
+    // 取并集而不是只听一方的：客户端可能漏报（旧版本），也可能瞎报（想跳过检测）；
+    // 两边都算的坏处只是多检一张，好处是「新增图片一定过检测」。
+    const hinted = Array.isArray(event.newPhotoIds) ? event.newPhotoIds : []
+    const cand = photos.filter(p => hinted.indexOf(p) >= 0 ||
+      (oldPhotos && oldPhotos.indexOf(p) < 0))
+    // 新建档案（没有历史可比）→ 检第一张
+    const fresh = cand.length ? cand : (oldPhotos ? [] : photos.slice(0, 1))
+    if (fresh.length) {
+      // 只检一张 + 自带预算：超时转异步检测，绝不把保存拖过 3s
+      imgP = sec.checkImage(fresh[0], { budgetMs: SAVE_IMG_BUDGET_MS })
+    }
+  }
+
+  // ③ 两道检测一起收口（并行已在上面铺好）
+  if (!(await textP)) throw new AppError('文字内容未通过安全检测，请修改后重试')
+  if (imgP && !(await imgP)) throw new AppError('图片未通过安全检测')
 
   const schoolId = d.schoolId || me.schoolId
   assertSchool(me, schoolId)
@@ -804,28 +1499,151 @@ async function saveCat(me, event) {
     internalNote: d.internalNote || '',
     medicalNote: d.medicalNote || '',
     schoolId: schoolId || '',
-    // 清空「已入库」标记：建档或改档（尤其是换照片）后，服务端特征库需要重新收录。
-    // 之后的第一次识别会顺带把这只猫的照片带给服务端补算（见 lib/vision.js 的
-    // pickPendingIndexCats），所以管理员不必手动点「建库」。
-    aiIndexAt: null,
+    // ⚠️ 这里**不写 aiIndexAt**：建档时字段不存在（`_.exists(false)` 才查得到），
+    // 改档时用 `_.remove()` 把它删掉。旧写法写 null，而 null 字段对
+    // `where({ aiIndexAt: _.exists(false) })` 来说「存在」，于是换过照片的猫
+    // 再也不会被自动补库 —— 「改了图但特征库没更新」的隐形成因。
     updatedBy: me.openid,
     updatedAt: now
   }
 
   if (d._id) {
-    await db.collection(COL.cat).doc(d._id).update({ data: payload })
+    // 清空「已入库」标记：建档或改档（尤其是换照片）后，服务端特征库需要重新收录。
+    // 之后的第一次识别会顺带把这只猫的照片带给服务端补算（见 lib/vision.js 的
+    // pickPendingIndexCats），所以管理员不必手动点「建库」。
+    payload.aiIndexAt = _.remove()
+    // 没有点位就**删字段**而不是写 null：null 与「不存在」在查询里是两种东西，
+    // 且 update 里塞 null 是历史踩过的坑（giftAt）。能删就别写 null。
+    if (!payload.location) delete payload.location
+    await updateCatDoc(d._id, payload, existing)
+    console.log('[saveCat] 更新完成', d._id, Date.now() - t0, 'ms')
     return { _id: d._id }
   }
+
+  // ④ 幂等闸：客户端超时重试会带同一个 saveToken + attempt>1。
+  //    -504003 只是「客户端不等了」，云函数其实还在跑、很可能已经把档案写进库；
+  //    用户手点第二遍就会多建一只同名的猫。这里按 token 查一次，
+  //    查到就返回原 _id —— 对客户端来说就是「保存成功」，且不会重复建档。
+  //    只在「重试」时才查：首发多一次查询等于白花 180ms 预算。
+  const token = String(d.saveToken || '').slice(0, 64)
+  const isRetry = Number(event.attempt) > 1
+  if (token && isRetry) {
+    const dup = await db.collection(COL.cat).where({ saveToken: token }).limit(1)
+      .get().catch(() => ({ data: [] }))
+    const hit = (dup.data || [])[0]
+    if (hit) {
+      console.warn('[saveCat] 命中重复提交（客户端超时重试），返回已有档案', hit._id)
+      return { _id: hit._id, deduped: true }
+    }
+  }
+
   payload.createdAt = now
   payload.createdBy = me.openid
   payload.sightingCount = 0
+  if (token) payload.saveToken = token
   const add = await db.collection(COL.cat).add({ data: payload })
-  return { _id: add._id }
+  // 规则：建立档案 +15 ~ +20 猫粮值。有照片给满档 ——
+  // 照片是这只猫能进特征库、后续被识别出来的前提，值得多 5 点。
+  // 发放失败不能影响建档本身（档案是主业务，奖励是附加权益）。
+  const kind = photos.length ? 'catCreatePhoto' : 'catCreate'
+  const g = await points.grantFood(me, kind, null, { refType: 'cat', refId: add._id })
+    .catch(e => {
+      console.warn('[saveCat] 建档猫粮发放失败，已忽略', e && e.message)
+      return { gained: 0 }
+    })
+  console.log('[saveCat] 建档完成', add._id, Date.now() - t0, 'ms',
+    '| 图片检测:', imgP ? '有' : '无', '| token:', token ? '有' : '无')
+  return { _id: add._id, foodGained: g.gained || 0 }
 }
 
+/**
+ * 删除猫档案（**仅超级管理员**，2026-10-24 收紧）。
+ *
+ * 原来的实现只有 `doc(id).remove()`，没有任何权限与存在性校验：ACTIONS 里写的是
+ * role:'admin'，也就是**任何一个校园管理员**都能删本环境任意档案，删不存在的 id 也静默成功。
+ * 删除档案是不可恢复的破坏性操作，按「超管才能删」收紧（后台的「重复档案」清理也是超管页）。
+ *
+ * 刻意**不连带删除**的东西（删了比留着更糟）：
+ *  - 打卡记录 sightings：那是别人真实发生过的记录，删猫顺手删记录等于抹掉他人贡献，
+ *    还会把记录作者的 sightingCount 扣掉。保留后列表页显示「未知」（cat 字段为 null 已有兜底）。
+ *  - 特征库残留（识别服务侧 index/<catId>.bin）：match 只对**库里存在的猫**打分，
+ *    残留不会变成幽灵候选；服务端没有删除接口，为清几百字节再加一次网络调用不划算。
+ *  - 图鉴 catSeen：listDex 用「本校猫 id ∩ catSeen」计数，已删的 id 自然落选，不用回写。
+ */
 async function removeCat(me, event) {
-  await db.collection(COL.cat).doc(event.id).remove()
-  return { _id: event.id }
+  requireSuper(me)
+  const id = String((event && event.id) || '').trim()
+  if (!id) throw new AppError('缺少档案 ID')
+  // 先查再删：超时重发时第二次会走到这里，给「已被删除」比静默成功更清楚
+  const cur = await db.collection(COL.cat).doc(id).get().catch(() => null)
+  const cat = (cur && cur.data) || null
+  if (!cat) throw new AppError('档案不存在或已被删除')
+  await db.collection(COL.cat).doc(id).remove()
+  // 名字回给前端做提示（trim 掉建档时可能带进来的首尾空格，免得提示文案里多出空格）
+  const name = String(cat.name || '').trim()
+  console.log('[removeCat] 超管删除档案', id, name)
+  // 同步清理识别服务侧的特征向量 —— 不删就成幽灵残留：
+  //   检索仍会返回它（靠云函数 byId 过滤），且管理页「N 条向量」比对档案数多几条。
+  //   best-effort：删档已成功，清理失败只记日志，靠后台「全部重建」兜底。
+  const cleaned = await vision.deleteIndexEntry(id, cat.schoolId || '')
+  console.log('[removeCat] 特征库清理', cleaned ? '已删' : '跳过/失败')
+  // 不改任何关联表的计数（见上面的说明）
+  return { _id: id, name }
+}
+
+/**
+ * 重复档案检测（超管）。
+ *
+ * 为什么需要：客户端 `callFunction` 有约 3s 硬预算，超时后既会自动重发、用户也会手点
+ * 第二遍 —— 历史上真的建出过「同名同校的两只猫」（2026-10-24 现场：录入一只，猫谱里两条一样）。
+ * 而小程序端此前**没有任何删除入口**（`removeCat` 一直没被前端调用过），用户只能看着。
+ *
+ * 判重口径：**同校 + 同名**（去首尾空格、忽略大小写）。
+ * 刻意不按照片/特征相似度判：同一只猫的照片本来就可以有好几张，用相似度会把两只真猫
+ * 误判成重复，合并错了无法复原；宁可漏报（用户自己删）也不要误报。
+ *
+ * 建议保留哪条：**照片最多的**（特征库最全），照片数并列则**最早创建的**（先来的是正本）。
+ * 这只是建议，前端仍然允许删任意一条 —— 现场可能恰好是「后建的那条才带照片」。
+ */
+async function findDuplicateCats(me, event) {
+  requireSuper(me)
+  const schoolId = resolveSchoolId(me, event)
+  const where = schoolId ? { schoolId } : {}
+  // 200 条覆盖一个校区的全部档案绰绰有余；真到这个量级，重复建档反而不会发生了
+  const res = await db.collection(COL.cat).where(where)
+    .orderBy('createdAt', 'asc').limit(200).get()
+  const rows = res.data || []
+
+  const buckets = {}
+  rows.forEach(c => {
+    const key = String(c.name || '').trim().toLowerCase() + '|' + (c.schoolId || '')
+    if (!buckets[key]) buckets[key] = []
+    buckets[key].push(c)
+  })
+
+  const groups = []
+  Object.keys(buckets).forEach(key => {
+    const arr = buckets[key]
+    if (arr.length < 2) return
+    const photoCount = c => (Array.isArray(c.photos) ? c.photos.length : 0)
+    let keep = arr[0]
+    arr.forEach(c => { if (photoCount(c) > photoCount(keep)) keep = c })
+    groups.push({
+      key,
+      name: String(arr[0].name || '').trim(),
+      keepId: keep._id,
+      items: arr.map(c => ({
+        _id: c._id,
+        createdAt: c.createdAt || null,
+        photoCount: photoCount(c),
+        hasAvatar: !!c.avatar,
+        sightingCount: Number(c.sightingCount) || 0,
+        keep: c._id === keep._id
+      }))
+    })
+  })
+
+  return { scanned: rows.length, groups }
 }
 
 /**
@@ -923,27 +1741,33 @@ async function seedDemoData(me, event) {
   }
 
   const c = (school.center && isFinite(school.center.lat)) ? school.center : { lat: 32.0585, lng: 118.7965 }
+  // ⚠️ 演示数据也走合规口径（2026-10-16 二审）：
+  //   ① `note` 是**自由文本**，审核在测试账号里能看到 —— 已全部删除；
+  //   ② 猫况改用**结构化标签**（health / characters / earMark / behaviors），
+  //      与打卡页同一套枚举，形态是"档案登记"而非"图文笔记"。
+  //   ③ colorNote / earMark 是短结构化描述（如「橘白爪，圆脸」），保留；
+  //      **不再写任何成句的叙述性文字**（"饭点准时出现，亲人可摸"这类一律去掉）。
   const demo = [
     { name: '大橘', pattern: 'orange', sex: 'male', sterilized: 'yes', health: 'good',
       characters: ['friendly', 'foodie'], colorNote: '橘白爪，圆脸', earMark: '左耳缺口',
-      locationName: '一食堂后门花坛', location: { lat: c.lat + 0.0012, lng: c.lng + 0.0008 },
-      note: '饭点准时出现，亲人可摸，全校最贪吃的一只。' },
+      behaviors: ['eating', 'resting'],
+      locationName: '一食堂后门花坛', location: { lat: c.lat + 0.0012, lng: c.lng + 0.0008 } },
     { name: '狸花', pattern: 'tabby', sex: 'female', sterilized: 'no', health: 'good',
       characters: ['shy'], colorNote: '标准狸花条纹', earMark: '',
-      locationName: '图书馆东侧草坪', location: { lat: c.lat - 0.0015, lng: c.lng + 0.0010 },
-      note: '警惕性高，请保持距离投喂，已列入 TNR 排期。' },
+      behaviors: ['hiding', 'alert'],
+      locationName: '图书馆东侧草坪', location: { lat: c.lat - 0.0015, lng: c.lng + 0.0010 } },
     { name: '奶牛', pattern: 'cow', sex: 'male', sterilized: 'yes', health: 'good',
       characters: ['playful', 'foodie'], colorNote: '黑白块分明', earMark: '右耳缺口',
-      locationName: '宿舍区3栋楼下', location: { lat: c.lat + 0.0006, lng: c.lng - 0.0012 },
-      note: '活泼好动，爱和同学玩逗猫棒。' },
+      behaviors: ['playing', 'moving'],
+      locationName: '宿舍区3栋楼下', location: { lat: c.lat + 0.0006, lng: c.lng - 0.0012 } },
     { name: '小白', pattern: 'white', sex: 'unknown', sterilized: 'yes', health: 'good',
       characters: ['quiet', 'shy'], colorNote: '纯白，蓝眼睛', earMark: '',
-      locationName: '操场看台下方', location: { lat: c.lat - 0.0008, lng: c.lng - 0.0015 },
-      note: '胆小怕生，远距离观察即可，请勿追赶。' },
+      behaviors: ['hiding'],
+      locationName: '操场看台下方', location: { lat: c.lat - 0.0008, lng: c.lng - 0.0015 } },
     { name: '三花', pattern: 'calico', sex: 'female', sterilized: 'unknown', health: 'good',
       characters: ['friendly'], colorNote: '三花，尾尖白', earMark: '',
-      locationName: '教学楼A栋南侧', location: { lat: c.lat + 0.0018, lng: c.lng - 0.0006 },
-      note: '喜欢下午晒太阳，偶遇率最高。' }
+      behaviors: ['resting'],
+      locationName: '教学楼A栋南侧', location: { lat: c.lat + 0.0018, lng: c.lng - 0.0006 } }
   ]
   const now = new Date()
   let created = 0
@@ -954,7 +1778,8 @@ async function seedDemoData(me, event) {
         spotPrivate: false,
         avatar: '', photos: [],
         birthday: '', relations: [],
-        internalNote: '', medicalNote: '',
+        // 演示档案不留任何自由文本备注（note / internalNote / medicalNote 全空）
+        note: '', internalNote: '', medicalNote: '',
         schoolId, sightingCount: 0,
         createdBy: me.openid, updatedBy: me.openid,
         createdAt: now, updatedAt: now
@@ -1006,8 +1831,12 @@ async function backfillPointsLedger(me, event) {
         data: {
           openid: u.openid || u._openid || '',
           userId: u._id,
+          // 双货币拆分（2026-10-18）后，users.points 的语义是**积分值**（只增不减、判等级），
+          // 所以这批历史余额按积分归档。显式写 currency：靠读时兜底也能对，
+          // 但新建账就该写清楚，别让后来的人以为漏字段。
+          currency: 'point',
           kind: 'migrate',
-          reason: '历史猫粮值迁入（期初建账）',
+          reason: '历史积分迁入（期初建账）',
           delta: balance,
           balance,
           refType: 'migrate',
@@ -1027,10 +1856,92 @@ async function backfillPointsLedger(me, event) {
   return { migrated, skipped, sample: details }
 }
 
+/**
+ * 一次性回填：把 sightings 里 schoolId 为空的记录补上归属（仅超管，幂等，分片）。
+ *
+ * 为什么会有一批空值（2026-10-25 实测）：打卡时 `schoolId = d.schoolId || me.schoolId || ''`，
+ * 用户档案当时还没绑学校 → 写入空串。这些记录在所有按校过滤的查询里都查不到。
+ *
+ * 归属怎么定（优先级从高到低）：
+ *  1. catId → 猫档案的 schoolId（最可靠：猫必然属于某校，且打卡与猫强相关）
+ *  2. reporter → 上报人档案的 schoolId（无 catId 的「未认领新猫」记录走这条）
+ *  3. 都拿不到 → 跳过（留空，等用户绑校后再跑一次）
+ *
+ * 幂等：只处理 schoolId 为空（或字段不存在）的记录，已填的一律不动。
+ * 分片：每次最多处理 size 条（默认 100），返回 remaining，重复调用直到为 0 即可。
+ */
+async function backfillSightingSchoolId(me, event) {
+  requireSuper(me)
+  const size = Math.max(1, Math.min(200, Number(event && event.size) || 100))
+  const missing = _.or([{ schoolId: '' }, { schoolId: _.exists(false) }])
+
+  const res = await db.collection(COL.sighting)
+    .where(missing).field({ catId: true, reporter: true }).limit(size).get()
+  const rows = res.data || []
+  if (!rows.length) return { scanned: 0, updated: 0, skipped: 0, remaining: 0, done: true }
+
+  // 批量取猫档案的 schoolId
+  const catIds = [...new Set(rows.map(r => r.catId).filter(Boolean))]
+  const catSchool = {}
+  for (let i = 0; i < catIds.length; i += 20) {
+    const batch = catIds.slice(i, i + 20)
+    const cs = await db.collection(COL.cat)
+      .where({ _id: _.in(batch) }).field({ schoolId: true }).limit(batch.length).get()
+      .catch(() => ({ data: [] }))
+    ;(cs.data || []).forEach(c => { if (c && c.schoolId) catSchool[c._id] = c.schoolId })
+  }
+
+  // 无 catId 的记录：按上报人的 openid 找用户档案
+  const openids = [...new Set(rows.filter(r => !r.catId).map(r => r.reporter).filter(Boolean))]
+  const userSchool = {}
+  for (let i = 0; i < openids.length; i += 20) {
+    const batch = openids.slice(i, i + 20)
+    const us = await db.collection(COL.user)
+      .where({ openid: _.in(batch) }).field({ schoolId: true }).limit(batch.length).get()
+      .catch(() => ({ data: [] }))
+    ;(us.data || []).forEach(u => { if (u && u.schoolId) userSchool[u.openid] = u.schoolId })
+  }
+
+  let updated = 0, skipped = 0
+  for (const r of rows) {
+    const sid = (r.catId && catSchool[r.catId]) || (!r.catId && r.reporter && userSchool[r.reporter]) || ''
+    if (!sid) { skipped++; continue }
+    await db.collection(COL.sighting).doc(r._id)
+      .update({ data: { schoolId: sid } })
+      .catch(e => console.warn('[backfillSightingSchool] 更新失败', r._id, e && e.message))
+    updated++
+  }
+
+  const left = await db.collection(COL.sighting).where(missing).count().catch(() => ({ total: 0 }))
+  console.log('[backfillSightingSchool] 扫描', rows.length, '更新', updated, '跳过', skipped, '剩余', left.total)
+  return {
+    scanned: rows.length, updated, skipped,
+    remaining: Math.max(0, Number(left.total) || 0),
+    done: !left.total
+  }
+}
+
 /* ==================== 目击打卡 ==================== */
 
 /** 投喂状态白名单（与小程序 utils/const.js 的 FEED_STATUS 保持一致，前后端各维护一份） */
 const FEED_STATUS_VALUES = ['passed', 'fed', 'fedByOther']
+
+/**
+ * 食物类型白名单 → 积分档位（规则：「喂食按食物类型 +2 ~ +5」）。
+ *
+ * 规则文档只给了区间，没给具体分档，这里按「投喂成本 / 用心程度」排：
+ *   干粮 2 < 零食 3 < 罐头 4 < 自制 5。
+ * 用**表格映射**而不是在代码里写 if：以后调分档只改这一行，
+ * 且前端 const.js 的 FOOD_TYPE 里同名列着分值，两边能直接对照。
+ * 老客户端不传 foodType → 默认干粮（最常见的投喂方式）。
+ */
+const FOOD_TYPE_VALUES = ['dry', 'snack', 'wet', 'homemade']
+const FOOD_TYPE_KIND = {
+  dry: 'feedDry',
+  snack: 'feedSnack',
+  wet: 'feedWet',
+  homemade: 'feedHomemade'
+}
 
 /** 健康观察白名单 —— 必须与小程序 utils/const.js 的 C.HEALTH 逐值对齐。
  *  曾出现后端用 ['unknown','healthy','sick','injured','suspected']、前端用
@@ -1048,13 +1959,83 @@ const SIGHT_BEHAVIOR_VALUES = [
   'resting', 'eating', 'moving', 'playing', 'hiding', 'alert', 'withOthers', 'unusual'
 ]
 
+/** 外观特征标签白名单 —— 与小程序 utils/const.js 的 C.SIGHT_FEATURE 逐值对齐。
+ *  替代原「补充（20 字）」自由文本输入。同 SIGHT_BEHAVIOR，服务端必须再过滤一次。 */
+const SIGHT_FEATURE_VALUES = [
+  'earNotch', 'thin', 'fat', 'belly', 'limping',
+  'eyeIssue', 'noseDry', 'furLoss', 'collar', 'pregnant'
+]
+
+/** 打卡记录可见性。默认 private（合规：「不公开」才不构成内容发布/传播）。 */
+const SIGHTING_VIS_PRIVATE = 'private'
+const SIGHTING_VIS_PUBLIC = 'public'
+
+/** 新猫占位名：按毛色/花纹生成，**不接受用户自定义文字**（合规要求）。
+ *  正式名字由社团核实后统一分配（cat-entry / cat-edit 走管理员权限）。 */
+const PATTERN_LABELS = {
+  tabby: '狸花', orange: '橘猫', cow: '奶牛', tuxedo: '燕尾服', calico: '三花',
+  tortoiseshell: '玳瑁', white: '纯白', black: '纯黑', gray: '灰蓝', siamese: '暹罗', other: ''
+}
+
+/**
+ * 打卡可见性**策略**（合规 2026-10-16 二审）。
+ *
+ * ⚠️ 与上一版的区别：可见性**不再由普通用户按条选择**，改为**超级管理员在控制台统一配置**。
+ *   原因：审核关注的是「功能是否提供公开发布能力」。把开关放在用户侧，等于产品**提供**了
+ *   "一键公开到校园"的发布能力；放在管理端且**默认关闭**，产品形态就是
+ *   「社团内部登记 + 管理员决定是否公示」—— 用户端没有任何"发布"入口。
+ *
+ *   策略存 schools 文档：`sightingPublic`（布尔，默认 false = 全部仅社团内部可见）。
+ *   打卡记录落库时读取该校策略作为 `visibility`，用户无法自行覆盖。
+ *
+ *   历史数据：改造前用户自选的 visibility 保留原样（不追溯改写），
+ *   新记录一律按策略生成。
+ */
+async function setSightingVisibilityPolicy(me, event) {
+  requireSuper(me)
+  const d = event.data || {}
+  if (d.public === undefined || d.public === null) {
+    // 查询当前策略
+    const schoolId = resolveSchoolId(me, event)
+    const s = schoolId ? await db.collection(COL.school).doc(schoolId).get().catch(() => null) : null
+    return { ok: true, public: !!(s && s.data && s.data.sightingPublic) }
+  }
+  const schoolId = resolveSchoolId(me, event)
+  if (!schoolId) throw new AppError('请先绑定校区')
+  const next = d.public === true
+  await db.collection(COL.school).doc(schoolId).update({
+    data: { sightingPublic: next, updatedAt: new Date() }
+  })
+  return { ok: true, public: next }
+}
+
+/** 读取某校区的打卡可见性策略（无配置 / 读失败一律 false = 最保守） */
+async function sightingPolicyPublic(schoolId) {
+  if (!schoolId) return false
+  try {
+    const s = await db.collection(COL.school).doc(schoolId).get()
+    return !!(s && s.data && s.data.sightingPublic === true)
+  } catch (e) {
+    return false
+  }
+}
+
 async function addSighting(me, event) {
   const d = event.data || {}
   await sec.assertSightingSafe(d)
 
   const now = new Date()
   const photos = (d.photos || []).slice(0, 6)
-  const schoolId = d.schoolId || me.schoolId || ''
+  let schoolId = d.schoolId || me.schoolId || ''
+  // 兜底：用户档案还没绑学校时，从**猫档案**反推归属。
+  // 为什么必须补这一步（2026-10-25 实测）：sightings.schoolId 为空的记录，
+  // 在所有按校过滤的查询里都会消失 —— 打卡列表、本月统计、地图点位全查不到它。
+  // 打卡必然对应一只猫（或至少一位上报人），猫一定属于某所学校，
+  // 所以这个归属是可靠的；拿不到才留空。
+  if (!schoolId && d.catId) {
+    const c = await db.collection(COL.cat).doc(d.catId).get().catch(() => null)
+    if (c && c.data && c.data.schoolId) schoolId = c.data.schoolId
+  }
   assertSchool(me, schoolId)
 
   // 首次遇见（图鉴解锁）判定：必须用「条件更新 catSeen」原子完成。
@@ -1069,11 +2050,12 @@ async function addSighting(me, event) {
       .update({ data: { catSeen: _.push([d.catId]) } })
     firstMeet = !!(mark && mark.stats && mark.stats.updated)
   }
-  const isNewCat = !d.catId
-
   // 投喂状态：白名单校验，非法值 / 老客户端不传 → 回落「路过」
   const feedStatus = FEED_STATUS_VALUES.indexOf(d.feedStatus) >= 0 ? d.feedStatus : 'passed'
   const isFedByMe = feedStatus === 'fed'
+  // 食物类型只影响**积分档位**（+2 ~ +5），不影响猫粮。
+  // 白名单过滤而非直接取值：这是客户端可伪造的字段，不校验就能刷高积分。
+  const foodType = FOOD_TYPE_VALUES.indexOf(d.foodType) >= 0 ? d.foodType : 'dry'
 
   // 行为标签：白名单过滤（合规改造，替代原自由文本「描述」）。
   // 只接受预设枚举内的值 —— 客户端若被篡改塞入任意字符串，这里直接丢掉。
@@ -1082,18 +2064,35 @@ async function addSighting(me, event) {
     ? d.behaviors.filter(b => SIGHT_BEHAVIOR_VALUES.indexOf(b) >= 0).slice(0, 8)
     : []
 
+  // 外观特征标签：同上白名单过滤（替代原自由文本「补充」）
+  const features = Array.isArray(d.features)
+    ? d.features.filter(f => SIGHT_FEATURE_VALUES.indexOf(f) >= 0).slice(0, 10)
+    : []
+
+  // 可见性：由**超级管理员在控制台配置的校区策略**决定，用户无法自行覆盖（合规二审）。
+  // 默认 false = 全部记录仅社团内部可见；管理员打开后才公开到校园猫谱。
+  // 老客户端若传 d.public 一律忽略 —— 公开与否不由打卡者决定。
+  const visibility = (await sightingPolicyPublic(schoolId))
+    ? SIGHTING_VIS_PUBLIC
+    : SIGHTING_VIS_PRIVATE
+
   const doc = {
     catId: d.catId || '',
-    catName: d.catName || (d.catId ? '' : '未认领的新猫'),
+    // 新猫占位名由服务端按毛色生成（如「未命名·橘猫」）——不再接受 d.catName 自由文字。
+    // 合规：用户无法通过"起名字"这条路径生成文字内容。
+    catName: d.catId ? '' : '未命名' + (PATTERN_LABELS[d.pattern] ? '·' + PATTERN_LABELS[d.pattern] : '的新猫'),
     pending: !d.catId,
     location: d.location || null,
     locationName: d.locationName || '',
     photos,
     health: HEALTH_VALUES.indexOf(d.health) >= 0 ? d.health : 'unknown',
     feedStatus,
+    // 仅「本人投喂」时有意义；其余状态统一记空，避免展示层出现无来源的食物类型
+    foodType: isFedByMe ? foodType : '',
     behaviors,
-    // 补充限 20 字：原为自由描述，合规改造后只留极短结构化补充
-    note: String(d.note || '').slice(0, 20),
+    features,
+    // 可见性：private = 仅本人 + 管理员可见；public = 公开到校园猫谱
+    visibility,
     count: Number(d.count) || 1,
     schoolId,
     reporter: me.openid,
@@ -1103,18 +2102,30 @@ async function addSighting(me, event) {
 
   // 先落库拿到 id，再发积分并挂上关联（流水记录表与 users 解耦）
   const add = await db.collection(COL.sighting).add({ data: doc })
-  const g1 = await points.grant(me, 'sighting', null, { refType: 'sighting', refId: add._id })
-  const g2 = firstMeet ? await points.grant(me, 'firstMeet', null, { refType: 'cat', refId: d.catId }) : { gained: 0 }
-  const g3 = isNewCat ? await points.grant(me, 'newCat', null, { refType: 'cat', refId: d.catId }) : { gained: 0 }
-  // 投喂奖励：仅「本人投喂」发放；照片是投喂佐证（防刷），有图再叠加一笔
-  const g4 = isFedByMe ? await points.grant(me, 'feed', null, { refType: 'sighting', refId: add._id }) : { gained: 0 }
-  const g5 = (isFedByMe && photos.length)
-    ? await points.grant(me, 'feedPhoto', null, { refType: 'sighting', refId: add._id })
-    : { gained: 0 }
-  const grants = [g1, g2, g3, g4, g5]
-  const total = grants.reduce((acc, g) => acc + (g.gained || 0), 0)
-  await db.collection(COL.sighting).doc(add._id).update({ data: { points: total } })
-  doc.points = total
+  // ---- 发放（规则 V1.0：积分与猫粮是两套账，日上限各自独立）----
+  // 每日打卡：两个币种各 +5
+  const gDailyPoint = await points.grantPoint(me, 'daily', null, { refType: 'sighting', refId: add._id })
+  const gDailyFood = await points.grantFood(me, 'daily', null, { refType: 'sighting', refId: add._id })
+  // 投喂：按食物类型给积分 +2 ~ +5（仅「本人投喂」发放）
+  const gFeed = isFedByMe
+    ? await points.grantPoint(me, FOOD_TYPE_KIND[foodType], null, { refType: 'sighting', refId: add._id })
+    : { gained: 0, capped: false }
+  // 图鉴点亮新品种：每品种一次，+10 积分（旧版的 firstMeet）
+  const gDex = firstMeet
+    ? await points.grantPoint(me, 'dexNew', null, { refType: 'cat', refId: d.catId })
+    : { gained: 0, capped: false }
+
+  // 「上报新猫」不再单独发奖：规则里的激励口径是「建立档案」，
+  // 而打卡上报只落一条 pending 记录，还没产生档案。真正的建档奖励在 saveCat。
+  const pointTotal = (gDailyPoint.gained || 0) + (gFeed.gained || 0) + (gDex.gained || 0)
+  // ⚠️ 升级奖励**不计入本条记录**。它是等级里程碑给的，不是这次打卡的产物；
+  // 若计入，删掉打卡就会把这笔退掉，等于用「删记录」反复刷升级奖励。
+  const foodTotal = gDailyFood.gained || 0
+
+  await db.collection(COL.sighting).doc(add._id)
+    .update({ data: { points: pointTotal, food: foodTotal } })
+  doc.points = pointTotal
+  doc.food = foodTotal
 
   // 图鉴标记已在发奖前条件更新完成，这里只累加打卡次数
   await db.collection(COL.user).doc(me._id).update({ data: { sightingCount: _.inc(1) } })
@@ -1131,21 +2142,27 @@ async function addSighting(me, event) {
 
   return Object.assign({}, doc, {
     _id: add._id,
-    pointsGained: total,
+    pointsGained: pointTotal,
+    foodGained: foodTotal,
+    // 本次打卡让用户升了级（跨级时是最终等级），前端据此弹「升级啦」提示
+    levelUp: gDailyPoint.levelUp || 0,
     firstMeet,
     feedStatus,
-    feedGained: (g4.gained || 0) + (g5.gained || 0),
-    // 积分明细（前端弹窗展示用，数额以云端为准，避免前后端各写一份）
+    foodType: isFedByMe ? foodType : '',
+    feedGained: gFeed.gained || 0,
+    // 明细以云端为准，前端不再自己算 —— 两边各写一套必然会算错
     pointsDetail: {
-      base: g1.gained || 0,
-      firstMeet: g2.gained || 0,
-      newCat: g3.gained || 0,
-      feed: g4.gained || 0,
-      feedPhoto: g5.gained || 0
+      daily: gDailyPoint.gained || 0,
+      feed: gFeed.gained || 0,
+      dexNew: gDex.gained || 0
     },
-    dailyCapped: !!(g1.capped || g3.capped || g4.capped || g5.capped),
-    // 取最后一笔的 today（当日累计，含前面所有发放）
-    pointsToday: grants.reduce((acc, g) => (g && g.today != null ? g.today : acc), 0)
+    foodDetail: {
+      daily: gDailyFood.gained || 0
+    },
+    dailyCapped: !!(gDailyPoint.capped || gFeed.capped || gDex.capped || gDailyFood.capped),
+    // 两套货币各自的当日累计，前端提示「今日还可获得 N」用
+    pointsToday: gDailyPoint.today || 0,
+    foodToday: gDailyFood.today || 0
   })
 }
 
@@ -1156,7 +2173,17 @@ async function listSightings(me, event) {
   if (schoolId) where.schoolId = schoolId
   if (event.catId) where.catId = event.catId
   if (event.pending) where.pending = true
-  if (event.mine && me) where.reporter = me.openid
+
+  // 可见性过滤（合规 2026-10-16）：private 记录只有本人与管理员能看。
+  //  - mine=true  → 只看自己的（不管可见性），用于「我的打卡」列表
+  //  - 管理员/成员 → 全量可见（需要核实存档）
+  //  - 其余访客   → 只看 visibility==='public' 的
+  // 老数据没有 visibility 字段（改造前写入的）→ 视为 private，不对外可见。
+  if (event.mine && me) {
+    where.reporter = me.openid
+  } else if (!isMember(me)) {
+    where.visibility = SIGHTING_VIS_PUBLIC
+  }
 
   const { page, size, skip } = pageOf(event, 20, 50)
   const res = await db.collection(COL.sighting)
@@ -1168,7 +2195,10 @@ async function listSightings(me, event) {
     const cats = await db.collection(COL.cat).where({ _id: _.in(catIds) }).get()
     cats.data.forEach(c => { catMap[c._id] = { name: c.name, avatar: c.avatar } })
   }
-  const list = res.data.map(s => Object.assign(sanitizeSighting(s, me), { cat: catMap[s.catId] || null }))
+  const list = res.data
+    .map(s => sanitizeSighting(s, me))
+    .filter(Boolean)
+    .map(s => Object.assign(s, { cat: catMap[s.catId] || null }))
   // 目击照片换 https 临时链接：客户端读不到「别人上传的」私有文件，
   // 不换就会「自己发的图能看、别人发的图空白」。
   await maplib.attachSightingMediaUrls(list)
@@ -1194,12 +2224,25 @@ async function updateSighting(me, event) {
   assertSightingOwner(me, res.data)
   const d = event.data || {}
   const patch = { updatedAt: new Date(), updatedBy: me.openid }
-  if (typeof d.note === 'string') {
-    const ok = await sec.checkText(d.note)
-    if (!ok) throw new AppError('备注未通过安全检测')
-    patch.note = d.note
-  }
+  // ⚠️ 合规：**不接受任何自由文本**（原 d.note 分支已移除）。
+  //    打卡页已无文字输入；这里若还开放 note 写入，等于给 UGC 文字留了一条后门。
+  //    只允许结构化字段。
   if (d.health && HEALTH_VALUES.indexOf(d.health) >= 0) patch.health = d.health
+  if (d.behaviors !== undefined) {
+    patch.behaviors = Array.isArray(d.behaviors)
+      ? d.behaviors.filter(b => SIGHT_BEHAVIOR_VALUES.indexOf(b) >= 0).slice(0, 8)
+      : []
+  }
+  if (d.features !== undefined) {
+    patch.features = Array.isArray(d.features)
+      ? d.features.filter(f => SIGHT_FEATURE_VALUES.indexOf(f) >= 0).slice(0, 10)
+      : []
+  }
+  // ⚠️ 可见性**不可由记录所有者修改**（合规二审）：公开与否由超管在控制台按校区统一配置，
+  //    这里只接受超管显式改单条（应急下架/上架），普通用户传 d.public 一律忽略。
+  if (d.public !== undefined && isSuper(me)) {
+    patch.visibility = d.public === true ? SIGHTING_VIS_PUBLIC : SIGHTING_VIS_PRIVATE
+  }
   if (typeof d.locationName === 'string') patch.locationName = d.locationName
   if (Number(d.count) > 0) patch.count = Number(d.count)
   await db.collection(COL.sighting).doc(event.id).update({ data: patch })
@@ -1211,34 +2254,34 @@ async function deleteSighting(me, event) {
   const res = await db.collection(COL.sighting).doc(event.id).get()
   assertSightingOwner(me, res.data)
   const s = res.data || {}
-  // 删除一条发过积分的记录，必须连积分一起撤销，否则出现
-  // 「打卡次数少了、猫粮值还在、流水还挂着」的账实不符。
-  // 老记录没有 points 字段（后加的），积分部分跳过，计数仍回退。
-  if (s.points > 0) {
-    const u = await db.collection(COL.user).doc(me._id).get()
-    const cur = u.data || {}
-    const back = Math.min(Number(s.points) || 0, Number(cur.points) || 0)
-    const next = Math.max(0, (Number(cur.points) || 0) - (Number(s.points) || 0))
-    if (back > 0) {
-      await db.collection(COL.user).doc(me._id).update({ data: { points: next } }).catch(() => {})
-      // 负向流水，保持「余额 = 流水累加」可对账（points 页会显示 -N）
-      await db.collection(COL.point).add({
-        data: {
-          openid: me.openid,
-          userId: me._id,
-          kind: 'revoke',
-          reason: '删除目击记录退回',
-          delta: -back,
-          balance: next,
-          refType: 'sighting',
-          refId: event.id,
-          createdAt: new Date()
-        }
-      }).catch(() => {})
+  // 删除记录**不退积分**（规则：积分只增不减）。
+  // 早期实现会把这条记录发过的积分扣回去，等价于「删了重发就掉级」——
+  // 用户为保等级只能留着错记录，反而让脏数据不敢删。
+  // 改为只退猫粮：猫粮是可增减的流通货币，退回它既能让账实相符，又不触碰等级。
+  // 老记录没有 food 字段（双货币拆分之前），猫粮部分自然跳过，计数照常回退。
+  if (Number(s.food) > 0) {
+    await points.refundFood(me, 'revoke', Number(s.food), { refType: 'sighting', refId: event.id })
+      .catch(e => console.warn('[deleteSighting] 退回猫粮失败，已忽略', e && e.message))
+  }
+  // 打卡次数的回退对象是**记录作者**，不是操作者。
+  // 原实现无条件给 `me` 减 1 —— 超管在后台删别人的记录时，扣的是超管自己的数，
+  // 删两条就出现「打卡次数 -2」。只有作者确实是本人时才减本人。
+  // 另外用 `sightingCount > 0` 做条件更新：并发/脏数据下永远减不到负数。
+  const authorOpenid = s.reporter || ''
+  if (authorOpenid) {
+    let targetId = authorOpenid === me.openid ? me._id : ''
+    if (!targetId) {
+      const author = await findUserByOpenid(authorOpenid)
+      // 找不到作者档案：这条记录本来就没计入任何人的数（历史/种子数据），谁都不减
+      targetId = author ? author._id : ''
+    }
+    if (targetId) {
+      await db.collection(COL.user)
+        .where({ _id: targetId, sightingCount: _.gt(0) })
+        .update({ data: { sightingCount: _.inc(-1) } })
+        .catch(e => console.warn('[deleteSighting] 打卡次数回退失败，已忽略', e && e.message))
     }
   }
-  await db.collection(COL.user).doc(me._id)
-    .update({ data: { sightingCount: _.inc(-1) } }).catch(() => {})
   await db.collection(COL.sighting).doc(event.id).remove()
   return { ok: true }
 }
@@ -1340,7 +2383,9 @@ async function saveTnr(me, event) {
     }
   }
 
-  if (isCreate) await points.grant(me, 'tnrHelp', null, { refType: 'tnr', refId: d._id || '' })
+  // TNR 是重投入行为（带猫去医院、术后护理），规则文档未列，沿用旧额度改为发猫粮：
+  // 它更像「值得消费的服务额度」而不是经验值；且计入猫粮日上限，避免无限刷。
+  if (isCreate) await points.grantFood(me, 'tnrHelp', null, { refType: 'tnr', refId: d._id || '' })
 
   return { ok: true, _id: d._id || '', status: to, catSynced: !!(payload.catId && catPatch) }
 }
@@ -1474,7 +2519,8 @@ async function listMembers(me, event) {
     role: u.role,
     isSuper: isSuper({ openid: u.openid || u._openid }),
     points: u.points || 0,
-    sightingCount: u.sightingCount || 0,
+    // 派生计数可能因历史 bug 为负（见 repairSightingCount），展示层一律夹到 ≥0
+    sightingCount: Math.max(0, Number(u.sightingCount) || 0),
     lastSeenAt: u.lastSeenAt || null
   }))
   // 成员头像换 https：客户端读不到「别人上传的」私有文件，

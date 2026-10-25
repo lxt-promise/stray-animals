@@ -14,7 +14,8 @@
     "pages/fund/fund",
     "pages/member/member",
     "pages/admin/admin",
-    "pages/points/points"
+    "pages/points/points",
+    "pages/dex/dex"
   ],
   "window": {
     "backgroundTextStyle": "dark",

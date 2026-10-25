@@ -10,6 +10,10 @@ App({
     school: null,     // { _id, name, campus, center: {lat,lng}, bounds }
     /** 启动时由 homeInit 一并带回来的首页概览；首页直接消费，省掉一次云调用 */
     homeOverview: null,
+    /** 跨页意图：tabBar 页不能用 navigateTo 带 query，只能先写这里再由目标页消费
+     *  （catsTab = 猫谱切到哪个 tab；mineAction = 到「我的」后自动打开哪个设置） */
+    catsTab: '',
+    mineAction: '',
     ready: false
   },
 
@@ -130,9 +134,29 @@ App({
     return !!(u && u.isSuper)
   },
 
+  /**
+   * 更新全局学校，并在「换了一所学校」时作废首页概览缓存。
+   *
+   * 首页统计、图鉴、地图点位全部按学校隔离：换校后旧概览必须丢弃，
+   * 否则会出现「校名换了、数字还是上一所学校的」。同校只更新字段，
+   * 不作废缓存（超管改地图范围也会走这里，没必要让首页重拉一遍统计）。
+   */
+  setSchool(school) {
+    const prevId = (this.globalData.school && this.globalData.school._id) || ''
+    const nextId = (school && school._id) || ''
+    this.globalData.school = school || null
+    if (prevId !== nextId) this.globalData.homeOverview = null
+    return this.globalData.school
+  },
+
   refreshUser() {
     return this.login().then(u => {
       this.globalData.user = u
+      this.globalData.openid = u.openid || this.globalData.openid
+      // 学校可能在别处被绑定/切换/解绑：globalData.school 是旧对象，留着会让
+      // 首页顶着上一所学校的名字。置空后由页面按 user.schoolId 重新拉。
+      const prevId = (this.globalData.school && this.globalData.school._id) || ''
+      if (prevId !== (u.schoolId || '')) this.setSchool(null)
       return u
     })
   }

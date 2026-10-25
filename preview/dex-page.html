@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>喵园 · 图鉴收集 / 学校绑定预览</title>
+<style>
+:root{
+  --bg:#FFF7ED; --card:#FFFFFF;
+  --text:#431407; --sub:#8C6A55; --weak:#B9A08C;
+  --brand:#F97316; --brand2:#FBBF24; --brand-dark:#C2410C;
+  --grad:linear-gradient(135deg,#FBBF24 0%,#F97316 100%);
+  --line:rgba(146,88,32,.1);
+  --shadow:0 10px 30px rgba(146,88,32,.1);
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased}
+body{
+  min-height:100vh;background:#FDF6EC;color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;
+  display:flex;align-items:flex-start;justify-content:center;gap:40px;padding:36px 24px;flex-wrap:wrap;
+  background-image:radial-gradient(1000px 600px at 12% -10%,rgba(249,115,22,.10),transparent 60%),
+                   radial-gradient(900px 600px at 105% 10%,rgba(251,191,36,.10),transparent 60%);
+}
+.stage{display:flex;flex-direction:column;align-items:center;gap:14px}
+.stage-title{font-size:13px;color:var(--sub);letter-spacing:.4px;text-align:center;line-height:1.6}
+.phone{
+  width:390px;height:780px;background:var(--bg);border-radius:44px;position:relative;
+  box-shadow:0 24px 60px rgba(76,42,12,.18),0 0 0 10px #1b1310,0 0 0 12px #2a1c15;
+  overflow:hidden;display:flex;flex-direction:column;
+}
+.nav{
+  height:84px;display:flex;align-items:flex-end;justify-content:center;position:relative;
+  padding-bottom:13px;font-size:17px;font-weight:600;flex-shrink:0;
+}
+.nav .back{position:absolute;left:18px;bottom:11px;font-size:26px;opacity:.75}
+.page{padding:8px 16px 24px;overflow:auto;flex:1}
+
+/* ===== 进度头 ===== */
+.hero{
+  padding:18px 16px;border-radius:20px;
+  background:linear-gradient(160deg,#FFF7ED 0%,#FFEDD5 58%,#FDE68A 100%);
+  box-shadow:var(--shadow);
+}
+.hero-school{display:flex;align-items:center;gap:8px;font-size:13px;color:#92400E}
+.hero-tag{font-size:10px;padding:2px 8px;border-radius:999px;background:rgba(249,115,22,.14);color:#B45309}
+.hero-row{display:flex;align-items:flex-end;justify-content:space-between;margin-top:10px}
+.hero-num{font-size:38px;font-weight:800;line-height:1;color:#7C2D12}
+.hero-slash{font-size:19px;font-weight:600;color:rgba(124,45,18,.55)}
+.hero-pct{font-size:15px;font-weight:700;color:#B45309}
+.bar{height:10px;margin-top:12px;background:rgba(146,88,32,.14);border-radius:999px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#F97316,#F59E0B)}
+.hero-hint{margin-top:10px;font-size:11px;line-height:1.6;color:#92400E;opacity:.85}
+
+/* ===== 图鉴墙 ===== */
+.grid{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.cell{
+  width:calc((100% - 16px)/3);padding:8px 4px;text-align:center;
+  background:var(--card);border:1px solid var(--line);border-radius:12px;
+}
+.cell .ph{
+  width:68px;height:68px;margin:0 auto;border-radius:10px;overflow:hidden;
+  background:rgba(249,115,22,.12);display:flex;align-items:center;justify-content:center;font-size:26px;
+}
+.cell .name{margin-top:6px;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cell .hint{margin-top:2px;font-size:9.5px;color:var(--weak)}
+.cell.locked{background:rgba(146,88,32,.03);border-style:dashed}
+.cell.locked .ph{background:rgba(146,88,32,.05);color:var(--weak);font-weight:700}
+.cell.locked .name{color:var(--weak);font-weight:500}
+
+/* ===== 状态卡 / 学校卡 ===== */
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:var(--shadow)}
+.card + .card{margin-top:12px}
+.card-title{font-size:15px;font-weight:700;margin-bottom:10px}
+.state{text-align:center;padding:34px 18px}
+.state .ico{font-size:34px}
+.state .t{font-size:16px;font-weight:700;margin-top:8px}
+.state .d{font-size:12px;color:var(--sub);line-height:1.7;margin-top:6px}
+.btn{
+  display:block;margin-top:14px;padding:11px;border-radius:12px;border:none;
+  background:var(--grad);color:#fff;font-size:14px;font-weight:600;text-align:center;
+  box-shadow:0 8px 18px rgba(249,115,22,.28);
+}
+.row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;font-size:13px;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:none}
+.row .label{color:var(--sub);flex:none;width:70px}
+.row .value{color:var(--text);text-align:right}
+.pick{
+  display:flex;align-items:center;justify-content:space-between;margin-top:10px;
+  padding:11px 12px;border:1.5px dashed rgba(249,115,22,.35);border-radius:12px;background:#FFFBF5;
+}
+.pick .m{font-size:14px;font-weight:600;color:var(--brand-dark)}
+.pick .s{font-size:11px;color:var(--weak)}
+.apply-toggle{display:flex;align-items:center;justify-content:space-between;padding:11px 0;font-size:13px;color:var(--brand-dark)}
+.pending{margin-top:8px;padding:9px 11px;border-radius:10px;background:rgba(249,115,22,.08);color:var(--brand-dark);font-size:11.5px;line-height:1.6}
+.field{margin-top:10px}
+.field label{display:block;font-size:11.5px;color:var(--sub);margin-bottom:4px}
+.field input{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:10px;font-size:13px;color:var(--text);background:#FFFDFA}
+.hintline{font-size:11px;color:var(--weak);line-height:1.6;margin-top:8px}
+.pill{display:inline-block;font-size:10px;padding:2px 7px;border-radius:999px;background:rgba(47,163,107,.12);color:#2FA36B;margin-left:6px}
+</style>
+</head>
+<body>
+
+  <!-- ① 图鉴收集（已绑定学校） -->
+  <div class="stage">
+    <div class="stage-title">① 图鉴收集 · 已绑定学校<br>进度按本校统计，格子没遇到过的只给花色线索</div>
+    <div class="phone">
+      <div class="nav"><span class="back">‹</span>图鉴收集</div>
+      <div class="page">
+        <div class="hero">
+          <div class="hero-school">南京大学 · 仙林校区 <span class="hero-tag">图鉴收集</span></div>
+          <div class="hero-row">
+            <div class="hero-num">3<span class="hero-slash"> / </span>8</div>
+            <div class="hero-pct">38%</div>
+          </div>
+          <div class="bar"><i style="width:38%"></i></div>
+          <div class="hero-hint">每拍到一只没见过的猫，图鉴自动解锁。灰色的是还没遇到的同学。</div>
+        </div>
+
+        <div class="grid">
+          <div class="cell"><div class="ph">🐱</div><div class="name">橘座</div><div class="hint">橘猫</div></div>
+          <div class="cell"><div class="ph">🐈</div><div class="name">奶糖</div><div class="hint">纯白</div></div>
+          <div class="cell"><div class="ph">🐈‍⬛</div><div class="name">芝麻</div><div class="hint">纯黑</div></div>
+          <div class="cell locked"><div class="ph">?</div><div class="name">未解锁</div><div class="hint">狸花</div></div>
+          <div class="cell locked"><div class="ph">?</div><div class="name">未解锁</div><div class="hint">奶牛</div></div>
+          <div class="cell locked"><div class="ph">?</div><div class="name">未解锁</div><div class="hint">三花</div></div>
+          <div class="cell locked"><div class="ph">?</div><div class="name">未解锁</div><div class="hint">玳瑁</div></div>
+          <div class="cell locked"><div class="ph">?</div><div class="name">未解锁</div><div class="hint">暹罗</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ② 未绑定学校 -->
+  <div class="stage">
+    <div class="stage-title">② 未绑定学校<br>不再显示「0 / 4」这种别校的假进度</div>
+    <div class="phone">
+      <div class="nav"><span class="back">‹</span>图鉴收集</div>
+      <div class="page">
+        <div class="card state">
+          <div class="ico">🎒</div>
+          <div class="t">还没有绑定学校</div>
+          <div class="d">图鉴按学校统计：绑定后，你在这所学校拍到的猫才会点亮成册。</div>
+          <div class="btn">去绑定学校</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ③ 我的 → 学校 -->
+  <div class="stage">
+    <div class="stage-title">③ 我的 → 学校<br>下拉选已建学校；没有就申请新建，等超管审核</div>
+    <div class="phone">
+      <div class="nav">我的</div>
+      <div class="page">
+        <div class="card">
+          <div class="card-title">学校</div>
+          <div class="row"><span class="label">当前</span><span class="value">南京大学 仙林校区</span></div>
+          <div class="pick">
+            <span class="m">切换学校</span>
+            <span class="s">共 3 所 ›</span>
+          </div>
+          <div class="apply-toggle"><span>没有我的学校？申请新建</span><span>›</span></div>
+          <div class="pending">⏳「南京森林警察学院」的建校申请审核中，通过后会自动绑定。</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">菜单（节选）</div>
+          <div class="row" style="border-bottom:1px solid var(--line)">
+            <span>图鉴收集</span><span class="s" style="color:var(--weak)">3 / 8 ›</span>
+          </div>
+          <div class="row" style="border-bottom:1px solid var(--line)">
+            <span>我的打卡</span><span class="s" style="color:var(--weak)">共 7 次 ›</span>
+          </div>
+          <div class="row"><span>猫粮明细</span><span style="color:var(--weak)">›</span></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">申请新建（展开后）</div>
+          <div class="field"><label>学校名称</label><input value="南京森林警察学院" readonly></div>
+          <div class="field"><label>校区</label><input value="仙林校区" readonly></div>
+          <div class="field"><label>城市</label><input value="南京" readonly></div>
+          <div class="btn">提交审核</div>
+          <div class="hintline">提交后由超级管理员审核，通过前不会创建学校；通过后自动绑定为你的学校。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

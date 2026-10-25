@@ -1,0 +1,56 @@
+<view class="page">
+
+  <!-- 加载中：不显示 0/0 的空进度（会让人以为“我一只都没收集到”） -->
+  <!-- 未绑定学校：图鉴按学校统计，没有学校就没有图鉴 —— 这里说清楚，不给假进度 -->
+  <view class="card state-card" wx:if="{{loading}}">
+    <view class="small muted">正在整理你的图鉴…</view>
+  </view>
+  <view class="card state-card" wx:elif="{{needSchool}}">
+    <view class="state-ico">🎒</view>
+    <view class="state-title">还没有绑定学校</view>
+    <view class="state-desc">图鉴按学校统计：绑定后，你在这所学校拍到的猫才会点亮成册。</view>
+    <button class="btn mt" bindtap="goBindSchool">去绑定学校</button>
+  </view>
+  <block wx:else>
+
+    <!-- 进度头：学校 + 已收集/总数 + 进度条 -->
+    <view class="dex-hero">
+      <view class="hero-school">{{schoolName}}<text class="hero-tag">图鉴收集</text></view>
+      <view class="hero-row">
+        <view class="hero-num">{{seen}}<text class="hero-slash"> / </text>{{total}}</view>
+        <view class="hero-pct">{{percent}}%</view>
+      </view>
+      <view class="hero-bar">
+        <view class="hero-bar-in" style="width: {{percent}}%"></view>
+      </view>
+      <view class="hero-hint">每拍到一只没见过的猫，图鉴自动解锁。灰色的是还没遇到的同学。</view>
+    </view>
+
+    <view class="card mt" wx:if="{{truncated}}">
+      <view class="small muted">本校猫只较多，这里只展示最近 200 只；进度仍按全校总数计算。</view>
+    </view>
+
+    <!-- 图鉴墙：3 列，解锁亮显、未解锁灰显 -->
+    <view class="dex-grid" wx:if="{{dex.length}}">
+      <view class="cell {{item.unlocked ? '' : 'locked'}}" wx:for="{{dex}}" wx:for-item="item" wx:key="id"
+        data-id="{{item.id}}" data-locked="{{item.unlocked ? '0' : '1'}}" bindtap="goCat" hover-class="pressed">
+        <view class="cell-avatar">
+          <image wx:if="{{item.unlocked && item.avatar}}" src="{{item.avatar}}" mode="aspectFill"
+            lazy-load="{{true}}" binderror="onAvatarErr" data-i="{{index}}" />
+          <text wx:elif="{{item.unlocked}}" class="cell-ph">🐱</text>
+          <text wx:else class="cell-ph q">?</text>
+        </view>
+        <view class="cell-name">{{item.nameText}}</view>
+        <view class="cell-hint">{{item.hintText}}</view>
+      </view>
+    </view>
+
+    <!-- 本校还没有档案 -->
+    <view class="empty" wx:if="{{!loading && !dex.length}}">
+      <text class="emoji">🐾</text>
+      {{emptyText}}
+    </view>
+
+  </block>
+
+</view>

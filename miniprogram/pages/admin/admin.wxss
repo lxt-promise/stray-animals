@@ -56,3 +56,293 @@
   box-shadow: 0 4rpx 12rpx rgba(249, 115, 22, .25);
 }
 .build-btn.busy { opacity: .6; }
+/* 无照片的猫建不了库，按钮置灰只做提示 */
+.build-btn.off {
+  background: #D8D2CB;
+  box-shadow: none;
+  color: #fff;
+}
+
+/* 特征库概览：档案 / 已录入 / 未录入 */
+.idx-stats {
+  display: flex;
+  gap: 12rpx;
+  padding: 20rpx 0 8rpx;
+  border-bottom: 2rpx solid var(--card-line);
+}
+.idx-stat { flex: 1; text-align: center; }
+.idx-num {
+  font-size: 44rpx;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+}
+.idx-num.ok { color: var(--brand); }
+.idx-num.warn { color: var(--warn); }
+
+/* 未录入清单 */
+.idx-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18rpx 0;
+  border-bottom: 2rpx solid var(--card-line);
+}
+.idx-row:last-child { border-bottom: none; }
+.idx-main { flex: 1; margin-right: 20rpx; min-width: 0; }
+
+/* 识别引擎体检：三行「名称 · 状态 · 说明」。
+   名称固定宽，状态列对齐 —— 三行的绿/橙要能一眼扫出来，不要被长短不一的
+   模型文件名挤得忽左忽右。 */
+.eng-row {
+  display: flex;
+  align-items: baseline;
+  padding: 14rpx 0;
+  border-bottom: 2rpx solid var(--card-line);
+}
+.eng-row:last-child { border-bottom: none; }
+.eng-name {
+  flex: none;
+  width: 150rpx;
+  font-size: 28rpx;
+  color: var(--text);
+}
+.eng-val {
+  flex: none;
+  min-width: 130rpx;
+  font-size: 28rpx;
+  font-weight: 600;
+}
+.eng-val.ok { color: var(--brand); }
+.eng-val.warn { color: var(--warn); }
+.eng-hint {
+  flex: 1;
+  margin-left: 16rpx;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 黄条提示：识别服务连不上 / 校园列表读取失败都用它。
+   原来 admin 页用了 .notice 但本页没有这条样式（样式只在识别页定义），
+   于是提示变成一行没有任何区分度的普通灰字 —— 「读取失败」看起来像正常说明。 */
+.notice {
+  color: var(--gold);
+  background: rgba(234, 179, 8, .1);
+  border: 2rpx solid rgba(234, 179, 8, .22);
+  border-radius: var(--radius-sm);
+  padding: 16rpx 18rpx;
+  line-height: 1.6;
+}
+
+/* 校园管理：一行一所校区 + 展开式编辑面板 */
+.school-item {
+  padding: 18rpx 0;
+  border-bottom: 2rpx solid var(--card-line);
+}
+.school-item:last-child { border-bottom: none; padding-bottom: 4rpx; }
+.school-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 20rpx;
+}
+.school-main { flex: 1; min-width: 0; }
+.school-main .small { line-height: 1.6; }
+/* 隐藏态文案：普通「未开放」和「对用户可见」都是灰的，得让它跳出来 */
+.school-main .small.warn { color: var(--warn); }
+.school-name {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6rpx;
+}
+
+.school-form {
+  margin-top: 18rpx;
+  padding: 20rpx 22rpx;
+  border-radius: 18rpx;
+  background: rgba(146, 88, 32, .04);
+  border: 2rpx solid var(--card-line);
+}
+.fld { margin-bottom: 18rpx; }
+.fld:last-child { margin-bottom: 0; }
+.fld-label {
+  font-size: 26rpx;
+  color: var(--text-sub);
+  margin-bottom: 8rpx;
+}
+.fld-input {
+  height: 76rpx;
+  padding: 0 20rpx;
+  border-radius: 14rpx;
+  background: #fff;
+  border: 2rpx solid var(--card-line);
+  font-size: 28rpx;
+  color: var(--text);
+}
+.fld-textarea {
+  width: 100%;
+  min-height: 120rpx;
+  padding: 16rpx 20rpx;
+  box-sizing: border-box;
+  border-radius: 14rpx;
+  background: #fff;
+  border: 2rpx solid var(--card-line);
+  font-size: 28rpx;
+  color: var(--text);
+  line-height: 1.6;
+}
+.fld-row { display: flex; gap: 16rpx; }
+.fld-row .fld { flex: 1; min-width: 0; }
+
+.school-actions {
+  display: flex;
+  align-items: center;
+  gap: 14rpx;
+  margin-top: 12rpx;
+}
+/* 保存/取消靠右：避免和上面的字段混在一起，误触保存 */
+.school-actions.end { justify-content: flex-end; margin-top: 20rpx; }
+
+/* 地图范围：中心点坐标与缩放级别做成两行 label/value，
+   比一排按钮更好读（坐标是长数字，挤在按钮里会换行） */
+.geo-box {
+  background: #fff;
+  border: 2rpx solid var(--card-line);
+  border-radius: 14rpx;
+  padding: 4rpx 20rpx;
+}
+.geo-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  padding: 16rpx 0;
+  border-bottom: 2rpx solid var(--line);
+}
+.geo-row:last-child { border-bottom: none; }
+.geo-k { font-size: 26rpx; color: var(--text-sub); flex-shrink: 0; }
+.geo-v {
+  flex: 1;
+  text-align: right;
+  font-size: 26rpx;
+  color: var(--text);
+  word-break: break-all;
+}
+.geo-v.geo-empty { color: var(--text-weak); }
+.geo-pick {
+  font-size: 27rpx;
+  color: var(--brand-dark);
+  font-weight: 600;
+  text-align: right;
+}
+
+/* 打卡可见性策略开关（超管专属） */
+.vis-row {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  padding: 8rpx 4rpx;
+}
+.vis-main { flex: 1; }
+.vis-title { font-size: 30rpx; color: var(--text); font-weight: 600; }
+.vis-desc { margin-top: 8rpx; line-height: 1.6; }
+.switch {
+  flex: none;
+  width: 88rpx;
+  height: 50rpx;
+  border-radius: 26rpx;
+  background: #D8D2CB;
+  position: relative;
+  transition: background .2s;
+}
+.switch.on { background: var(--brand); }
+.switch .knob {
+  position: absolute;
+  top: 4rpx;
+  left: 4rpx;
+  width: 42rpx;
+  height: 42rpx;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2rpx 6rpx rgba(0, 0, 0, .18);
+  transition: transform .2s;
+}
+.switch.on .knob { transform: translateX(38rpx); }
+
+/* ===== 重复档案（超管） =====
+   一组 = 一个猫名 + 若干条疑似重复记录。行内不放照片缩略图：
+   这一屏要「快速判断删哪条」，文字（创建时间 / 照片数 / 打卡数）比图更有用，
+   而且这些猫本来就有重复照片，缩略图只会让人更分不清。 */
+.dup-group {
+  padding-top: 16rpx;
+  margin-top: 16rpx;
+}
+/* 组间分割线用相邻选择器（WXSS 对 :first-of-type 支持不稳，别赌） */
+.dup-group + .dup-group { border-top: 2rpx solid var(--line); }
+.dup-name { font-size: 30rpx; font-weight: 600; margin-bottom: 10rpx; }
+.dup-item {
+  display: flex;
+  align-items: center;
+  gap: 14rpx;
+  padding: 14rpx 0;
+}
+.dup-main {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.5;
+}
+/* id 只用于肉眼对照（删错时便于回溯），弱化到不抢注意力 */
+.dup-main .mono { font-size: 20rpx; opacity: .55; }
+.dup-item .tag { flex-shrink: 0; }
+.dup-item .op { flex-shrink: 0; }
+
+/* ===== 确认样本库（人工确认 → 特征库）=====
+   一张缩略图 + 两行文字 + 三个操作。缩略图必须有：管理员判断「这条样本值不值得入库」
+   靠的就是看图（糊的、拍到别的猫的、根本没猫的，一眼就能排除），
+   光看「82 分 · 3 天前」做不出判断。 */
+.sm-group {
+  padding-top: 18rpx;
+  margin-top: 18rpx;
+}
+.sm-group + .sm-group { border-top: 2rpx solid var(--line); }
+.sm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  margin-bottom: 8rpx;
+}
+.sm-cat { display: flex; align-items: baseline; gap: 14rpx; min-width: 0; }
+.sm-row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 14rpx 0;
+}
+.sm-thumb {
+  flex-shrink: 0;
+  width: 88rpx;
+  height: 88rpx;
+  border-radius: 16rpx;
+  background: rgba(146, 88, 32, .06);
+}
+/* 换不出缩略图（文件已删 / 视频缺封面）时留占位，别塌成一条没有图的空白行 */
+.sm-thumb-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22rpx;
+  color: var(--text-weak);
+  border: 2rpx dashed var(--line);
+}
+.sm-main { flex: 1; min-width: 0; line-height: 1.5; }
+.sm-meta { font-size: 26rpx; color: var(--text); }
+/* 「为什么这条用不了」必须比状态更显眼 —— 它是管理员唯一会据此行动的信息 */
+.sm-bad { color: var(--warn); }
+.sm-ops { flex-shrink: 0; display: flex; align-items: center; gap: 10rpx; }
+.op.del { color: var(--warn); }

@@ -15,6 +15,10 @@ const op = (kind, v) => ({ __op: kind, v })
 const _cmd = {
   inc: n => op('inc', n),
   push: arr => op('push', arr),
+  // 删除字段（云开发 _.remove() → mongo $unset）。真实语义：字段直接消失，
+  // 这样 where({ x: _.exists(false) }) 才查得到 —— 写 null 是查不到的。
+  remove: () => op('remove'),
+  exists: v => op('exists', v),
   nin: arr => op('nin', arr),
   in: arr => op('in', arr),
   gte: v => op('gte', v),
@@ -42,6 +46,7 @@ function matchCond(doc, cond) {
         // _.neq 语义与 MongoDB $ne 一致：字段必须存在且不等于目标值
         // （缺字段 undefined !== null 会误判为命中，必须显式排除）
         case 'neq': return got !== undefined && got !== want.v
+        case 'exists': return want.v ? got !== undefined : got === undefined
         default: return true
       }
     }
@@ -56,6 +61,7 @@ function applyUpdate(doc, data) {
     const v = data[k]
     if (v && v.__op === 'inc') doc[k] = (Number(doc[k]) || 0) + v.v
     else if (v && v.__op === 'push') doc[k] = (doc[k] || []).concat(v.v)
+    else if (v && v.__op === 'remove') delete doc[k]
     else doc[k] = v
   })
 }
@@ -282,8 +288,15 @@ async function run() {
 
   console.log('\n=== 5. AI 识别 ===')
   r = await as('u_guest', 'recognize', { fileId: 'cloud://demo/a.jpg', type: 'image', schoolId })
-  assert('本地引擎返回候选', r.ok && Array.isArray(r.data.candidates) && r.data.candidates.length > 0, r)
-  assert('候选带分数与理由', r.data.candidates[0].score >= 0 && typeof r.data.candidates[0].reason === 'string', r.data.candidates[0])
+  // 2026-10-17 语义变更：本地降级**不再伪造候选**。
+  // 这个测试环境没配 AI_ENDPOINT，正确行为是「明确说这次没识别出来」，
+  // 而不是用随机毛色/花纹去撞一个档案 —— 后者在界面上和真结果一模一样，
+  // 实测把一只白猫"识别"成了随机撞上的候选，比报错更糟。
+  assert('本地降级应标记 degraded', r.ok && r.data.degraded === true, r.data)
+  assert('本地降级不得给假候选', Array.isArray(r.data.candidates) && r.data.candidates.length === 0, r.data.candidates)
+  assert('本地降级不得伪造毛色/花纹',
+    !r.data.features.pattern && !r.data.features.color && !(r.data.features.tags || []).length,
+    r.data.features)
   assert('返回低置信标记', typeof r.data.lowConfidence === 'boolean', r.data)
   assert('返回 taskId 供确认', !!r.data.taskId, r.data)
   const imgTaskId = r.data.taskId
@@ -408,9 +421,35 @@ async function run() {
   const freshId = fresh.data._id
   const freshDoc = (store['cats'] || []).find(c => c._id === freshId)
   assert('建档后清除已入库标记', freshDoc && !freshDoc.aiIndexAt, freshDoc)
+  // 先把标记写成「已入库」，再改档：必须真的把字段**删掉**（_.remove），而不是写 null。
+  // null 字段对 where({ aiIndexAt: _.exists(false) }) 来说算「存在」，
+  // 结果是「换过照片的猫再也不被自动补库」，而界面又看不出任何异常。
+  ;(store['cats'] || []).forEach(c => { if (c._id === freshId) c.aiIndexAt = new Date() })
   await as('u_admin', 'saveCat', { data: { _id: freshId, name: '改名的', schoolId } })
   const editedDoc = (store['cats'] || []).find(c => c._id === freshId)
-  assert('改档后同样清除标记', editedDoc && !editedDoc.aiIndexAt, editedDoc)
+  assert('改档后已入库标记被删除（不是写 null）',
+    editedDoc && !('aiIndexAt' in editedDoc), editedDoc && editedDoc.aiIndexAt)
+
+  // 幂等闸（2026-10-24 现场：「每次都是点第二遍才保存成功」）：
+  // 第一发 -504003 超时后客户端会自动重发，两次带同一个 saveToken；
+  // 若第一发其实已经写库，第二发必须返回同一个 _id，而不是再建一只同名的猫。
+  const tok = 'svtest' + Date.now()
+  const first = await as('u_admin', 'saveCat', { data: { name: '幂等猫', pattern: 'white', schoolId, saveToken: tok }, attempt: 1 })
+  const again = await as('u_admin', 'saveCat', { data: { name: '幂等猫', pattern: 'white', schoolId, saveToken: tok }, attempt: 2 })
+  assert('同 saveToken 重试返回同一档案（不重复建档）',
+    first.data._id === again.data._id && again.data.deduped === true, [first.data, again.data])
+  assert('同 token 只落了一条档案',
+    (store['cats'] || []).filter(c => c.saveToken === tok).length === 1)
+  const other = await as('u_admin', 'saveCat', { data: { name: '幂等猫2', schoolId, saveToken: tok + 'x' }, attempt: 2 })
+  assert('换 token 正常新建（查重不会误伤别人）',
+    other.data._id !== first.data._id, other.data)
+  r = await as('u_guest', 'getCat', { id: first.data._id })
+  assert('saveToken 是内部字段，不下发给客户端',
+    r.data.cat && !('saveToken' in r.data.cat), r.data.cat && r.data.cat.saveToken)
+
+  // 预热接口：只为了让云函数实例提前起来（冷启动 1~1.5s 会顶破客户端 3s 预算）
+  r = await as('u_guest', 'ping', {})
+  assert('ping 可用于预热', r.ok === true && r.data && r.data.pong === true, r)
 
   console.log('\n=== 9. 猫档案媒体换链（「头像空白」根因）===')
 
@@ -433,6 +472,14 @@ async function run() {
   assert('getCat 头像换 https', /^https:\/\//.test(r.data.cat.avatar), r.data.cat.avatar)
   assert('getCat 相册照片也换 https',
     (r.data.cat.photos || []).every(p => /^https:\/\//.test(p)), r.data.cat.photos)
+  // 原始 fileID 必须另存一份：编辑页把它写回数据库，否则 photos 会被临时链接覆盖，
+  // 两小时后过期就再也换不回来（相册黑屏、建库下载失败的根因）
+  assert('getCat 下发 photoIds（原始 fileID，与 photos 同下标）',
+    Array.isArray(r.data.cat.photoIds) && r.data.cat.photoIds[0] === 'cloud://env.bucket/p1.jpg',
+    r.data.cat.photoIds)
+  assert('getCat 下发 avatarId', r.data.cat.avatarId === 'cloud://env.bucket/avatar.jpg', r.data.cat.avatarId)
+  assert('photoIds 与 photos 等长（不删项，防下标错位）',
+    (r.data.cat.photoIds || []).length === (r.data.cat.photos || []).length, r.data.cat.photoIds)
 
   // 情形二（小灰灰）：avatar 为空但有相册 → 头像回退 photos[0]，
   // 与地图 mapPoints 的口径一致（「档案有照片、列表却是占位图」）
@@ -477,48 +524,113 @@ async function run() {
   assert('listSightings 第 4 张不换（留给前端懒换）',
     sightRow && sightRow.photos[3] === 'cloud://env.bucket/s4.jpg', sightRow && sightRow.photos)
 
-  // 合规红线（2026-10-16 审核驳回「社交-笔记」）：
-  // 非社团成员**不得**拿到用户生成内容（note 文字 / photos 图片 / 上报人身份），
-  // 否则等于"用户内容的公开发布" —— 个人主体未开放该类目。
-  // 成员（u_admin）仍可见全字段，用于核实存档。
+  // 合规红线（2026-10-16 二审）+ 可见性策略（超管在控制台按校区统一配置）：
+  //
+  // ① 非社团成员**不得**拿到用户生成内容（photos 图片 / 上报人身份），
+  //    否则等于"用户内容的公开发布" —— 个人主体未开放该类目。
+  // ② 打卡记录**默认 private（仅社团内部可见）**；公开与否由**超管**配置，
+  //    打卡者传 public:true **不生效**（合规：用户端不得有发布入口）。
+  //    成员（u_admin）仍可见全字段，用于核实存档。
+  //
+  // 默认状态下：记录全部 private —— 访客看不到任何打卡
+  await as('u_admin', 'addSighting', { data: {
+    catId: catId, schoolId,
+    photos: ['cloud://env.bucket/priv.jpg'],
+    behaviors: ['hiding']
+  } })
+  const privGuest = (await as('u_guest', 'listSightings', { schoolId, catId })).data.list || []
+  assert('默认策略下访客看不到任何打卡',
+    !privGuest.some(x => Array.isArray(x.behaviors) && x.behaviors.indexOf('hiding') >= 0),
+    privGuest.map(x => x.behaviors))
+  const privAdmin = (await as('u_admin', 'listSightings', { schoolId, catId })).data.list || []
+  const privRow = privAdmin.find(x => Array.isArray(x.behaviors) && x.behaviors.indexOf('hiding') >= 0)
+  assert('默认记录 visibility=private（成员可见以核实）',
+    privRow && privRow.visibility === 'private', privRow && privRow.visibility)
+
+  // 打卡者无法自行公开：显式传 public:true 也不生效（策略仍是关闭）
+  await as('u_admin', 'addSighting', { data: {
+    catId: catId, schoolId, public: true, photos: ['cloud://env.bucket/trypub.jpg'],
+    behaviors: ['moving']
+  } })
+  const tryPub = (await as('u_admin', 'listSightings', { schoolId, catId })).data.list
+    .find(x => Array.isArray(x.photos) && x.photos.some(p => /trypub\.jpg/.test(p)))
+  assert('打卡者传 public:true 不生效（策略未开）',
+    tryPub && tryPub.visibility === 'private', tryPub && tryPub.visibility)
+
+  // 本人查自己的记录（mine:true）不受可见性限制
+  const mineList = (await as('u_admin', 'listSightings', { mine: true, schoolId })).data.list || []
+  assert('mine=true 能看到自己的私有记录',
+    mineList.some(x => Array.isArray(x.behaviors) && x.behaviors.indexOf('hiding') >= 0),
+    mineList.length)
+
+  // ③ 普通用户不能改可见性策略
+  const pol0 = await as('u_guest', 'setSightingVisibilityPolicy', { data: { public: true } })
+  assert('普通用户不能改可见性策略', pol0.ok === false, pol0)
+
+  // 超管开启校区策略 → 新记录变 public，访客可见（但仍无 photos/身份）
+  const polOn = await as('u_admin', 'setSightingVisibilityPolicy', { data: { public: true }, schoolId })
+  assert('超管可开启公开策略', polOn.ok === true && polOn.data.public === true, polOn.data)
+
   await as('u_admin', 'addSighting', { data: {
     catId: catId, schoolId,
     photos: ['cloud://env.bucket/p1.jpg'],
-    note: '右前腿有伤', behaviors: ['resting', 'unusual'], health: 'injured'
+    behaviors: ['resting', 'unusual'], features: ['limping'], health: 'injured'
   } })
   const guestSight = (await as('u_guest', 'listSightings', { schoolId, catId })).data.list || []
   const gs = guestSight.find(x => Array.isArray(x.behaviors) && x.behaviors.length)
-  assert('非成员看不到 note（用户文字）', gs && gs.note === undefined, gs && gs.note)
+  assert('策略开启后访客可见打卡', !!gs, guestSight.map(x => x.behaviors))
   assert('非成员看不到 photos（用户图片）', gs && gs.photos === undefined, gs && gs.photos)
   assert('非成员看不到 reporter 身份', gs && gs.reporter === undefined, gs && gs.reporter)
   assert('非成员仍能看到结构化 health', gs && gs.health === 'injured', gs && gs.health)
   assert('非成员仍能看到结构化 behaviors',
     gs && JSON.stringify(gs.behaviors) === JSON.stringify(['resting', 'unusual']), gs && gs.behaviors)
+  assert('非成员仍能看到结构化 features',
+    gs && JSON.stringify(gs.features) === JSON.stringify(['limping']), gs && gs.features)
+  assert('云端不再写入 note 字段（自由文本通道已关）', gs && gs.note === undefined, gs && gs.note)
 
   const adminSight = (await as('u_admin', 'listSightings', { schoolId, catId })).data.list || []
-  const asx = adminSight.find(x => x.note === '右前腿有伤')
-  assert('成员仍能看到 note 全文', !!asx, adminSight.map(x => x.note))
+  const asx = adminSight.find(x => Array.isArray(x.features) && x.features.indexOf('limping') >= 0)
   assert('成员仍能看到 photos', asx && Array.isArray(asx.photos), asx && asx.photos)
+  assert('策略开启后记录标为 visibility=public', asx && asx.visibility === 'public', asx && asx.visibility)
 
-  // behaviors 白名单：非法值必须被服务端丢弃（客户端可被篡改）
+  // 之前的 private 记录**不追溯**变公开（策略只影响新记录）
+  const oldPriv = (await as('u_admin', 'listSightings', { schoolId, catId })).data.list
+    .find(x => Array.isArray(x.behaviors) && x.behaviors.indexOf('hiding') >= 0)
+  assert('旧 private 记录不被追溯公开', oldPriv && oldPriv.visibility === 'private', oldPriv && oldPriv.visibility)
+
+  // 关回策略：新记录恢复 private
+  const polOff = await as('u_admin', 'setSightingVisibilityPolicy', { data: { public: false }, schoolId })
+  assert('超管可关闭公开策略', polOff.ok === true && polOff.data.public === false, polOff.data)
+
+  // ④ features 白名单：非法值必须被服务端丢弃（客户端可被篡改）
   await as('u_admin', 'addSighting', { data: {
     catId: catId, schoolId, photos: ['cloud://env.bucket/p2.jpg'],
-    behaviors: ['resting', 'HACKED', 'eating', 123, null]
+    behaviors: ['resting', 'HACKED', 'eating', 123, null],
+    features: ['thin', 'FAKE', 'collar']
   } })
   const badBehav = (await as('u_admin', 'listSightings', { schoolId, catId })).data.list
     .find(x => Array.isArray(x.photos) && x.photos.some(p => /p2\.jpg/.test(p)))
   assert('云端 behaviors 白名单过滤非法值',
     badBehav && JSON.stringify(badBehav.behaviors) === JSON.stringify(['resting', 'eating']),
     badBehav && badBehav.behaviors)
+  assert('云端 features 白名单过滤非法值',
+    badBehav && JSON.stringify(badBehav.features) === JSON.stringify(['thin', 'collar']),
+    badBehav && badBehav.features)
 
-  // note 长度兜底：老客户端/直接调用可绕过前端 maxlength
+  // ⑤ 新猫占位名由服务端按 pattern 生成，不接受用户自定义 catName
   await as('u_admin', 'addSighting', { data: {
-    catId: catId, schoolId, photos: ['cloud://env.bucket/p3.jpg'],
-    note: '这是一段非常长的用户自由文本内容用来测试服务端是否真的做了截断保护措施'
+    schoolId, pattern: 'orange',
+    catName: '用户自己起的名字'
   } })
-  const longNote = (await as('u_admin', 'listSightings', { schoolId, catId })).data.list
-    .find(x => Array.isArray(x.photos) && x.photos.some(p => /p3\.jpg/.test(p)))
-  assert('云端 note 截断到 20 字', longNote && longNote.note.length === 20, longNote && longNote.note)
+  const namedRow = (await as('u_admin', 'listSightings', { pending: true, schoolId })).data.list
+    .find(x => x.pattern === 'orange' || /未命名/.test(x.catName || ''))
+  assert('新猫占位名由服务端生成（不采用用户 catName）',
+    namedRow && namedRow.catName === '未命名·橘猫', namedRow && namedRow.catName)
+
+  // ⑥ 访客 listSightings 不返回 null 项（sanitize 返回 null 已被过滤）
+  r = await as('u_guest', 'listSightings', { schoolId, catId })
+  assert('访客 listSightings 不返回 null 项（sanitize 返回 null 已被过滤）',
+    (r.data.list || []).every(x => x && typeof x === 'object'))
 
   r = await as('u_admin', 'getCat', { id: catId })
   const sightInCat = (r.data.sightings || [])[0]
@@ -539,6 +651,270 @@ async function run() {
   r = await as('u_admin', 'debugCatMedia', { name: '无头像猫', schoolId })
   assert('debugCatMedia 提示「没设头像但有相册」',
     r.data.rows[0] && /photos\[0\]/.test(r.data.rows[0].hint || ''), r.data.rows[0])
+
+  console.log('\n=== 10. 图鉴收集按学校统计 ===')
+
+  // 未绑定学校：不能凭空给进度。旧实现用 listCats（where 为空）会拿到**全环境**的猫，
+  // 新用户一进来就显示「0 / 4」，那其实是别校的猫。
+  r = await as('u_guest', 'listDex', {})
+  assert('未绑定学校 → needSchool', r.ok && r.data.needSchool === true, r.data)
+  assert('未绑定学校 → 不返回任何猫与总数',
+    r.data.total === 0 && r.data.seen === 0 && r.data.list.length === 0, r.data)
+
+  r = await as('u_guest', 'applySchool', { schoolId })
+  assert('选已有学校 → 直接绑定（不需要审核）',
+    r.ok && r.data.status === 'bound' && r.data.schoolId === schoolId, r.data)
+  assert('用户档案 schoolId 已落库',
+    store['users'].find(u => u._id === guestId).schoolId === schoolId)
+
+  // ⚠️ 前面的章节已经在这所学校里建了一批猫，所以这里用「相对口径」断言：
+  // 本校猫数必须与 store 里同校猫数一致，而不是写死 1。
+  const schoolCatIds = () => (store['cats'] || []).filter(c => c.schoolId === schoolId).map(c => c._id)
+  r = await as('u_guest', 'listDex', {})
+  const dexA = r.data
+  assert('已绑定 → 只统计本校猫（与库内同校猫数一致）',
+    r.ok && dexA.needSchool === false && dexA.total === schoolCatIds().length, { total: dexA.total, want: schoolCatIds().length })
+  assert('图鉴里没有外校的猫', dexA.list.every(c => schoolCatIds().indexOf(c.id) >= 0),
+    dexA.list.map(c => c.id))
+  assert('catSeen 里本校的猫算已收集', dexA.seen === 1 &&
+    dexA.percent === Math.round(1 / dexA.total * 100), { seen: dexA.seen, percent: dexA.percent })
+  assert('已收集的猫标记 unlocked 且带 id',
+    dexA.list.some(c => c.id === catId && c.unlocked === true), dexA.list.filter(c => c.unlocked))
+
+  // 第二所学校：两校图鉴互不相通
+  r = await as('u_admin', 'createSchool', { name: '第二大学', center: { lat: 31.2, lng: 121.4 } })
+  const schoolB = r.data._id
+  await as('u_admin', 'saveCat', { data: { name: 'B校的猫', pattern: 'white', schoolId: schoolB } })
+
+  r = await as('u_guest', 'listDex', {})
+  const bCatId = (store['cats'] || []).filter(c => c.schoolId === schoolB)[0]._id
+  assert('别校建档不会混进本校图鉴',
+    r.data.total === dexA.total && r.data.list.every(c => c.id !== bCatId), { total: r.data.total, bCatId })
+
+  r = await as('u_other', 'login', {})
+  await as('u_other', 'applySchool', { schoolId: schoolB })
+  r = await as('u_other', 'listDex', {})
+  assert('不同学校有各自的图鉴（B 校 1 只、0 收集）',
+    r.data.total === 1 && r.data.seen === 0 && r.data.list[0].unlocked === false, r.data)
+  assert('B 校图鉴里没有 A 校的猫', r.data.list[0].id !== catId, r.data.list[0])
+
+  r = await as('u_guest', 'listDex', { brief: true })
+  assert('brief 只回计数、不回清单（「我的」页用）',
+    r.data.brief === true && r.data.list.length === 0 &&
+    r.data.total === dexA.total && r.data.seen === 1, r.data)
+
+  console.log('\n=== 11. 建校申请与超管审核 ===')
+  const appliesBefore = (store['school_applies'] || []).length
+  const schoolsBefore = (store['schools'] || []).length
+
+  r = await as('u_other', 'applySchool', { schoolId: 'no_such_school' })
+  assert('绑到不存在的学校 → 404（避免绑完数据全空）', r.ok === false && r.code === 404, r)
+
+  r = await as('u_new', 'login', {})
+  const newId = r.data._id
+  r = await as('u_new', 'applySchool', {})
+  assert('缺学校名 → 400', r.ok === false && r.code === 400, r)
+
+  r = await as('u_new', 'applySchool', { name: '新大学', campus: '东校区', city: '南京' })
+  assert('提交新建申请 → submitted', r.ok && r.data.status === 'submitted', r.data)
+  const applyId = r.data.apply._id
+  assert('申请落库为 pending',
+    (store['school_applies'] || []).find(a => a._id === applyId).status === 'pending')
+  assert('审核通过前不建学校（否则别人能选到没审过的学校）',
+    (store['schools'] || []).length === schoolsBefore, (store['schools'] || []).length)
+
+  r = await as('u_new', 'applySchool', { name: '新大学', campus: '东校区' })
+  assert('重复提交不产生第二条待审',
+    r.data.status === 'pending' && (store['school_applies'] || []).length === appliesBefore + 1,
+    (store['school_applies'] || []).length)
+
+  r = await as('u_new', 'mySchoolApply', {})
+  assert('mySchoolApply 能读到自己待审的申请',
+    r.data.pending && r.data.pending.name === '新大学', r.data)
+
+  r = await as('u_other', 'listSchoolApplies', {})
+  assert('非超管看不到申请列表', r.ok === false && r.code === 403, r)
+  r = await as('u_other', 'handleSchoolApply', { id: applyId, approve: true })
+  assert('非超管不能审核（否则谁都能给自己建校）', r.ok === false && r.code === 403, r)
+
+  r = await as('u_admin', 'listSchoolApplies', { status: 'pending' })
+  assert('超管能看到待审申请', r.ok && r.data.some(a => a._id === applyId), r.data)
+
+  r = await as('u_admin', 'handleSchoolApply', { id: applyId, approve: true })
+  assert('通过 → 建校 + 绑定申请人',
+    r.ok && r.data.status === 'approved' && !!r.data.schoolId, r.data)
+  const newSchoolId = r.data.schoolId
+  assert('学校文档已创建',
+    (store['schools'] || []).some(s => s._id === newSchoolId && s.name === '新大学'))
+  assert('申请人已绑定新学校',
+    store['users'].find(u => u._id === newId).schoolId === newSchoolId)
+  assert('申请标记 approved',
+    (store['school_applies'] || []).find(a => a._id === applyId).status === 'approved')
+
+  r = await as('u_admin', 'handleSchoolApply', { id: applyId, approve: true })
+  assert('重复审核 → 409（不会给同一申请建出两所学校）', r.ok === false && r.code === 409, r)
+
+  r = await as('u_new', 'applySchool', { name: '假的大学' })
+  const apply2 = r.data.apply._id
+  r = await as('u_admin', 'handleSchoolApply', { id: apply2, approve: false })
+  assert('驳回 → rejected', r.ok && r.data.status === 'rejected', r.data)
+  assert('驳回不建学校', (store['schools'] || []).length === schoolsBefore + 1, (store['schools'] || []).length)
+  assert('驳回不影响已有的学校绑定（仍停在国内学校）',
+    store['users'].find(u => u._id === newId).schoolId === newSchoolId)
+  r = await as('u_new', 'mySchoolApply', {})
+  assert('mySchoolApply 能读到被驳回的申请',
+    r.data.rejected && r.data.rejected.name === '假的大学', r.data)
+
+  console.log('\n=== 11b. 校园管理列表（超管）===')
+  // 后台的校园列表 = 校档 + 每校的档案数/绑定用户数。
+  // 为什么单独一个 action：listSchools 是**公开**选校接口，只回校名；
+  // 后台要判断「哪所校区有数据、哪所是空壳」，必须多带计数。
+  r = await as('u_other', 'listSchoolsAdmin', {})
+  assert('非超管不能读校园列表', r.ok === false && r.code === 403, r)
+
+  store['cats'] = store['cats'] || []
+  store['cats'].push(
+    { _id: 'scat1', name: '校猫甲', schoolId: newSchoolId, createdAt: new Date() },
+    { _id: 'scat2', name: '校猫乙', schoolId: newSchoolId, createdAt: new Date() }
+  )
+  r = await as('u_admin', 'listSchoolsAdmin', {})
+  const rowNew = (r.data || []).find(s => s._id === newSchoolId) || {}
+  assert('超管能读到校园列表', r.ok && Array.isArray(r.data) && r.data.length > 0, r)
+  assert('带该校档案数（按 schoolId 过滤）', rowNew.catCount === 2, rowNew.catCount)
+  assert('带该校绑定用户数', rowNew.userCount === 1, rowNew.userCount)
+  assert('保留校名/校区等原始字段，后台可直接回填表单',
+    rowNew.name === '新大学' && rowNew.campus === '东校区', rowNew)
+
+  console.log('\n=== 12. 打卡次数计数口径（「-2」的成因）===')
+  // 直接造数据：两条属于 u_guest 的记录 + 双方各一份计数。
+  // 目的是锁死「删除时回退的是记录作者，不是操作者」——原实现无条件给操作者 -1，
+  // 超管在后台删两条别人的打卡，自己的次数就变成 -2。
+  store['sightings'] = store['sightings'] || []
+  const guestDoc = () => store['users'].find(u => u.openid === 'u_guest')
+  const adminDoc = () => store['users'].find(u => u.openid === 'u_admin')
+  const mkSighting = (id, reporter) => {
+    store['sightings'].push({
+      _id: id, reporter, food: 0, visibility: 'private',
+      schoolId: newSchoolId || '', createdAt: new Date()
+    })
+  }
+
+  mkSighting('sg_a', 'u_guest')
+  mkSighting('sg_b', 'u_guest')
+  guestDoc().sightingCount = 2
+  adminDoc().sightingCount = 5
+
+  r = await as('u_admin', 'deleteSighting', { id: 'sg_a' })
+  assert('超管可删他人记录', r.ok === true, r)
+  assert('回退的是作者（guest 2 → 1）', guestDoc().sightingCount === 1, guestDoc().sightingCount)
+  assert('操作者（超管）计数不受影响（仍 5）', adminDoc().sightingCount === 5, adminDoc().sightingCount)
+
+  // 本人删自己的：回退本人
+  mkSighting('sg_c', 'u_guest')
+  guestDoc().sightingCount = 1
+  r = await as('u_guest', 'deleteSighting', { id: 'sg_c' })
+  assert('本人删自己的记录 → 自己 -1', r.ok === true && guestDoc().sightingCount === 0,
+    guestDoc().sightingCount)
+
+  // 计数已经是 0（脏数据）：条件更新挡住，不能减成 -1
+  mkSighting('sg_d', 'u_guest')
+  guestDoc().sightingCount = 0
+  r = await as('u_guest', 'deleteSighting', { id: 'sg_d' })
+  assert('计数为 0 时删除不会变负（条件更新兜底）', r.ok === true && guestDoc().sightingCount === 0,
+    guestDoc().sightingCount)
+
+  // 已经是 -2 的脏数据：下一次 login 自动按真实条数重算
+  mkSighting('sg_e', 'u_guest')
+  guestDoc().sightingCount = -2
+  r = await as('u_guest', 'login', {})
+  const realCount = (store['sightings'] || []).filter(x => x.reporter === 'u_guest').length
+  assert('login 返回值里的打卡次数已修正',
+    r.ok && r.data.sightingCount === realCount, { got: r.data && r.data.sightingCount, realCount })
+  assert('库里的计数同步修正（不再是 -2）',
+    guestDoc().sightingCount === realCount, guestDoc().sightingCount)
+  assert('count() 未多算他人记录', realCount ===
+    (store['sightings'] || []).filter(x => x.reporter === 'u_guest').length, realCount)
+
+  console.log('\n=== 13. 重复档案检测与清理（「录入一只，猫谱里两条一样」）===')
+  // 成因：saveCat 超时后客户端自动重发 + 用户手点第二遍 → 建出同名同校的两只猫。
+  // 小程序端此前没有删除入口，重复只能烂在猫谱里。这里提供「扫出来 + 删多余」。
+  // ⚠️ 用「管理员当前绑定的学校」而不是开头的 schoolId：前面 11 节已经改绑过，
+  // 用旧 schoolId 建cat会被 assertSchool 挡掉（测试会静默拿到失败响应）。
+  const dupSchool = ((store['users'] || []).find(u => u.openid === 'u_admin') || {}).schoolId || schoolId
+  const dupA = await as('u_admin', 'saveCat', { data: { name: '重复猫', pattern: 'white', schoolId: dupSchool } })
+  const dupB = await as('u_admin', 'saveCat', {
+    data: {
+      name: ' 重复猫 ', pattern: 'white', schoolId: dupSchool,
+      photos: ['cloud://env.bucket/d1.jpg', 'cloud://env.bucket/d2.jpg']
+    }
+  })
+  await as('u_admin', 'saveCat', { data: { name: '重复猫', pattern: 'gray', schoolId: dupSchool } })
+
+  r = await as('u_admin', 'findDuplicateCats', { schoolId: dupSchool })
+  const dupGroup = ((r.data && r.data.groups) || []).find(g => g.name === '重复猫')
+  assert('同校同名（含首尾空格差异）归为一组',
+    r.ok && !!dupGroup && dupGroup.items.length === 3,
+    r.data && r.data.groups)
+  assert('建议保留「照片最多」的那条（特征库最全）',
+    dupGroup && dupGroup.keepId === dupB.data._id,
+    dupGroup && { keepId: dupGroup.keepId, want: dupB.data._id })
+  const dupBItem = dupGroup && dupGroup.items.find(i => i._id === dupB.data._id)
+  assert('照片数如实下发（前端据此判断删哪条）',
+    dupBItem && dupBItem.photoCount === 2 && dupBItem.keep === true, dupBItem)
+  assert('不同名的猫不会被误报成重复',
+    !((r.data.groups || []).some(g => g.name === '橘座')),
+    (r.data.groups || []).map(g => g.name))
+  assert('扫描条数一并返回（区分「扫了没重复」与「没扫」）',
+    Number(r.data.scanned) >= 3, r.data.scanned)
+
+  await as('u_admin', 'removeCat', { id: dupA.data._id })
+  r = await as('u_admin', 'findDuplicateCats', { schoolId: dupSchool })
+  const dupGroup2 = ((r.data && r.data.groups) || []).find(g => g.name === '重复猫')
+  assert('删掉一条后同组只剩 2 条', !!dupGroup2 && dupGroup2.items.length === 2,
+    dupGroup2 && dupGroup2.items.length)
+
+  r = await as('u_guest', 'findDuplicateCats', {})
+  assert('非超管调用被拒（403，不能扫别人的档案）', r.ok === false && r.code === 403, r)
+
+  console.log('\n=== 14. 超管删除猫档案（不可恢复 → 权限必须收紧）===')
+  // 原实现只有 doc(id).remove()：ACTIONS 声明 role:'admin' ⇒ 任何校园管理员都能删，
+  // 删不存在的 id 也静默成功。现在收紧为 requireSuper + 存在性校验。
+  {
+    const target = dupB.data._id
+    const guest = (store['users'] || []).find(u => u.openid === 'u_guest')
+    const oldRole = guest.role
+    guest.role = 'admin'   // 提成校园管理员，但不在 SUPER_ADMIN_OPENIDS 里
+    r = await as('u_guest', 'removeCat', { id: target })
+    assert('校园管理员（非超管）删档案被拒（403）', r.ok === false && r.code === 403, r)
+    assert('被拒后档案仍在', (store['cats'] || []).some(c => c._id === target))
+    guest.role = oldRole
+
+    r = await as('u_admin', 'removeCat', {})
+    assert('缺 id 明确报错（不再静默成功）', r.ok === false, r)
+    r = await as('u_admin', 'removeCat', { id: 'no_such_cat' })
+    assert('删不存在的档案报「不存在或已被删除」',
+      r.ok === false && /不存在|已被删除/.test(r.msg || r.message || ''), r)
+
+    r = await as('u_admin', 'removeCat', { id: target })
+    assert('超管删除成功并回带猫名（前端拿它做提示）',
+      r.ok === true && r.data && r.data.name === '重复猫', r)
+    assert('库里真的没了', !(store['cats'] || []).some(c => c._id === target))
+
+    r = await as('u_admin', 'removeCat', { id: target })
+    assert('重复删同一条报「不存在」（客户端超时重发会走到这里）', r.ok === false, r)
+
+    // 目击记录**不**连带删除：那是别人真实发生过的记录，删猫顺手删记录等于抹掉他人贡献
+    const sightCountBefore = (store['sightings'] || []).length
+    const catWithSight = (store['cats'] || []).find(c =>
+      (store['sightings'] || []).some(s => s.catId === c._id))
+    if (catWithSight) {
+      await as('u_admin', 'removeCat', { id: catWithSight._id })
+      assert('删猫不连带删打卡记录（历史留痕）',
+        (store['sightings'] || []).length === sightCountBefore, store['sightings'].length)
+    } else {
+      assert('删猫不连带删打卡记录（历史留痕）', true, '本轮无带记录的猫，跳过')
+    }
+  }
 
   console.log('\n=== 结果 ===')
   console.log('PASS ' + pass + ' / FAIL ' + fail)

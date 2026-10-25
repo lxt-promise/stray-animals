@@ -17,7 +17,7 @@
 
   <view class="tip small muted">
     资金公示是社团信任的基础。每一笔绝育、医疗支出都可关联到具体猫咪，
-    捐赠人能看到钱花在了哪只猫身上。
+    每一笔支出都可追溯到具体猫咪，成员可查看资金去向。
   </view>
 
   <view class="card" wx:for="{{list}}" wx:key="_id">

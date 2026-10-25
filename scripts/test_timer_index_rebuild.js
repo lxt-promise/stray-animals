@@ -16,6 +16,12 @@ const Module = require('module')
 
 const CF_DIR = path.resolve(__dirname, '../cloudfunctions/catcampus')
 
+// 单只猫的视图上限（源码真值）。本文件只测「定时任务与手动入口是否共用同一上限」，
+// 数字本身不该写死在断言里 —— 否则每次调阈值都要改测试，还容易漏改。
+const INDEX_PHOTOS = Number((require('fs')
+  .readFileSync(path.join(CF_DIR, 'lib', 'vision.js'), 'utf8')
+  .match(/^const INDEX_PHOTOS = (\d+)/m) || [])[1] || 0)
+
 /* ==================== stub：只留 index.js 的接线，其余 lib 空壳 ==================== */
 const calls = []
 
@@ -108,7 +114,12 @@ async function run(title, fnBody) {
     ok(r && r.data && r.data.built === 7, '回传服务端建成数量', JSON.stringify(r && r.data))
     const o = calls[0] || {}
     ok(o.force === true, 'force=true（忽略 aiIndexAt 记账）', JSON.stringify(o))
-    ok(o.photosPerCat === 3, '全量重建默认 3 张/猫（省时）', String(o.photosPerCat))
+    // 视图上限取源码里的真值（2026-10-24 由 5 提到 8）。
+    // 这里曾写死 photosPerCat: 5 —— 于是定时任务与后台手动入口用了两套张数，
+    // 调阈值只改常量时定时任务纹丝不动。正确行为是**不覆盖**，交给 buildIndexAll
+    // 用全局上限；所以断言「要么不传、要么等于全局上限」，而不是等于某个数字。
+    ok(o.photosPerCat === undefined || o.photosPerCat === INDEX_PHOTOS,
+      '全量重建不自行写死张数（默认走全局上限 ' + INDEX_PHOTOS + '）', String(o.photosPerCat))
   })
 
   await run('T4 运维可在 event 里覆盖预算（不必改环境变量）', async () => {
