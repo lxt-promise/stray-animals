@@ -300,5 +300,88 @@ class TestEngineAttrFallback(unittest.TestCase):
         self.assertIn("仅供参考", got["reason"])
 
 
+class TestCalicoLooseGate(unittest.TestCase):
+    """宽松三花规则必须有鲜明橘（2026-10-26）。
+
+    实测橘猫标准素材（浅橘/乳橘猫 + 白墙背景 + 阴影）被判成三花：
+    white=0.285 全来自墙、dark=0.31 全来自阴影、warm=0.28 全来自落进
+    brown 桶的低饱和橘毛，orange 桶只有 0.003 —— 宽松规则原本不看
+    orange，原封不动命中。数据取自该素材的真实统计。
+    """
+
+    def _ratio(self, orange):
+        return {"white": 0.285, "black": 0.081, "gray": 0.311,
+                "orange": orange, "brown": 0.279, "cream": 0.014, "red": 0.002}
+
+    def test_buff_cat_against_wall_is_not_calico(self):
+        color, _ = attrs._decide(self._ratio(0.003), stripe=0.48, dgray=0.227)
+        self.assertNotEqual(color, "calico", "没有鲜明橘不能判三花")
+        self.assertEqual(color, "orange", "白+暖+无鲜明橘应落到橘系（橘白）")
+
+    def test_loose_calico_with_vivid_orange_still_works(self):
+        color, pattern = attrs._decide(self._ratio(0.06), stripe=0.1, dgray=0.05)
+        self.assertEqual(color, "calico")
+        self.assertEqual(pattern, "calico")
+
+    def test_strict_calico_rule_unaffected(self):
+        """严格三花规则本就有 orange>=0.08 门槛，加宽松门槛不能破坏它。"""
+        got = attrs.analyze(mosaic([WHITE, ORANGE, BLACK], seed=2))
+        self.assertEqual(got["color"], "calico")
+
+
+class TestTabbyWarmGate(unittest.TestCase):
+    """狸花判定必须有暖色底毛（2026-10-26）。
+
+    实测黑猫标准素材（黑猫趴灰沙发）被判成狸花：stripe=0.63 过线，
+    但条纹分全部来自沙发布纹的方向性褶皱，暖色系像素（H5~55、S≥50，
+    不限亮度）只有 6.8%。真狸花的暖色底毛远高于此。数据取自真实统计。
+    """
+
+    def _ratio(self):
+        return {"white": 0.0, "black": 0.297, "gray": 0.637, "orange": 0.003,
+                "brown": 0.025, "cream": 0.0, "red": 0.0}
+
+    def test_black_cat_on_sofa_is_not_tabby(self):
+        color, pattern = attrs._decide(self._ratio(), stripe=0.7, dgray=0.59,
+                                       warmish=0.068)
+        self.assertEqual(color, "black", "黑猫+织物纹理不能判成狸花")
+        self.assertEqual(pattern, "solid")
+
+    def test_tabby_with_warm_base_still_tabby(self):
+        """暖色底毛够量时，狸花判定不受影响（规则 7 主路径）。"""
+        ratio = {"white": 0.05, "black": 0.05, "gray": 0.45, "orange": 0.0,
+                 "brown": 0.05, "cream": 0.15, "red": 0.0}
+        color, pattern = attrs._decide(ratio, stripe=0.9, dgray=0.15, warmish=0.25)
+        self.assertEqual(color, "tabby")
+        self.assertEqual(pattern, "tabby")
+
+    def test_low_warm_degrades_to_gray_not_tabby(self):
+        """暖色不足时降级为灰猫（花纹仍是条纹），而不是硬判狸花。"""
+        ratio = {"white": 0.05, "black": 0.05, "gray": 0.45, "orange": 0.0,
+                 "brown": 0.05, "cream": 0.15, "red": 0.0}
+        color, pattern = attrs._decide(ratio, stripe=0.9, dgray=0.15, warmish=0.05)
+        self.assertEqual(color, "gray")
+        self.assertEqual(pattern, "tabby")
+
+    def test_missing_warmish_keeps_old_behavior(self):
+        """没传 warmish（None）= 没有这项证据 → 门槛不生效，旧调用不受影响。"""
+        ratio = {"white": 0.05, "black": 0.05, "gray": 0.45, "orange": 0.0,
+                 "brown": 0.05, "cream": 0.15, "red": 0.0}
+        color, _ = attrs._decide(ratio, stripe=0.9, dgray=0.15)
+        self.assertEqual(color, "tabby")
+
+    def test_warmish_stat_is_exposure_immune(self):
+        """warmish 统计本身不看亮度：把狸花底毛压暗到夜里，占比不塌。"""
+        bright = attrs.analyze(solid(CREAM))
+        dark_im = solid(CREAM).point(lambda p: int(p * 0.35))   # 压到 35% 亮度
+        dark = attrs.analyze(dark_im)
+        self.assertGreater(bright["_stats"]["warmish"], 0.9)
+        self.assertGreater(dark["_stats"]["warmish"], 0.9,
+                           "S/H 对亮度免疫，压暗不应让暖色证据消失")
+        # 纯色无条纹 → 走规则 6 的既有兜底（暖色主导 + 无鲜明橘 → 橘系纯色）；
+        # 这条断言锁的是「暖色证据在夜间仍然生效」，不是条纹判定。
+        self.assertEqual(dark["color"], "orange")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

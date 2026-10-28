@@ -2,7 +2,7 @@
 node_modules/
 web/frontend/dist/
 web/backend/target/
-
+server/models/
 # 识别服务部署包（scripts/package_vision.py 产物，单包 ~80MB）
 # 交付靠 dist/ 目录本身 / 云托管后台上传，不进版本库
 dist/

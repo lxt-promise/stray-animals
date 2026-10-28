@@ -433,3 +433,62 @@
   transition: width .4s;
 }
 
+/* ===== 加入学校的理由弹窗 ===== */
+.mask {
+  position: fixed;
+  left: 0; top: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, .45);
+  display: flex;
+  align-items: flex-end;
+  z-index: 100;
+}
+.sheet {
+  width: 100%;
+  background: var(--card, #fff);
+  border-radius: 24rpx 24rpx 0 0;
+  padding: 36rpx 32rpx calc(36rpx + env(safe-area-inset-bottom));
+  box-sizing: border-box;
+}
+.sheet-title {
+  font-size: 32rpx;
+  font-weight: 700;
+  color: var(--brand-dark, #7c3a06);
+  margin-bottom: 10rpx;
+}
+.sheet .muted {
+  margin-bottom: 20rpx;
+}
+.reason-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 160rpx;
+  background: rgba(146, 88, 32, .06);
+  border: 2rpx solid rgba(249, 115, 22, .25);
+  border-radius: 16rpx;
+  padding: 20rpx;
+  font-size: 28rpx;
+  line-height: 1.5;
+  color: var(--text-main, #3a2c1a);
+}
+.sheet-actions {
+  display: flex;
+  gap: 20rpx;
+  margin-top: 28rpx;
+}
+.sheet-btn {
+  flex: 1;
+  text-align: center;
+  padding: 24rpx 0;
+  border-radius: 16rpx;
+  font-size: 30rpx;
+  font-weight: 600;
+}
+.sheet-btn.ghost {
+  background: rgba(146, 88, 32, .08);
+  color: var(--text-weak, #92704a);
+}
+.sheet-btn.solid {
+  background: var(--brand-grad, linear-gradient(135deg, #f97316, #f59e0b));
+  color: #fff;
+}
+

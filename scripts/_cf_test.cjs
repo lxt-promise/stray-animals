@@ -661,9 +661,20 @@ async function run() {
   assert('未绑定学校 → 不返回任何猫与总数',
     r.data.total === 0 && r.data.seen === 0 && r.data.list.length === 0, r.data)
 
-  r = await as('u_guest', 'applySchool', { schoolId })
-  assert('选已有学校 → 直接绑定（不需要审核）',
-    r.ok && r.data.status === 'bound' && r.data.schoolId === schoolId, r.data)
+  // 选已有学校 → 提交加入申请（需管理员审核，不再即选即绑）
+  r = await as('u_guest', 'applySchool', { schoolId, reason: '我是本校学生' })
+  assert('选已有学校 → 提交加入申请（待审，不立即绑定）',
+    r.ok && r.data.status === 'submitted' && r.data.apply.type === 'join' && r.data.apply.schoolId === schoolId, r.data)
+  const joinApplyId = r.data.apply._id
+  assert('申请落库为 pending',
+    (store['school_applies'] || []).find(a => a._id === joinApplyId).status === 'pending')
+  assert('审核通过前不绑定（避免「选中即绑」挤进任意学校数据）',
+    !store['users'].find(u => u._id === guestId).schoolId)
+
+  // 管理员审核通过 → 才绑定
+  r = await as('u_admin', 'handleSchoolApply', { id: joinApplyId, approve: true })
+  assert('入校申请通过 → 绑定申请人',
+    r.ok && r.data.status === 'approved' && r.data.schoolId === schoolId, r.data)
   assert('用户档案 schoolId 已落库',
     store['users'].find(u => u._id === guestId).schoolId === schoolId)
 
@@ -692,7 +703,10 @@ async function run() {
     r.data.total === dexA.total && r.data.list.every(c => c.id !== bCatId), { total: r.data.total, bCatId })
 
   r = await as('u_other', 'login', {})
-  await as('u_other', 'applySchool', { schoolId: schoolB })
+  await as('u_other', 'applySchool', { schoolId: schoolB, reason: '本校教职工' })
+  // 入校申请需管理员审核通过才绑定
+  const otherApply = (store['school_applies'] || []).filter(a => a.openid === 'u_other' && a.status === 'pending')[0]
+  await as('u_admin', 'handleSchoolApply', { id: otherApply._id, approve: true })
   r = await as('u_other', 'listDex', {})
   assert('不同学校有各自的图鉴（B 校 1 只、0 收集）',
     r.data.total === 1 && r.data.seen === 0 && r.data.list[0].unlocked === false, r.data)
@@ -715,7 +729,7 @@ async function run() {
   r = await as('u_new', 'applySchool', {})
   assert('缺学校名 → 400', r.ok === false && r.code === 400, r)
 
-  r = await as('u_new', 'applySchool', { name: '新大学', campus: '东校区', city: '南京' })
+  r = await as('u_new', 'applySchool', { name: '新大学', campus: '东校区', city: '南京', reason: '本校有流浪猫待照顾' })
   assert('提交新建申请 → submitted', r.ok && r.data.status === 'submitted', r.data)
   const applyId = r.data.apply._id
   assert('申请落库为 pending',
@@ -723,7 +737,7 @@ async function run() {
   assert('审核通过前不建学校（否则别人能选到没审过的学校）',
     (store['schools'] || []).length === schoolsBefore, (store['schools'] || []).length)
 
-  r = await as('u_new', 'applySchool', { name: '新大学', campus: '东校区' })
+  r = await as('u_new', 'applySchool', { name: '新大学', campus: '东校区', reason: '再次申请建校' })
   assert('重复提交不产生第二条待审',
     r.data.status === 'pending' && (store['school_applies'] || []).length === appliesBefore + 1,
     (store['school_applies'] || []).length)
@@ -754,7 +768,7 @@ async function run() {
   r = await as('u_admin', 'handleSchoolApply', { id: applyId, approve: true })
   assert('重复审核 → 409（不会给同一申请建出两所学校）', r.ok === false && r.code === 409, r)
 
-  r = await as('u_new', 'applySchool', { name: '假的大学' })
+  r = await as('u_new', 'applySchool', { name: '假的大学', reason: '测试驳回' })
   const apply2 = r.data.apply._id
   r = await as('u_admin', 'handleSchoolApply', { id: apply2, approve: false })
   assert('驳回 → rejected', r.ok && r.data.status === 'rejected', r.data)
@@ -764,6 +778,19 @@ async function run() {
   r = await as('u_new', 'mySchoolApply', {})
   assert('mySchoolApply 能读到被驳回的申请',
     r.data.rejected && r.data.rejected.name === '假的大学', r.data)
+
+  // 入校申请（join）的驳回路径：与建校申请共用 handleSchoolApply，但只驳回、不建校/不换绑
+  r = await as('u_new', 'applySchool', { schoolId, reason: '我想加入A校' })
+  assert('入校申请 → submitted（type=join）',
+    r.ok && r.data.status === 'submitted' && r.data.apply.type === 'join', r.data)
+  const joinRejId = r.data.apply._id
+  r = await as('u_admin', 'handleSchoolApply', { id: joinRejId, approve: false })
+  assert('入校申请驳回 → rejected', r.ok && r.data.status === 'rejected', r.data)
+  assert('入校申请驳回不换绑（u_new 仍绑定新学校）',
+    store['users'].find(u => u._id === newId).schoolId === newSchoolId)
+  r = await as('u_new', 'mySchoolApply', {})
+  assert('mySchoolApply 能读到被驳回的入校申请',
+    r.data.rejected && r.data.rejected.type === 'join', r.data)
 
   console.log('\n=== 11b. 校园管理列表（超管）===')
   // 后台的校园列表 = 校档 + 每校的档案数/绑定用户数。

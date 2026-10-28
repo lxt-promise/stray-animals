@@ -191,9 +191,16 @@ Page(Object.assign({
     const hasAttr = !!attrText
     // 摘要把「品种」放第一位（服务端保证顺序），它是最像"结论"的那个词
     const head = hasAttr ? attrText.split(' · ')[0] : ''
+    // 质量门控（2026-10-26）：服务端判定「猫在画面里占比太小」时**不会返回候选**，
+    // 花色也一并弃权。这时界面只有一句解释 + 一个重拍引导，绝不能表现成
+    // "没有匹配到猫咪"—— 那是认不认识的问题，而这里是照片看不清的问题，
+    // 用户该做的动作完全不同（重拍 vs 新建档案）。
+    const qualityBlocked = !!(result && result.qualityOk === false)
     return {
       attrText,
       hasAttr,
+      qualityBlocked,
+      qualityReason: (result && result.qualityReason) || '',
       // 判不出属性时给一句人话原因。服务端 meta.attrReason 里带着具体数字
       //（"画面里猫体区域不足 12%"），比笼统的"识别失败"有用得多。
       attrHint: hasAttr ? ''

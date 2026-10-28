@@ -740,13 +740,19 @@ class Engine:
 
         t_det = time.time()
         det = {"box": None, "core": None, "conf": 0.0, "candidates": 0, "reason": "没有可用帧"}
+        det_i = order[0] if order else 0
         for tried, i in enumerate(order, 1):
+            det_i = i
             det = _run_detect(self.detector, frames[i])
             if det["box"] or tried >= 3:     # 首/中/尾各试一次就够，别把 N 帧全跑一遍
                 break
         detect_ms = int((time.time() - t_det) * 1000)
 
         box = det["box"]
+        # 猫体区域平均亮度（低光门控用，见 _quality）：必须在**喂给嵌入模型的
+        # 同一个框**（外扩框 crop）上算 —— 嵌入不可信的根源就是这些像素。
+        # 只算检测帧一次：一段视频/一张图光照恒定，逐帧算是白花 CPU。
+        light = self._box_light(frames[det_i], box)
         # 花色用**紧绷框**、提特征用**外扩框**：两者诉求相反。
         # 外扩能补回被切掉的耳尖/尾巴（个体特征更完整），但每扩一圈都会带进
         # 背景和杂物 —— 实测 8% 外扩把绿墙和木桌算进色域，白猫从「纯白」变成
@@ -778,8 +784,75 @@ class Engine:
             "detectCandidates": int(det.get("candidates") or 0),
             "detectReason": det.get("reason") or "",
             "attr": attr,
+            "quality": self._quality(box, frames[0].size if frames else None, light=light),
             "timing": {"detect": detect_ms, "embed": embed_ms},
         }
+
+    @staticmethod
+    def _box_light(im, box) -> Optional[float]:
+        """猫体区域（外扩框 crop）的平均亮度（HSV 的 V，0~255）。
+
+        低光门控的输入信号。96×96 采样足够（9216 个样本），单次 <1ms。
+        没框（检测失败走整图）时也照算 —— 整图提特征本来就不可信，
+        低光只是雪上加霜，返回整图亮度供诊断。
+        """
+        try:
+            crop = im.crop(box) if box else im
+            hsv = np.asarray(crop.resize((96, 96)).convert("HSV"))
+            return float(hsv[..., 2].mean())
+        except Exception:        # noqa: BLE001 —— 亮度算不出来只放弃门控，不拦识别
+            return None
+
+    @staticmethod
+    def _quality(box, frame_size, light=None) -> dict:
+        """查询图可信度：**猫占多大** + **光线够不够**。任一不过 → 放弃结论。
+
+        为什么需要（2026-10-26 实测，不是理论）
+        ------------------------------------
+        维度一「占比」：用户上传夜间实拍：白猫站在远处台面上，检测框只占画面 4.9%。
+        结果：查询向量与「白猫档案」余弦 61.5%，与「橘猫档案」63.8% ——
+        **方向都反了**，界面给出「胖橘 83%」这种一眼假的结论。
+        同一次实验里，把同一只白猫按比例缩小做对照：
+            占画面 39.5% → 差值 +25.5%（正确）
+            占画面 28.2% → 差值 +15.7%（正确）
+            占画面  8.5% → 差值 +12.9%（正确）
+            占画面  3.2% → 差值 +5.0%（正确）
+            检测框退化 → 差值 −2.4% ~ −3.2%（全线配错）
+        结论：区分度随目标变小单调下降，框一旦退化物里查询向量就不再可信。
+
+        维度二「亮度」（同日深夜第二例，占比门控拦不住）：夜间白猫**近拍**，
+        框占画面 47%，但花色判「黑猫 0.824」（白毛 V 92~184 全掉进 gray/black 桶，
+        夜里 p98=242 被点光源占据，曝光自适应锚点失效），检索把白天白猫档案排在
+        英短后面（53.7% < 57.5%，方向反了），线上给出「胖橘 79.7%」。
+        gamma 亮度增强救不回来（增强后仍排第二）。实测猫体平均 V：
+        夜间 105 / 113，白天 8 张全部 ≥178 —— 两簇间隔 >50，阈值取中 125。
+        ⚠️ 早期结论「压暗 0.4 倍区分度仍有 +17.7%，不用看亮度」只对**模拟压暗**
+        成立；真实夜间照（点光源 + 色偏 + 相机降噪）是另一个分布。
+
+        门控口径：任一维度不过 → **不返回候选匹配、花色也弃权**：硬给结论比
+        说"看不清"更糟 —— 用户会照着错误结果去点「就是这只猫」，把错样本
+        写进特征库。
+        """
+        if not box or not frame_size:
+            return {"ok": False, "areaRatio": 0.0,
+                    "reason": "未定位到猫体（整图提特征，背景会污染结果）"}
+        fw, fh = frame_size
+        if fw <= 0 or fh <= 0:
+            return {"ok": False, "areaRatio": 0.0, "reason": "画面尺寸异常"}
+        ratio = (box[2] - box[0]) * (box[3] - box[1]) / float(fw * fh)
+        if ratio < float(config.QG_MIN_AREA_RATIO):
+            return {"ok": False, "areaRatio": round(ratio, 4),
+                    "reason": "猫在画面里只占 %.0f%%，距离太远，特征不足以可靠比对"
+                              % (100.0 * ratio)}
+        # 低光门控：⚠️ 必须显式 None 判断（None = 没算出来，门控不生效），
+        # 不能写 `if not light` —— V=0.0 是合法的（全黑图）会被 or 链吞掉。
+        if light is not None and light < float(config.QG_MIN_LIGHT_MEAN_V):
+            return {"ok": False, "areaRatio": round(ratio, 4),
+                    "lightMeanV": round(light, 1),
+                    "reason": "光线太暗，拍到的细节不足以可靠比对，请靠近光源重拍"}
+        return {"ok": True, "areaRatio": round(ratio, 4),
+                "lightMeanV": None if light is None else round(light, 1),
+                "reason": ""}
 
     def features(self, im: Image.Image) -> Tuple[np.ndarray, str, str, float, bool]:
         """返回 (embedding, color, pattern, attr_conf, detected)。

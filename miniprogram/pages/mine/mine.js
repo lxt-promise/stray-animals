@@ -30,15 +30,23 @@ Page(Object.assign({
     // 未绑定学校时这里是空的，界面显示「未绑定学校」而不是 0 / 4。
     dexSummary: { seen: 0, total: 0, text: '未绑定学校' },
     showSchoolForm: false,
-    schoolForm: { name: '', campus: '', city: '', intro: '' },
+    schoolForm: { name: '', campus: '', city: '', intro: '', reason: '' },
     schools: [],
     // picker 用的选项（label 必须预拼好：WXML 的 range-key 只认字段，不做字符串拼接）
     schoolOptions: [],
     // picker 右侧文案（同样在这里拼：mustache 里的字符串相加会被静默忽略）
     schoolPickSide: '加载中',
+    // 切换到「附近 25km 内无学校」时为真（附近空列表 → 引导去新建）
+    nearbyEmpty: false,
     // 下拉条副文案：也在 JS 里拼好（WXML 不做字符串拼接）
-    schoolPickHint: '选中即绑定，无需审核',
-    // 我的建校申请状态（pending / rejected），用于显示「审核中 / 被驳回」
+    schoolPickHint: '选中后提交申请，管理员审核通过才绑定',
+    // 加入已有学校：选完学校在弹窗里填理由 → 提交申请（不再即选即绑）
+    showJoinForm: false,
+    joinSchoolId: '',
+    joinLabel: '',
+    joinReason: '',
+    // 我的学校申请状态（pending / rejected），用于显示「审核中 / 被驳回」；
+    // 内含 label（join 取 schoolName，create 取 name）与 type
     schoolApply: { pending: null, rejected: null },
     // 工作台（仅超管）：从底部 tab 迁移到「我的」页
     wbOpen: false,
@@ -51,7 +59,7 @@ Page(Object.assign({
   onLoad(options) {
     if (options.action === 'school') {
       this.setData({ showSchoolForm: true })
-      this.loadSchools()
+      this.getMyLoc().then(loc => this.loadSchools(false, loc))
     }
     this.load()
   },
@@ -87,7 +95,7 @@ Page(Object.assign({
         isAdminPlus: isAdminPlus(app),
         // 换校条副文案跟着「有没有绑定」走：不能等 listSchools 回来才正确，
         // 学校列表请求是静默失败的（下拉为空即可），失败时文案会一直停在初始值。
-        schoolPickHint: school ? '换校后图鉴 · 打卡 · 地图都按新学校统计' : '选中即绑定，无需审核'
+        schoolPickHint: school ? '换校需管理员审核通过后才生效' : '选中后提交申请，管理员审核通过才绑定'
       })
       this.syncUserAvatar()
       // 学校信息以云端为准：globalData 只在启动/创建/绑定时更新，
@@ -132,13 +140,21 @@ Page(Object.assign({
         // 图鉴数只认 listDex 的「本校已收集」——user.catSeen 是跨校累计的，
         // 直接取长度会在换校后大于总数（7 / 4）。
         jobs.push(this.loadDex())
-        if (!user.schoolId) jobs.push(this.loadSchoolApply())
+        // 无论是否已绑定都拉一次申请状态：已绑定用户提交「换校」申请后，
+        // 也要能看到「审核中」的横幅（否则刷新后以为没提交成功反复提交）。
+        jobs.push(this.loadSchoolApply())
         // 管理员及以上才拉工作台概览；失败不影响页面主体
         if (isAdminPlus(app)) jobs.push(this.loadWorkbench())
       }
       // 学校下拉数据随页面一起拉：picker 是原生组件，点开时没法再"先请求后展开"，
       // 必须提前把 range 准备好，否则下拉是空的（用户会以为没有学校可选）。
-      jobs.push(this.loadSchools(true))
+      // 默认按用户定位过滤到附近 25km（拿不到定位则回退全部）。
+      // 定位只决定「是否按 25km 过滤」，是增强项：拿不到就回退全部学校。
+      // ⚠️ 必须自己吃掉异常 —— 直接 await 的话一旦取定位抛错，
+      // 整个 load() 的 try 会中断，连学校列表都不拉了（下拉变空）。
+      let loc = null
+      try { loc = await this.getMyLoc() } catch (e) { loc = null }
+      jobs.push(this.loadSchools(true, loc))
       await Promise.all(jobs)
       // getSchool 可能带回更新的学校信息（校名/简介在后台被改过），以云端为准
       if (school !== this.data.school) this.setData({ school })
@@ -208,10 +224,17 @@ Page(Object.assign({
    * 可选学校列表（下拉框数据源）。
    * label 在这里拼好：WXML 的 picker 只认 range-key 指向的字段，
    * 写 `{{item.name + ' · ' + item.campus}}` 会被编译期静默忽略（项目里踩过）。
+   *
+   * @param {boolean} silent  随页面静默加载时不弹 toast，用户主动操作再报错
+   * @param {object|null} loc  用户定位 {lat,lng}（gcj02）；为空则后端回退全部学校
+   *   默认只显示定位 25km 内的学校（后端按内存距离过滤）。
    */
-  async loadSchools(silent) {
+  async loadSchools(silent, loc) {
     try {
-      const schools = await app.callApi('listSchools', {})
+      const coords = loc || this._loc || null
+      const payload = { currentSchoolId: (this.data.school && this.data.school._id) || '' }
+      if (coords) { payload.lat = coords.lat; payload.lng = coords.lng }
+      const schools = await app.callApi('listSchools', payload)
       const list = Array.isArray(schools) ? schools : []
       this.setData({
         schools: list,
@@ -219,11 +242,12 @@ Page(Object.assign({
           _id: s._id,
           label: s.campus ? (s.name + ' · ' + s.campus) : s.name
         })),
-        schoolPickSide: list.length ? ('共 ' + list.length + ' 所') : '暂无学校',
-        // 副文案按「已绑定 / 未绑定」两种处境给不同的预期说明
-        schoolPickHint: this.data.school
-          ? '换校后图鉴 · 打卡 · 地图都按新学校统计'
-          : '选中即绑定，无需审核'
+        // 右侧计数：带定位时强调「附近」，否则回退「共 N 所」
+        schoolPickSide: list.length ? (coords ? ('附近 ' + list.length + ' 所') : ('共 ' + list.length + ' 所')) : '暂无学校',
+        // 附近（带定位且被半径过滤后）空列表 → 引导去新建
+        nearbyEmpty: !!coords && list.length === 0,
+        // 副文案按「已绑定 / 未绑定」两种处境给预期说明，带定位时补「仅显示附近 25km 内」
+        schoolPickHint: this.pickHint(!!coords)
       })
     } catch (e) {
       // 随页面一起加载时静默失败（下拉为空即可），用户主动操作时再报错
@@ -231,54 +255,107 @@ Page(Object.assign({
     }
   },
 
-  /** 打开选校下拉（先刷新列表：别的管理员可能刚建了新学校） */
+  /** 选校副文案：绑定/未绑定两种处境 + 是否按 25km 过滤 */
+  pickHint(byLoc) {
+    const base = this.data.school
+      ? '换校需管理员审核通过后才生效'
+      : '选中后提交申请，管理员审核通过才绑定'
+    return byLoc ? (base + '（仅显示附近 25km 内）') : base
+  },
+
+  /** 取用户定位并缓存（gcj02）。授权拒绝 / 不支持 → 返回 null，由后端回退全部学校 */
+  async getMyLoc() {
+    if (this._loc !== undefined) return this._loc
+    try {
+      const loc = await new Promise((resolve, reject) => {
+        wx.getLocation({ type: 'gcj02', success: resolve, fail: reject })
+      })
+      this._loc = { lat: loc.latitude, lng: loc.longitude }
+    } catch (e) {
+      this._loc = null
+    }
+    return this._loc
+  },
+
+  /** 打开选校下拉（先按定位刷新列表：别的管理员可能刚建了新学校） */
   async openSchoolPicker() {
-    await this.loadSchools()
+    const loc = await this.getMyLoc()
+    await this.loadSchools(false, loc)
     if (!this.data.schoolOptions.length) {
-      // 一所学校都没有时不弹空下拉，直接引导到「申请新建」
+      // 附近 25km 内没有学校（或完全没学校）时不弹空下拉，直接引导到「申请新建」
       this.setData({ showSchoolForm: true })
-      wx.showToast({ title: '还没有学校，请申请新建', icon: 'none' })
+      wx.showToast({ title: loc ? '附近 25km 内暂无学校，可申请新建' : '还没有学校，请申请新建', icon: 'none' })
     }
   },
 
-  /** 选校：选中即绑定（学校已存在，不需要再审核） */
+  /** 选校：打开理由弹窗（学校已存在，但绑定需管理员审核，不再即选即绑） */
   onPickSchool(e) {
     const idx = Number(e.detail.value)
     const opt = (this.data.schoolOptions || [])[idx]
     if (!opt || !opt._id) return
     if (this.data.school && this.data.school._id === opt._id) return
-    wx.showModal({
-      title: '绑定学校',
-      content: '绑定到「' + opt.label + '」？绑定后图鉴、打卡与地图都切到该校。',
-      success: res => { if (res.confirm) this.doBindSchool(opt._id, opt.label) }
+    this.setData({
+      showJoinForm: true,
+      joinSchoolId: opt._id,
+      joinLabel: opt.label,
+      joinReason: ''
     })
   },
 
-  async doBindSchool(schoolId, label) {
-    showBusy({ title: '绑定中' })
+  /** 理由输入（弹窗里的 textarea 用独立的字段，避免和新建学校表单混在一起） */
+  onJoinReason(e) {
+    this.setData({ joinReason: (e.detail || {}).value || '' })
+  },
+
+  /** 弹窗遮罩内点击不冒泡（避免点到 sheet 关闭弹窗） */
+  noop() {},
+
+  /** 取消加入申请 */
+  cancelJoinForm() {
+    this.setData({ showJoinForm: false, joinSchoolId: '', joinLabel: '', joinReason: '' })
+  },
+
+  /** 提交「加入已有学校」申请：填理由 → 落待审 → 显示审核中（不再即选即绑） */
+  async submitJoinApply() {
+    const schoolId = this.data.joinSchoolId
+    const label = this.data.joinLabel
+    const reason = (this.data.joinReason || '').trim()
+    if (!schoolId) return
+    if (!reason) {
+      wx.showToast({ title: '请填写申请理由', icon: 'none' })
+      return
+    }
+    showBusy({ title: '提交中' })
     try {
-      await app.callApi('applySchool', { schoolId })
-      await app.refreshUser()
-      const school = await app.callApi('getSchool', { schoolId }).catch(() => null)
-      // 用 setSchool 而不是直接赋值：换校要顺手作废首页概览缓存
-      app.setSchool(school)
-      this.setData({ school, showSchoolForm: false })
-      wx.showToast({ title: '已绑定' + (label ? '：' + label : ''), icon: 'none' })
-      this.load()
+      const r = await app.callApi('applySchool', { schoolId, reason })
+      this.setData({ showJoinForm: false, joinReason: '' })
+      if (r.status === 'pending') {
+        // 已有待审申请（可能是另一条），直接刷新状态
+        await this.loadSchoolApply()
+        wx.showToast({ title: '已有待审申请，请等待管理员处理', icon: 'none' })
+      } else {
+        await this.loadSchoolApply()
+        wx.showToast({ title: '已提交，等待管理员审核', icon: 'none' })
+      }
     } catch (e) {
-      wx.showToast({ title: (e && e.message) || '绑定失败', icon: 'none' })
+      wx.showToast({ title: (e && e.message) || '提交失败', icon: 'none' })
     } finally {
       hideBusy()
     }
   },
 
-  /** 我提交的建校申请：显示「审核中 / 被驳回」 */
+  /** 我提交学校申请：显示「审核中 / 被驳回」（含 label 与 type） */
   async loadSchoolApply() {
     try {
       const r = await app.callApi('mySchoolApply', {})
-      this.setData({ schoolApply: { pending: r.pending || null, rejected: r.pending ? null : (r.rejected || null) } })
+      this.setData({
+        schoolApply: {
+          pending: r.pending || null,
+          rejected: r.pending ? null : (r.rejected || null)
+        }
+      })
     } catch (e) {
-      console.warn('[mine] 建校申请状态读取失败', e && e.message)
+      console.warn('[mine] 学校申请状态读取失败', e && e.message)
     }
   },
 
@@ -292,11 +369,15 @@ Page(Object.assign({
     const f = this.data.schoolForm
     const name = (f.name || '').trim()
     if (!name) return wx.showToast({ title: '请填写学校名称', icon: 'none' })
+    const reason = (f.reason || '').trim()
+    if (!reason) return wx.showToast({ title: '请填写申请理由', icon: 'none' })
     if (this.data.isSuper) return this.createSchool()
 
     showBusy({ title: '提交中' })
     try {
-      const r = await app.callApi('applySchool', { name, campus: f.campus, city: f.city, intro: f.intro })
+      const r = await app.callApi('applySchool', {
+        name, campus: f.campus, city: f.city, intro: f.intro, reason
+      })
       if (r.status === 'pending') {
         this.setData({ schoolApply: { pending: r.apply || this.data.schoolApply.pending, rejected: null } })
         wx.showToast({ title: '已有待审申请，请等待管理员处理', icon: 'none' })
@@ -387,10 +468,13 @@ Page(Object.assign({
     if (next && !f.name && this.data.schoolApply.rejected) {
       const r = this.data.schoolApply.rejected
       this.setData({
-        schoolForm: { name: r.name || '', campus: r.campus || '', city: r.city || '', intro: r.intro || '' }
+        schoolForm: {
+          name: r.name || '', campus: r.campus || '', city: r.city || '',
+          intro: r.intro || '', reason: r.reason || ''
+        }
       })
     }
-    if (next) this.loadSchools()
+    if (next) this.loadSchools(false, this._loc)
   },
 
   go(e) {

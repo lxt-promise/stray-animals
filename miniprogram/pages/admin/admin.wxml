@@ -177,17 +177,18 @@
     </view>
   </view>
 
-  <!-- 建校申请：用户在本校还没建档时提交，通过后立即建校并绑定申请人 -->
+  <!-- 学校申请：用户申请加入已有学校 / 申请新建学校，均需管理员审核 -->
   <view class="card mt" wx:if="{{schoolApplies.length}}">
-    <view class="card-title">建校申请（{{schoolApplies.length}}）</view>
+    <view class="card-title">学校申请（{{schoolApplies.length}}）</view>
     <view class="small muted" style="margin-bottom:16rpx">
-      通过后会立即创建学校并绑定申请人；地图中心先用默认坐标，之后可在上方「校园管理」里调整地图范围。
+      入校申请通过后会把申请人绑定到对应学校；建校申请通过后会创建学校并绑定申请人。地图中心先用默认坐标，之后可在上方「校园管理」里调整。
     </view>
     <view class="idx-row" wx:for="{{schoolApplies}}" wx:key="_id">
       <view class="idx-main">
-        <view class="bold">{{item.fullName}}</view>
+        <view class="bold">{{item.fullName}}<text class="tag tiny {{item.type === 'join' ? 'info' : 'ok'}}" style="margin-left:12rpx">{{item.typeLabel}}</text></view>
         <view class="small muted">{{item.timeText}}<text wx:if="{{item.city}}"> · {{item.city}}</text></view>
         <view class="small muted ellipsis" wx:if="{{item.intro}}">{{item.intro}}</view>
+        <view class="small reason-line" wx:if="{{item.reasonText}}">申请理由：{{item.reasonText}}</view>
       </view>
       <view class="m-actions">
         <view class="build-btn {{handlingApplyId === item._id ? 'busy' : ''}}"

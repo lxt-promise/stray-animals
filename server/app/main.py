@@ -516,11 +516,27 @@ def _recognize_run(req: RecognizeReq, n_frames: int, cached: bool):
     embed_ms = analysis["timing"]["embed"]
     detect_ms = analysis["timing"]["detect"]
 
+    # 查询图质量门控（2026-10-26）：猫在画面里占比太小 → 特征不足，
+    # 此时**不出候选、花色也弃权**。硬给一个错误候选比说"看不清"更糟：
+    # 用户会照着错候选点「就是这只猫」，把错样本写进特征库，污染是永久的。
+    # 实测依据见 engine._quality 的 docstring（夜间白猫 4.9% 时与橘猫档案
+    # 相似度 63.8% 反超与白猫档案的 61.5%）。
+    quality = analysis.get("quality") or {"ok": True, "areaRatio": 0.0, "reason": ""}
+    quality_ok = bool(quality.get("ok"))
+
     attrs = analysis["attr"] or {
         "color": "", "pattern": "", "breed": "", "confidence": 0.0,
         "source": "", "palette": [], "stripe": 0.0,
         "reason": "画面里没有可用于判断花色的区域",
     }
+    if not quality_ok:
+        # 小目标下色域统计同样不可信（框里背景占比高），花色一并弃权，
+        # 否则会用错误花色去过滤候选 / 展示给用户。
+        attrs = {
+            "color": "", "pattern": "", "breed": "", "confidence": 0.0,
+            "source": "", "palette": [], "stripe": 0.0,
+            "reason": quality.get("reason") or "照片质量不足，未判定花色",
+        }
     color, pattern = attrs["color"], attrs["pattern"]
 
     # 多帧聚合用 rep_vector 而不是裸 mean：视频里总有糊帧/侧身帧，
@@ -534,7 +550,15 @@ def _recognize_run(req: RecognizeReq, n_frames: int, cached: bool):
     query = rep_vector(embs, spread_min=0.0)
     t_search = time.time()
     # 把花色一起交给检索：花色是独立于像素相似度的证据（见 search 的 _attr_shift）
-    candidates, sinfo = search(query, req.cats, req.schoolId, attrs=attrs)
+    if quality_ok:
+        candidates, sinfo = search(query, req.cats, req.schoolId, attrs=attrs)
+    else:
+        # 质量不达标就不检索：库里的猫会轮流出场当"最像的一只"，
+        # 而真相是"这张照片谁都不像"。
+        candidates, sinfo = [], {
+            "indexed": 0, "ids": [], "dropped": 0, "bankReadError": "",
+            "reranked": 0, "qualitySkipped": True,
+        }
     search_ms = int((time.time() - t_search) * 1000)
 
     tags = []
@@ -621,6 +645,14 @@ def _recognize_run(req: RecognizeReq, n_frames: int, cached: bool):
             "attrConfidence": attrs["confidence"],
             "attrPalette": attrs["palette"],      # 各色占比，排查"为什么判成灰色"用
             "attrReason": attrs["reason"],        # 判不出来时的原因，空 = 正常
+            # 查询图质量门控（2026-10-26）：false 时**候选为空是设计如此**，
+            # 不是特征库空了。qualityReason 直接告诉用户该怎么做（靠近点/白天重拍）。
+            "qualityOk": quality_ok,
+            "qualityReason": quality.get("reason") or "",
+            "areaRatio": quality.get("areaRatio", 0.0),
+            # 猫体平均亮度（低光门控的输入，见 engine._box_light）：排查
+            # 「为什么夜里识别被拦/花色弃权」先看它，与白天分布隔 50+。
+            "lightMeanV": quality.get("lightMeanV"),
             # 曝光自适应平移量：排查「同一只猫换个光就判成另一种花色」先看它。
             # 正常照片在 ±45 内；剧烈变化说明画面曝光异常（或锚点被毛色带偏）。
             "attrShift": attrs.get("shift", 0.0),

@@ -96,7 +96,7 @@
       <view class="small muted">图鉴、打卡与地图都按学校统计，先选一所本校吧。</view>
     </view>
 
-    <!-- 选校下拉：原生 picker 就是小程序里的下拉框，选中即可绑定 -->
+    <!-- 选校下拉：原生 picker 就是小程序里的下拉框，选中后填理由提交申请（不再即选即绑） -->
     <picker mode="selector" range="{{schoolOptions}}" range-key="label" bindchange="onPickSchool">
       <view class="school-pick" hover-class="pressed">
         <view class="school-pick-left">
@@ -111,12 +111,31 @@
       </view>
     </picker>
 
+    <!-- 切换到附近 25km 内无学校：引导去新建（openSchoolPicker 也会弹 toast 并直接展开新建表单） -->
+    <view class="small muted mt" wx:if="{{nearbyEmpty}}">
+      附近 25km 内暂无学校，点击下方「没有我的学校？申请新建」创建本校。
+    </view>
+
+    <!-- 加入已有学校的理由弹窗：选中学校后填理由提交，管理员审核通过才绑定 -->
+    <view class="mask" wx:if="{{showJoinForm}}" bindtap="cancelJoinForm">
+      <view class="sheet" catchtap="noop">
+        <view class="sheet-title">申请加入「{{joinLabel}}」</view>
+        <view class="small muted">提交后由管理员审核，通过后才绑定为你的学校。</view>
+        <textarea class="reason-input" placeholder="请填写申请理由，如：本校学生 / 教职工 / 经常投喂的志愿者"
+          value="{{joinReason}}" bindinput="onJoinReason" maxlength="200" auto-focus />
+        <view class="sheet-actions">
+          <view class="sheet-btn ghost" bindtap="cancelJoinForm">取消</view>
+          <view class="sheet-btn solid" bindtap="submitJoinApply">提交申请</view>
+        </view>
+      </view>
+    </view>
+
     <!-- 审核中 / 被驳回：状态必须可见，否则用户会以为提交没成功反复提交 -->
     <view class="apply-state small mt" wx:if="{{schoolApply.pending}}">
-      ⏳「{{schoolApply.pending.name}}」的建校申请审核中，通过后会自动绑定。
+      ⏳「{{schoolApply.pending.label}}」的{{schoolApply.pending.type === 'join' ? '入校' : '建校'}}申请审核中，通过后会自动绑定。
     </view>
     <view class="apply-state rejected small mt" wx:if="{{schoolApply.rejected}}">
-      ✕「{{schoolApply.rejected.name}}」的申请未通过，可修改后重新提交。
+      ✕「{{schoolApply.rejected.label}}」的申请未通过，可修改后重新提交。
     </view>
 
     <!-- 找不到本校 → 申请新建 -->
@@ -142,9 +161,13 @@
         <text class="label">简介</text>
         <input placeholder="一句话介绍" value="{{schoolForm.intro}}" data-key="intro" bindinput="onInput" />
       </view>
+      <view class="form-item">
+        <text class="label">申请理由</text>
+        <input placeholder="为何要建这所学校，如：本校有流浪猫待照顾" value="{{schoolForm.reason}}" data-key="reason" bindinput="onInput" />
+      </view>
       <button class="btn mt" bindtap="submitSchoolApply">{{isSuper ? '创建并绑定' : '提交审核'}}</button>
       <view class="small muted mt" wx:if="{{!isSuper}}">
-        提交后由超级管理员审核，通过前不会创建学校；通过后自动绑定为你的学校。
+        提交后由超级管理员审核，通过前不会创建学校；通过后自动绑定为你的学校。申请需填写理由。
       </view>
     </block>
   </view>

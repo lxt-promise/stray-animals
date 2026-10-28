@@ -275,7 +275,13 @@ Page({
         // 时间文案在这里拼好：WXML 里不能调 fromNow()
         schoolApplies: (applies || []).map(a => Object.assign({}, a, {
           timeText: fromNow(a.createdAt),
-          fullName: a.campus ? (a.name + ' · ' + a.campus) : a.name
+          // 类型标签：join = 加入已有学校，create = 新建学校
+          typeLabel: a.type === 'join' ? '入校申请' : '建校申请',
+          // 展示名：join 取 schoolName，create 取 name(+campus)
+          fullName: a.type === 'join'
+            ? (a.schoolName || '该校')
+            : (a.campus ? (a.name + ' · ' + a.campus) : (a.name || '新学校')),
+          reasonText: a.reason || ''
         })),
         policyPublic: !!(policy && policy.public)
       })
@@ -1050,19 +1056,22 @@ Page({
     const approve = String(ds.approve) === '1'
     if (!id || this.data.handlingApplyId) return
     const row = (this.data.schoolApplies || []).filter(a => a._id === id)[0] || {}
+    const isJoin = row.type === 'join'
     const tip = approve
-      ? '将通过「' + (row.name || '该学校') + '」并立即建校，申请人会自动绑定。'
-      : '将驳回「' + (row.name || '该学校') + '」的申请。'
+      ? (isJoin
+        ? '将通过「' + (row.fullName || '该校') + '」的入校申请，申请人会自动绑定到该校。'
+        : '将通过「' + (row.fullName || '该学校') + '」并立即建校，申请人会自动绑定。')
+      : '将驳回「' + (row.fullName || '该学校') + '」的申请。'
     const go = await new Promise(resolve => {
       wx.showModal({ title: approve ? '通过申请' : '驳回申请', content: tip, success: resolve })
     })
     if (!go.confirm) return
 
     this.setData({ handlingApplyId: id })
-    showBusy({ title: approve ? '建校中' : '处理中' })
+    showBusy({ title: approve ? (isJoin ? '处理中' : '建校中') : '处理中' })
     try {
       await app.callApi('handleSchoolApply', { id, approve })
-      wx.showToast({ title: approve ? '已建校' : '已驳回', icon: 'none' })
+      wx.showToast({ title: approve ? (isJoin ? '已通过·已加入' : '已建校') : '已驳回', icon: 'none' })
       await this.load()
     } catch (err) {
       wx.showToast({ title: (err && err.message) || '操作失败', icon: 'none' })

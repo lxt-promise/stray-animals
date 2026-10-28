@@ -85,8 +85,7 @@
     </view>
 
     <!-- 候选列表 -->
-    <view class="card" wx:if="{{!result.degraded && result.candidates.length}}">
-      <view class="card-title">
+    <view class="card" wx:if="{{!result.degraded && result.candidates.length}}">      <view class="card-title">
         匹配候选
         <text class="more">共 {{result.candidates.length}} 只</text>
       </view>
@@ -125,6 +124,20 @@
       </view>
     </view>
 
+    <!-- 查询图质量不足：候选为空是**设计如此**（服务端质量门控，见 server
+         engine._quality）。必须把「为什么没有候选」和「该怎么做」一起说清 ——
+         只显示空白会被理解成"功能坏了"或"库里没有猫"，而真相是照片看不清。
+         2026-10-26 现场：夜间白猫占画面 5%，不拦的话会给出「胖橘 83%」这种
+         一眼假的候选，用户照着点确认就把错样本写进了特征库。 -->
+    <view class="card" wx:if="{{!result.degraded && qualityBlocked}}">
+      <view class="card-title">这张照片没法比对</view>
+      <view class="small muted">{{qualityReason || '照片里的猫咪占比太小或不够清晰。'}}</view>
+      <view class="notice small mt">
+        ⓘ 比对需要足够的毛发细节。靠近一点拍、让猫占满画面大半，并在光线充足时拍摄，
+        识别结果会可靠得多。这次不会给出匹配候选，是为了避免把错误的猫指给你。
+      </view>
+    </view>
+
     <!-- 人工确认：人机协同闭环。
          ⚠️ 文案只说「记录 + 解锁图鉴」，不许写「越用越准」：
          确认识别**不入特征库**（见云端 vision.confirm：只写 ai_samples 与图鉴），
@@ -148,8 +161,10 @@
 
     <!-- 没匹配上（已经识别出特征，只是库里没有像的）。
          标题用花色而不是干巴巴的「档案库里没有它」：身份没认出来时，
-         毛色/花纹是这次识别唯一有价值、且用户自己能校验的产出。 -->
-    <view class="card" wx:if="{{!result.degraded && !result.candidates.length}}">
+         毛色/花纹是这次识别唯一有价值、且用户自己能校验的产出。
+         ⚠️ 必须排除 qualityBlocked：那种情况是「照片看不清」而不是「库里没有」，
+         两张卡同时出现会自相矛盾（一边说没匹配到、一边说没法比对）。 -->
+    <view class="card" wx:if="{{!result.degraded && !result.candidates.length && !qualityBlocked}}">
       <view class="text-center" style="padding:20rpx 0">
         <view style="font-size:70rpx">🆕</view>
         <view class="bold mt">{{result.guessTitle}}</view>

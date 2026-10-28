@@ -396,7 +396,8 @@ def _breed_of(color: str, pattern: str) -> str:
     }.get(color, "")
 
 
-def _decide(ratio: dict, stripe: float, dgray: float = 0.0) -> tuple:
+def _decide(ratio: dict, stripe: float, dgray: float = 0.0,
+            warmish: Optional[float] = None) -> tuple:
     """颜色占比 + 条纹 → (color, pattern)。全是枚举 value。
 
     dgray = 「暗灰」占比（62 < 亮度 ≤125 的低饱和像素），2026-10-24 新增。
@@ -405,6 +406,13 @@ def _decide(ratio: dict, stripe: float, dgray: float = 0.0) -> tuple:
     两色调规则（white/black 双门槛）永远够不着，最后判成「灰猫」。
     判定用**有效暗色 dark = black + dgray**、**有效浅色 light = white + 亮灰**，
     原 ratio 只留给 palette 展示。
+
+    warmish = 「暖色系像素」占比（H 5~55、S≥50，**不限亮度**），2026-10-26 新增。
+    与 ratio 里的 brown/cream 桶的区别：桶有 V 门槛，夜间 V 一塌全都掉进
+    black/black 之前的桶里；而 S 和 H 对整体亮度**天然免疫**（见 _classify
+    的注释），warmish 是夜里唯一可靠的暖色证据。**None = 没有这项证据 →
+    相关门槛不生效**（保守放行，保持旧判定）—— 绝不把「没测」当「0」处理，
+    那会让所有没传 warmish 的调用方一夜之间判不出狸花。
     """
     white = ratio["white"]
     black = ratio["black"]
@@ -440,12 +448,27 @@ def _decide(ratio: dict, stripe: float, dgray: float = 0.0) -> tuple:
     #    且不是条纹 → 奶牛 / 燕尾服。分界从「白 vs 黑谁多」改成 light≥0.22：
     #    民间「奶牛猫」指黑白斑块猫，黑多白少也是奶牛；只有白块很小的
     #    （白围脖白爪）才是燕尾服。实测 4 张奶牛照 light 0.26~0.39 全部落对。
-    if not has_tabby and warm < 0.25 and (
-            (light >= 0.15 and dark >= 0.16) or
-            (white >= 0.45 and dark >= 0.08)):    # 白底 + 小块黑斑（大多白奶牛）
+    #    🔴 **gray 必须少**（2026-10-26 新增，实测白猫/夜间白猫各误判一次）：
+    #    奶牛猫的物理本质是「两块不同色相的毛」，V 分布是**双峰**；
+    #    而一只灰白猫（或任何单色猫）在光线下的明暗变化，会让同一团毛同时
+    #    贡献 light（亮部）和 dark（暗部）—— 两色调规则原封不动命中。
+    #    实测标准白猫素材 gray=0.45、用户夜间白猫 gray=0.51，都因此判成奶牛；
+    #    真奶牛照 gray 都在 0.2 上下。所以把「gray 少」列为必要条件：
+    #    颜色要真的分成黑白两块，不能是一团灰的渐变。
+    if (not has_tabby and warm < 0.25 and gray < config.ATTR_COW_MAX_GRAY and
+            ((light >= 0.15 and dark >= 0.16) or
+             (white >= 0.45 and dark >= 0.08))):    # 白底 + 小块黑斑（大多白奶牛）
         return ("cow" if (light >= 0.22 or light >= dark) else "tuxedo"), "cow"
-    # 4) 三花（宽松，兜底随机 mosaic 那种白块偏少的构造）
-    if white >= 0.16 and dark >= 0.12 and warm >= 0.14:
+    # 4) 三花（宽松，兜底随机 mosaic 那种白块偏少的构造）。
+    #    🔴 **必须有鲜明橘**（2026-10-26 新增，实测橘猫标准素材误判三花）：
+    #    宽松规则原本只看 white+dark+warm，而「浅橘/乳橘猫 + 白墙 + 阴影」
+    #    的统计和三花一模一样 —— 白来自墙、暗来自阴影、暖来自落进 brown 桶
+    #    的低饱和橘毛（实测 white=0.285/dark=0.31/warm=0.28、orange 桶只有
+    #    0.003）。真三花必有可观鲜明橘块（严格规则门槛 0.08），宽松规则
+    #    降到 0.05 兜底；低于它的 white+dark+warm 改走规则 5 判橘系 ——
+    #    「橘白猫」远比「墙根下的橘猫被判三花」接近真相。
+    if (white >= 0.16 and dark >= 0.12 and warm >= 0.14 and
+            orange >= config.ATTR_CALICO_MIN_ORANGE):
         return "calico", "calico"
     # 5) 白 + 暖色（橘白 / 白橘）
     if white >= 0.22 and warm >= 0.18:
@@ -460,7 +483,14 @@ def _decide(ratio: dict, stripe: float, dgray: float = 0.0) -> tuple:
     # 7) 有真条纹且暗色够量 → 狸花。必须在单色规则**之前**：狸花猫的黑条纹 +
     #    阴影经常把 gray 桶堆到 0.40+（实测两张狸花 gray 0.30~0.45），
     #    先判单色会把它们全吃成「灰猫」。
-    if has_tabby and dark >= 0.12:
+    #    🔴 **必须有暖色底毛**（2026-10-26 新增，实测黑猫标准素材误判狸花）：
+    #    狸花的物理本质是「暖色底毛 + 深色条纹」，底毛再暗，色相与饱和度也
+    #    在（S/H 对亮度天然免疫，这正是 warmish 不设 V 门槛的原因）。而黑猫
+    #    趴在沙发/地毯上时，织物褶皱是强方向性周期纹理，stripe 分一样虚高
+    #    （实测 0.63 过线），但暖色系像素只有 6.8% —— 低于门槛的高条纹分
+    #    只能来自环境纹理，不能给黑猫凭空长出条纹。
+    if (has_tabby and dark >= 0.12 and
+            (warmish is None or warmish >= config.ATTR_TABBY_MIN_WARM)):
         return "tabby", "tabby"
     # 8) 单色：白 / 黑 / 灰
     if white >= 0.50:
@@ -574,6 +604,11 @@ def _stats_of(rgb: Image.Image, cropped: bool) -> Optional[dict]:
     # 窗口跟着 shift 一起平移，否则曝光一变它就和 black 桶接不上。
     dgray = float(weight[(s <= 45) & (v > 62.0 + shift) & (v <= 125.0 + shift)].sum()) / total
 
+    # 「暖色系像素」占比：H 5~55、S≥50，**不限亮度**。狸花判定的必要证据
+    # （见 _decide 规则 7）：底毛的色相/饱和度对曝光免疫，夜间 V 全塌时它是
+    # 唯一还能区分「真狸花」和「黑猫 + 织物纹理」的量。
+    warmish = float(weight[(hd >= 5) & (hd <= 55) & (s >= 50)].sum()) / total
+
     # 条纹检测：非裁剪图先内缩 10% 再算梯度，避开照片边框/水印造成的假边缘
     g = np.asarray(small.convert("L"), dtype=np.float32)
     if not cropped:
@@ -581,7 +616,7 @@ def _stats_of(rgb: Image.Image, cropped: bool) -> Optional[dict]:
         g = g[pad:_SIZE - pad, pad:_SIZE - pad]
     stripe = _stripe_score(g)
 
-    return {"ratio": ratio, "dgray": dgray, "stripe": stripe,
+    return {"ratio": ratio, "dgray": dgray, "warmish": warmish, "stripe": stripe,
             "coverage": valid / total, "shift": shift}
 
 
@@ -607,10 +642,17 @@ def merge_stats(stats: List[dict]) -> Optional[dict]:
     ratio = {b: sum(float(x["ratio"].get(b, 0.0)) * wi for x, wi in zip(ok, w)) / tw
              for b in _BUCKETS}
     dgray = sum(float(x.get("dgray") or 0.0) * wi for x, wi in zip(ok, w)) / tw
+    # warmish 与 dgray 同源加权平均，但**只对提供了该量的帧平均**：一帧都没
+    # 提供就输出 None（=「没有这项证据」，_decide 的门槛不生效）。绝不能把
+    # 「没算过」折算成 0 —— 那会把所有旧结构/外部构造的帧一夜之间判不出狸花
+    # （2026-10-26 test_disagreement_written_to_reason 实测踩中）。
+    wv = [(float(x["warmish"]), wi) for x, wi in zip(ok, w)
+          if x.get("warmish") is not None]
+    warmish = (sum(v * wi for v, wi in wv) / sum(wi for _, wi in wv)) if wv else None
     stripe = float(np.median([float(x.get("stripe") or 0.0) for x in ok]))
     shift = float(np.median([float(x.get("shift") or 0.0) for x in ok]))
     coverage = tw / len(ok)
-    return {"ratio": ratio, "dgray": dgray, "stripe": stripe,
+    return {"ratio": ratio, "dgray": dgray, "warmish": warmish, "stripe": stripe,
             "coverage": coverage, "shift": shift, "frames": len(ok)}
 
 
@@ -664,7 +706,7 @@ def analyze(im: Image.Image, cropped: bool = False) -> dict:
                          int(round(100 * config.ATTR_MIN_COVERAGE))))
 
     ratio, dgray, stripe = st["ratio"], st["dgray"], st["stripe"]
-    color, pattern = _decide(ratio, stripe, dgray)
+    color, pattern = _decide(ratio, stripe, dgray, st.get("warmish"))
     if not color:
         return _empty("颜色不集中（最大色占比 %d%%），无法判断花色"
                       % int(round(100 * max(ratio[k] for k in _CAT_BUCKETS))))
@@ -720,7 +762,7 @@ def merge_and_decide(results: List[dict]) -> Optional[dict]:
         return None
 
     ratio, dgray, stripe = st["ratio"], st["dgray"], st["stripe"]
-    color, pattern = _decide(ratio, stripe, dgray)
+    color, pattern = _decide(ratio, stripe, dgray, st.get("warmish"))
 
     votes = [r["color"] for r in heur if r.get("color")]
     reason = ""

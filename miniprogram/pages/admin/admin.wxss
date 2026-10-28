@@ -90,6 +90,21 @@
 }
 .idx-row:last-child { border-bottom: none; }
 .idx-main { flex: 1; margin-right: 20rpx; min-width: 0; }
+/* 申请类型小标签（入校申请 / 建校申请）与理由行 */
+.tag.tiny {
+  font-size: 20rpx;
+  padding: 2rpx 12rpx;
+  border-radius: 8rpx;
+  font-weight: 600;
+}
+.reason-line {
+  margin-top: 8rpx;
+  padding: 10rpx 14rpx;
+  background: rgba(146, 88, 32, .06);
+  border-radius: 10rpx;
+  color: var(--text-sub, #6b5340);
+  line-height: 1.5;
+}
 
 /* 识别引擎体检：三行「名称 · 状态 · 说明」。
    名称固定宽，状态列对齐 —— 三行的绿/橙要能一眼扫出来，不要被长短不一的

@@ -63,8 +63,8 @@ console.log('\n=== 1. 纯函数 isSchoolHidden（把源码里的函数体切出�
 
 console.log('\n=== 2. 云函数接线 ===')
 {
-  assert('listSchools 接收 me（要按身份决定过不过滤）',
-    /async function listSchools\s*\(\s*me\s*\)/.test(CF))
+  assert('listSchools 接收 me + event（按身份过滤 + 带定位/半径参数）',
+    /async function listSchools\s*\(\s*me\s*,\s*event\s*\)/.test(CF))
   const ls = sliceFn(CF, 'async function listSchools(')
   assert('listSchools 超管看全量、普通用户过滤',
     /isSuper\(\s*me\s*\)/.test(ls) && /isSchoolHidden/.test(ls) && /filter/.test(ls), ls)
@@ -78,16 +78,63 @@ console.log('\n=== 2. 云函数接线 ===')
   const asb = sliceFn(CF, 'async function assertSchoolBindable(')
   assert('非超管不能绑定隐藏校园（挡「知道 id 就绕过下拉」）',
     /isSuper\(\s*me\s*\)/.test(asb) && /isSchoolHidden/.test(asb) && /403/.test(asb), asb)
-  assert('bindSchool 走准入校验',
-    /if \(schoolId\) await assertSchoolBindable\(me, schoolId\)/.test(CF))
   const apply = sliceFn(CF, 'async function applySchool(')
-  assert('applySchool 按 id 绑定时也走准入校验',
+  assert('applySchool 加入已有学校也走准入校验（按 id 申请，不能绕过隐藏校园）',
     /assertSchoolBindable\(me, event\.schoolId\)/.test(apply), apply)
+  assert('applySchool 不再提供即选即绑：必须带 reason 且落待审',
+    /throw new AppError\('请填写申请理由'\)/.test(apply) && /status:\s*'pending'/.test(apply), apply)
 
   // 项目铁律：不能用 `x || 兜底`，会把 hidden:false 顶成「没传」，永远改不回可见
   assert('updateSchool 用 `!== undefined` 判 hidden（or 兜底会让取消隐藏失效）',
     /event\.hidden !== undefined && event\.hidden !== null/.test(CF))
   assert('createSchool 也支持建校即隐藏', /hidden:\s*event\.hidden === undefined/.test(CF))
+}
+
+console.log('\n=== 2c. school_applies 集合缺失自愈（2026-10-26 深夜，控制台刷 -502005）===')
+{
+  // 现象：没跑过 initCollections 的环境里，每个用户每次进「我的」页都读到
+  // school_applies，控制台刷「-502005 database collection not exists」。
+  // 集合没建 =「还没有任何申请」，不是故障，必须和真读失败区分开。
+  assert('有集合缺失判定函数 isCollectionMissing',
+    /function isCollectionMissing\(/.test(CF))
+  assert('判定认 -502005 / collection not exists',
+    /-502005/.test(CF) && /collection not exists/.test(CF))
+  const msa = sliceFn(CF, 'async function mySchoolApply(')
+  assert('mySchoolApply 集合缺失时返回空、不抛给前端（读路径）',
+    /isCollectionMissing\(e\)/.test(msa) && /ensureCollection/.test(msa), msa)
+  const ap = sliceFn(CF, 'async function applySchool(')
+  assert('applySchool 写路径：集合缺失时先建再写（否则用户提交必失败）',
+    /isCollectionMissing\(e\)/.test(ap) && /await ensureCollection/.test(ap), ap)
+  const lsa2 = sliceFn(CF, 'async function listSchoolApplies(')
+  assert('超管待审列表集合缺失时回空数组（不整页报红）',
+    /isCollectionMissing\(e\)/.test(lsa2), lsa2)
+  assert('ensureCollection 已从 core 显式导入',
+    /ensureCollection, ensureAllCollections/.test(CF))
+}
+
+console.log('\n=== 2b. 选校默认 25km 半径过滤（2026-10-26）===')
+{
+  const ls = sliceFn(CF, 'async function listSchools(')
+  assert('listSchools 按半径过滤（radiusKm / maxM / 默认 25）',
+    /radiusKm/.test(ls) && /maxM/.test(ls) && /25/.test(ls), ls)
+  assert('listSchools 给每项带 distanceM（供前端展示/排序）',
+    /distanceM/.test(ls), ls)
+  assert('当前绑定学校即使超半径也常驻（currentId 分支）',
+    /currentId/.test(ls), ls)
+  assert('拿不到定位回退全部（!haveLoc → 直接返回 list）',
+    /haveLoc/.test(ls), ls)
+  assert('没坐标的学校跳过、不参与「附近」筛选',
+    /geoDistanceM/.test(ls) && /d === null/.test(ls), ls)
+
+  // 纯函数 geoDistanceM 真跑：同点≈0、1°纬度≈111km、缺坐标→null
+  assert('存在 Haversine 距离函数 geoDistanceM', /function geoDistanceM/.test(CF))
+  const gd = sliceFn(CF, 'function geoDistanceM(')
+  const geoDistanceM = new Function(gd + '\nreturn geoDistanceM')()
+  assert('同点距离≈0', Math.abs(geoDistanceM({ lat: 32, lng: 118 }, { lat: 32, lng: 118 })) < 1)
+  const d1 = geoDistanceM({ lat: 32, lng: 118 }, { lat: 33, lng: 118 })
+  assert('1° 纬度≈111km（110~112km）', d1 > 110000 && d1 < 112000, d1)
+  assert('缺坐标（lat:null）返回 null', geoDistanceM({ lat: 32, lng: 118 }, { lat: null, lng: 118 }) === null)
+  assert('整点缺 center 返回 null', geoDistanceM({ lat: 32, lng: 118 }, undefined) === null)
 }
 
 console.log('\n=== 3. 后台 UI（超管要看得见、能切换）===')

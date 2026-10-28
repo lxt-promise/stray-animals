@@ -1293,6 +1293,15 @@ async function advance(user, t, ctx) {
       identified: identifiedFlag(remoteMeta, candidates),
       // 属性判不出来时的原因（"画面里猫体区域不足 12%"），用于排查和引导重拍
       attrReason: (remoteMeta && remoteMeta.attrReason) || '',
+      // 查询图质量门控（2026-10-26）：false 时**候选为空是设计如此**，
+      // 不是特征库空了。qualityReason 是给用户看的操作指引
+      // （"猫在画面里只占 5%，距离太远…"），必须原样透出。
+      qualityOk: !remoteMeta || remoteMeta.qualityOk !== false,
+      qualityReason: (remoteMeta && remoteMeta.qualityReason) || '',
+      // 猫体平均亮度（低光门控输入，2026-10-26 深夜加）：排查「夜里被拦」先看它，
+      // 夜间实测 105/113、白天 ≥178。老服务端不回该字段 → null（未知，不冒充 0）。
+      lightMeanV: (remoteMeta && Number.isFinite(Number(remoteMeta.lightMeanV)))
+        ? Number(remoteMeta.lightMeanV) : null,
       lowConfidence: !candidates.length || candidates[0].score < LOW_CONF,
       // 合规：不再下发内部实现说明（旧文案含 AI_ENDPOINT 等字样）。
       // 低置信提示统一由前端在「匹配候选」卡里按 lowConfidence 渲染。

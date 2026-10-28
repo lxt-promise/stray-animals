@@ -30,8 +30,21 @@ const {
   isMember, isAdmin, requireRole, isSuper, requireSuper,
   resolveSchoolId, assertSchool,
   sanitizeCat, sanitizeSighting, escapeReg, pageOf, dayKey,
-  ensureAllCollections
+  ensureCollection, ensureAllCollections
 } = core
+
+/**
+ * 判断错误是不是「集合还没建」（`-502005 database collection not exists`）。
+ *
+ * 为什么要有它：`school_applies` 是后来加的第 15 个集合，没跑过
+ * `initCollections` 的环境里，每次进「我的」页都会读到它 —— 于是
+ * 每个用户每次进页面都在控制台刷一条 -502005，而真相只是「还没有任何申请」。
+ * 集合缺失 = 数据为空，不是故障，必须和真正的读失败区分开。
+ */
+function isCollectionMissing(e) {
+  const msg = String((e && (e.errMsg || e.message)) || '')
+  return /-502005|collection not exists|Db or Table not exist/i.test(msg)
+}
 
 /* ==================== action 注册表 ====================
  * role: public | user | member | admin
@@ -54,8 +67,8 @@ const ACTIONS = {
   'updateSchool':   { role: 'admin',  handler: updateSchool },
   'listSchools':    { role: 'public', handler: listSchools },
   'getSchool':      { role: 'public', handler: getSchool },
-  'bindSchool':     { role: 'user',   handler: bindSchool },
-  // 选校 / 新建学校申请：已有学校直接绑定，没有的落一条待审申请（超管审核后建校并绑定）
+  // 选校 / 新建学校申请：无论是加入已有学校还是新建，都落一条待审申请（含理由），
+  // 由管理员审核通过后才会建校 / 绑定。不再提供任何「选中即绑定」的直绑路径。
   'applySchool':    { role: 'user',   handler: applySchool },
   'mySchoolApply':  { role: 'user',   handler: mySchoolApply },
   'listSchoolApplies':  { role: 'admin', handler: listSchoolApplies },
@@ -766,6 +779,25 @@ function isSchoolHidden(s) {
 }
 
 /**
+ * 两点的球面距离（米）。任一端点缺合法经纬度 → 返回 null（不参与「附近」筛选）。
+ * Haversine，足够 25km 这种城市级精度；学校 center 是 gcj02，和 gcj02 定位同基准，
+ * 25km 量级下偏移误差可忽略。
+ */
+function geoDistanceM(a, b) {
+  if (!a || !b) return null
+  const raw = [a.lat, a.lng, b.lat, b.lng]
+  if (raw.some(v => v === null || v === undefined)) return null
+  const la1 = Number(a.lat), lo1 = Number(a.lng), la2 = Number(b.lat), lo2 = Number(b.lng)
+  if (![la1, lo1, la2, lo2].every(isFinite)) return null
+  const R = 6371000
+  const rad = x => (x * Math.PI) / 180
+  const dLat = rad(la2 - la1), dLng = rad(lo2 - lo1)
+  const h = Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(la1)) * Math.cos(rad(la2)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)))
+}
+
+/**
  * 用户选校列表（公开接口）。
  *
  * ⚠️ 这里是**唯一**的「普通用户能看见哪些学校」出口 —— 选校下拉、换校都走它。
@@ -773,12 +805,43 @@ function isSchoolHidden(s) {
  * 全都指向测试数据，再想摘干净要动用户表。
  *
  * 超管不过滤：后台要能看到并编辑它（否则隐藏的学校就成了改不了的僵尸数据）。
+ *
+ * 2026-10-26 改：默认只回「用户当前位置 25km 内」的学校。
+ *  - 内存 Haversine 算距离后过滤（项目铁律：geo where 缺索引直接失败，坐标过滤统一挪内存）；
+ *  - 当前已绑定学校即使超出半径也常驻（用户不能因「离得远」就看不见自己学校，
+ *    否则换了远校的人连「切回」都做不到）；
+ *  - 拿不到定位（授权拒绝 / 设备不支持）→ 回退「全部学校」，不把用户锁死在空列表；
+ *  - 超管不受半径限制。
  */
-async function listSchools(me) {
+async function listSchools(me, event) {
   const showAll = isSuper(me)
   const res = await db.collection(COL.school).orderBy('createdAt', 'asc').limit(50).get()
-  const list = res.data || []
-  return showAll ? list : list.filter(s => !isSchoolHidden(s))
+  let list = res.data || []
+  if (!showAll) list = list.filter(s => !isSchoolHidden(s))
+
+  const lat = Number(event && event.lat)
+  const lng = Number(event && event.lng)
+  const haveLoc = isFinite(lat) && isFinite(lng)
+  const radiusKm = Number(event && event.radiusKm) || 25
+  const maxM = radiusKm * 1000
+  const currentId = (event && event.currentSchoolId) || null
+
+  // 拿不到定位：回退全部（已过滤隐藏），不锁死用户
+  if (!haveLoc) return list
+
+  const nearby = []
+  let current = null
+  for (const s of list) {
+    const d = geoDistanceM({ lat, lng }, s.center)
+    if (d === null) continue            // 没坐标的学校不参与「附近」筛选
+    const item = Object.assign({}, s, { distanceM: d })
+    if (s._id === currentId) { current = item; continue }
+    if (d <= maxM) nearby.push(item)
+  }
+  // 当前绑定学校即使超半径也常驻（排最后），避免「看不见自己学校 / 切不回去」
+  if (current) nearby.push(current)
+  nearby.sort((a, b) => a.distanceM - b.distanceM)
+  return nearby
 }
 
 /**
@@ -899,8 +962,8 @@ function needsGeoRepair(s) {
  * 绑定学校前的准入校验：存在性 + 是否对普通用户可见。
  *
  * 可见性这一条不能只做在 listSchools 里 —— 那是「下拉里看不见」，
- * 而 applySchool/bindSchool 是**按 id 直接绑**，知道 id 就能绕过下拉。
- * 只挡 UI 不挡接口的话，隐藏形同虚设（用户拿到 id 照样能绑进测试校园）。
+ * 而 applySchool 是**按 id 申请**，知道 id 就能绕过下拉提交申请。
+ * 只挡 UI 不挡接口的话，隐藏形同虚设（用户拿到 id 照样能申请进测试校园）。
  */
 async function assertSchoolBindable(me, schoolId) {
   const s = await db.collection(COL.school).doc(schoolId).get()
@@ -911,23 +974,18 @@ async function assertSchoolBindable(me, schoolId) {
   return s.data
 }
 
-async function bindSchool(me, event) {
-  const schoolId = event.schoolId || ''
-  // 校验存在性：绑定一个已删除/手填的 schoolId 后，用户的所有列表都会 where({schoolId})
-  // 查不到东西，界面表现为「学校有了、数据全空了」，比直接报错更难排查。
-  if (schoolId) await assertSchoolBindable(me, schoolId)
-  await db.collection(COL.user).doc(me._id).update({ data: { schoolId } })
-  return { schoolId }
-}
-
 /**
  * 选校 / 申请新建学校。
  *
- * 两条路，差别只在「要不要人审」：
- *  1. 传 `schoolId`：绑到**已存在**的学校，立即生效。
- *     学校文档本身是超管建过的（或审核通过的申请建的），不需要再核一遍。
- *  2. 传 `name`：本校还没建档，落一条 `school_applies` 待审，
- *     超管通过后才真正建校并绑定申请人。
+ * 两条路，但**都要人审**（2026-10-26 起）：
+ *  1. 传 `schoolId`：申请加入**已存在**的学校，落一条 `type:'join'` 待审，
+ *     管理员通过后才把申请人绑到该校。**不再「选中即绑定」** —— 否则任何人
+ *     知道 id 就能挤进任意学校的数据（与打卡只走结构化字段同理，是审核类目红线）。
+ *  2. 传 `name`：本校还没建档，落一条 `type:'create'` 待审，
+ *     管理员通过后才真正建校并绑定申请人。
+ *
+ * 两种申请都必须填 **reason（申请理由）** 且通过文本安全检测 —— 理由会出现在
+ * 管理员的审核界面，是管理员判断「这人是不是本校的」的主要依据。
  *
  * ⚠️ 刻意**不**在这里预建 schools 文档：预建的话它会立刻出现在 listSchools 里，
  * 别的用户能选到一所「还没人审过」的学校，审核就形同虚设。
@@ -936,31 +994,63 @@ async function bindSchool(me, event) {
  * 管理员处理掉一条又冒出三条，最后没人愿意审。
  */
 async function applySchool(me, event) {
-  if (event.schoolId) {
-    const s = await assertSchoolBindable(me, event.schoolId)
-    await db.collection(COL.user).doc(me._id).update({ data: { schoolId: event.schoolId } })
-    return { status: 'bound', schoolId: event.schoolId, schoolName: s.name || '' }
+  // 同一用户只保留一条待审：连点/反复提交会把审核列表刷满。
+  // ⚠️ 这是**写**路径：集合没建的话必须现建再写，否则用户点「提交申请」
+  // 只会收到一句「提交失败」，而他自己什么也做不了。所以这里 await，
+  // 代价只发生在「集合确实不存在」这一次（进程内缓存命中后零开销）。
+  let dup
+  try {
+    dup = await db.collection(COL.schoolApply)
+      .where({ openid: me.openid, status: 'pending' }).limit(1).get()
+  } catch (e) {
+    if (!isCollectionMissing(e)) throw e
+    await ensureCollection(COL.schoolApply)
+    dup = await db.collection(COL.schoolApply)
+      .where({ openid: me.openid, status: 'pending' }).limit(1).get()
   }
-
-  const name = String(event.name || '').trim()
-  if (!name) throw new AppError('请填写学校名称')
-
-  const dup = await db.collection(COL.schoolApply)
-    .where({ openid: me.openid, status: 'pending' }).limit(1).get()
   if (dup.data.length) return { status: 'pending', apply: dup.data[0] }
 
+  if (event.schoolId) {
+    // 加入已存在的学校：落一条 join 申请，等管理员审核通过后才绑定。
+    const s = await assertSchoolBindable(me, event.schoolId)
+    const reason = String(event.reason || '').trim()
+    if (!reason) throw new AppError('请填写申请理由')
+    const okText = await sec.checkText([reason].filter(Boolean).join(' '))
+    if (!okText) throw new AppError('申请理由未通过安全检测')
+    const doc = {
+      openid: me.openid,
+      _openid: me.openid,
+      nickName: me.nickName || '',
+      type: 'join',
+      schoolId: event.schoolId,
+      schoolName: s.name || '',
+      reason,
+      status: 'pending',
+      createdAt: new Date()
+    }
+    const add = await db.collection(COL.schoolApply).add({ data: doc })
+    return { status: 'submitted', apply: Object.assign({}, doc, { _id: add._id }) }
+  }
+
+  // 新建学校：落一条 create 申请，等管理员审核通过后才建校并绑定申请人。
+  const name = String(event.name || '').trim()
+  if (!name) throw new AppError('请填写学校名称')
+  const reason = String(event.reason || '').trim()
+  if (!reason) throw new AppError('请填写申请理由')
   const okText = await sec.checkText(
-    [name, event.campus, event.city, event.intro].filter(Boolean).join(' '))
+    [name, event.campus, event.city, event.intro, reason].filter(Boolean).join(' '))
   if (!okText) throw new AppError('内容未通过安全检测')
 
   const doc = {
     openid: me.openid,
     _openid: me.openid,
     nickName: me.nickName || '',
+    type: 'create',
     name,
     campus: String(event.campus || '').trim(),
     city: String(event.city || '').trim(),
     intro: String(event.intro || '').trim(),
+    reason,
     status: 'pending',
     createdAt: new Date()
   }
@@ -968,16 +1058,34 @@ async function applySchool(me, event) {
   return { status: 'submitted', apply: Object.assign({}, doc, { _id: add._id }) }
 }
 
-/** 我最近一条建校申请（前端用它显示「审核中 / 被驳回」状态） */
+/**
+ * 我最近一条学校申请（前端用它显示「审核中 / 被驳回 / 已通过」状态）。
+ *
+ * 返回对象附 `label`（join 取 schoolName，create 取 name）与 `type`，
+ * 前端据此显示「入校申请 / 建校申请」，同时保留原始 `name` 字段以兼容老客户端。
+ */
 async function mySchoolApply(me) {
-  const res = await db.collection(COL.schoolApply)
-    .where({ openid: me.openid }).orderBy('createdAt', 'desc').limit(5).get()
-  const list = res.data || []
+  // 集合没建（没跑过 initCollections）=「还没有任何申请」，不是故障。
+  // 直接返回空 + 后台把集合建出来（下次就正常），别把 -502005 抛给前端 ——
+  // 这个接口每个用户每次进「我的」页都会调一次。
+  let list = []
+  try {
+    const res = await db.collection(COL.schoolApply)
+      .where({ openid: me.openid }).orderBy('createdAt', 'desc').limit(5).get()
+    list = res.data || []
+  } catch (e) {
+    if (!isCollectionMissing(e)) throw e
+    ensureCollection(COL.schoolApply)      // 后台副作用，不 await（见 core.js 性能红线）
+  }
+  const applyLabel = a => (a && a.type === 'join')
+    ? (a.schoolName || '该校')
+    : ((a && a.name) || '该校')
+  const decorate = a => a ? Object.assign({ label: applyLabel(a) }, a) : null
   const pick = st => list.filter(a => a.status === st)[0] || null
   return {
-    pending: pick('pending'),
-    rejected: pick('rejected'),
-    approved: pick('approved'),
+    pending: decorate(pick('pending')),
+    rejected: decorate(pick('rejected')),
+    approved: decorate(pick('approved')),
     schoolId: me.schoolId || ''
   }
 }
@@ -985,10 +1093,17 @@ async function mySchoolApply(me) {
 /** 待审的建校申请（仅超管） */
 async function listSchoolApplies(me, event) {
   requireSuper(me)
-  const res = await db.collection(COL.schoolApply)
-    .where({ status: (event && event.status) || 'pending' })
-    .orderBy('createdAt', 'desc').limit(50).get()
-  return res.data || []
+  // 集合没建 = 没有待审申请（后台顺手建出来），别让超管后台整页报红
+  try {
+    const res = await db.collection(COL.schoolApply)
+      .where({ status: (event && event.status) || 'pending' })
+      .orderBy('createdAt', 'desc').limit(50).get()
+    return res.data || []
+  } catch (e) {
+    if (!isCollectionMissing(e)) throw e
+    ensureCollection(COL.schoolApply)
+    return []
+  }
 }
 
 /**
@@ -1022,6 +1137,22 @@ async function handleSchoolApply(me, event) {
 
   const apply = (await db.collection(COL.schoolApply).doc(event.id).get()).data
   try {
+    // 加入已有学校：审核通过 = 把申请人绑到该校（不新建学校）。
+    if (apply.type === 'join') {
+      // 学校可能已被删 / 设为隐藏：再核一次，避免把用户绑到一个查不到数据的 dangling id。
+      await assertSchoolBindable(me, apply.schoolId)
+      const users = await db.collection(COL.user).where({ openid: apply.openid }).limit(1).get()
+      if (users.data[0]) {
+        await db.collection(COL.user).doc(users.data[0]._id)
+          .update({ data: { schoolId: apply.schoolId } })
+      }
+      await db.collection(COL.schoolApply).doc(event.id).update({
+        data: { status: 'approved', schoolId: apply.schoolId, handledAt: new Date() }
+      })
+      return { status: 'approved', schoolId: apply.schoolId }
+    }
+
+    // 新建学校：审核通过 = 建校 + 绑定申请人（type==='create' 或旧记录无 type → 兼容）
     // 审核时再检一次：管理员可能直接点通过没细看名字，用户填的学校名会展示给全校
     const okText = await sec.checkText([apply.name, apply.campus, apply.city, apply.intro]
       .filter(Boolean).join(' '))
