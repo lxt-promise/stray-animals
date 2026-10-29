@@ -13,19 +13,21 @@
  *     （thumbId）作为代表帧，frames 字段表示「计划抽帧数」留给将来的容器化服务。
  *
  * ⚠️⚠️ 分步续跑的铁律（2026-10-13 一次「改成全超时」的回归换来的）：
- *   客户端 `cloud.callFunction` 的预算只有**约 3 秒**（超时 -504003）。
- *   现场证据：27 轮轮询全部 -504003、任务始终不结束 —— 因为每一步都贴着/越过 3s，
- *   步骤字段又没能落库，每轮轮询都在从头重跑同一个阶段，永远收敛不了。
+ *   `-504003` 是**云函数自身的执行超时**（FUNCTIONS_TIME_LIMIT_EXCEEDED），
+ *   不是 `wx.cloud.callFunction` 的独立 3s 限制。控制台超时已调到 20s（2026-10-28）。
+ *   现场证据（旧 3s 配置）：27 轮轮询全部 -504003、任务始终不结束 —— 因为每一步
+ *   都贴着/越过 3s，步骤字段又没能落库，每轮轮询都在从头重跑同一个阶段，永远收敛不了。
  *   由此定下四条规矩，改这个文件前先读：
- *   1) **每一次调用都必须在约 2.4s 内返回**（POLL_BUDGET_MS），不假设「超时后云函数还会干活」。
- *      poll 路径带硬截止：每步开工前看余量，不够就 { deferred:true } 收工下轮再来。
+ *   1) **每一次调用都必须在 POLL_BUDGET_MS(8s) 内返回**，且这个值必须 < 云函数超时(20s)
+ *      与 LEASE_MS(10s)。poll 带硬截止：每步开工前看余量，不够就 { deferred:true }
+ *      收工下轮再来；余量够则一轮连续推进多步（2026-10-28 起）。
  *   2) **partial 只存小字段**（url/videoUrl 这类字符串）。档案（含 embedding）用时现读，
  *      绝不整库塞进 partial —— 单文档体积越过云数据库上限后 update 会静默失败，
  *      step 永远停在原地，就是上面那场事故的直接病根。
  *   3) **写不进去必须吼**：patchTask 返回 stats，关键步骤写未效应当即抛错重试，
  *      不允许「catch 掉只打 warn」——静默失败比报错难查一万倍。
- *   4) **同步路径（run/runSync）没有 3s 限制**，AI 可以等满 AI_TIMEOUT_MS；
- *      客户端 `recognize` 同步调用超时会转轮询接管，已落库的分步产物不丢。
+ *   4) **同步路径（run/runSync）预算更宽（SYNC_BUDGET_MS=12s）**，AI 可以等满
+ *      AI_TIMEOUT_MS；客户端同步调用超时会转轮询接管，已落库的分步产物不丢。
  */
 const { cloud, db, _, COL, AppError, distanceM, cosine, warmCollection } = require('./core')
 const sec = require('./security')
@@ -95,21 +97,27 @@ const MAX_FRAMES = 8
 
 /* ==================== 分步执行的预算参数 ==================== */
 /**
- * poll 单次调用的总预算（客户端约 3s，留余量给响应序列化 + 网络 + SDK 开销）。
+ * poll 单次调用的总预算。
  *
- * ⚠️ 为什么是 2400 而不是更小（2026-10-15 复盘）：
- *   现场出现 `-504003 Invoking task timed out after 3 seconds` 时，第一反应是
- *   「预算贴太紧，调到 2000」。但这条路是死的 —— 固定开销吃不消：
- *     入口(getMe) 200ms + 读任务 180ms + 抢租约 180ms ≈ 560ms，
- *   而第一步（内容安全）自己要 SEC_RESERVE_MS=1500ms 的余量。
- *   预算 2000 时留给第一步只剩 1440ms < 1500 → 每轮都 deferred →
- *   进度永远停在 40，**比原来还糟**（回归台 S1/S4 当场全红）。
- *   根因不在预算，而在同步快路径「不知道自己被 3s 掐」—— 见 run()/runSync() 的
- *   syncCtx 预算与「defer 即交还」策略。所以这里保持 2400 不动。
+ * 【2026-10-28 重定：2400 → 8000】
+ *   2400 的历史依据是「客户端 callFunction 约 3s」。但现场复核发现，那个 3s
+ *   其实是**云函数默认超时**（-504003 / FUNCTIONS_TIME_LIMIT_EXCEEDED），
+ *   wx.cloud.callFunction 本身没有独立的 3s 限制。该超时已在控制台调到 20s，
+ *   墙没了，预算就可以按「云函数自己能跑多久」来定，而不是按「客户端愿等多久」。
+ *
+ *   旧预算的恶果（2026-10-28 云托管日志）：服务端一次识别实测 1977ms，
+ *   而 AI 实际窗口 = 2400 - 固定开销(600~900) - AI_RESERVE_MS(500) ≈ 1000~1300ms，
+ *   必然被放弃 → 每单白等一整轮（2.4s 调用 + 轮询间隔）。
+ *   现在 AI 窗口 ≈ 8000 - 900 - 500 = 6.6s，服务端 1.3~2s 能在一轮内返回。
+ *
+ *   ⚠️ 必须同时满足：云函数超时（20s）> POLL_BUDGET_MS(8s)，
+ *      且 LEASE_MS(10s) > POLL_BUDGET_MS —— 否则并发轮询会在本调用还没结束时
+ *      抢走租约、重复计算（见 poll 的租约注释）。
  */
-const POLL_BUDGET_MS = 2400
-/** 基础往返（getMe + 读任务）就超过这个数，直接回 pending 下轮再来，不抢租约不干活 */
-const BASE_RESERVE_MS = 900
+const POLL_BUDGET_MS = 8000
+/** 基础往返（getMe + 读任务）就超过这个数，直接回 pending 下轮再来，不抢租约不干活。
+ *  8s 预算下放宽到 2000ms：冷启动 1s 出头很常见，旧值 900 会白白扔掉一轮。 */
+const BASE_RESERVE_MS = 2000
 /** 步骤① 内容安全的余量：downloadFile + imgSecCheck 合计的现实上限 */
 const SEC_RESERVE_MS = 1500
 /** 同步安全检测连续这么多轮都没能把步骤落库 → 降级异步送检，保证收敛 */
@@ -121,7 +129,9 @@ const AI_RESERVE_MS = 500
 // 补库之后至少要给 AI 留这么大的窗口，否则这轮不补库（见 attachPendingPhotos）
 const AI_MIN_WINDOW_MS = 600
 /** poll 路径 AI 调用的硬封顶（环境变量可调低，调高也会被它压住） */
-const AI_POLL_CAP_MS = 1800
+const AI_POLL_CAP_MS = 5000
+/** poll 一轮内推进下一步前要剩的预算：不够就交还租约，已完成步骤都已落库 */
+const POLL_NEXT_STEP_RESERVE_MS = 1000
 /** feat 连续「明确错误」这么多次后降级本地引擎，保证终局有结果 */
 const FEAT_FALLBACK_ATTEMPTS = 6
 /**
@@ -141,6 +151,23 @@ const PENDING_PHOTOS_PER_CAT = 2
 const PENDING_URL_RESERVE_MS = 800
 /** AI 总尝试上限（超时不计入降级阈值，但总次数要有界，否则慢服务能拖到天荒地老） */
 const MAX_AI_ATTEMPTS = 12
+
+/* ==================== 素材「一次下载两用」 ==================== */
+/**
+ * 缩略图边长：服务端 ReID 输入 518px、检测输入 640px，768 已足够；
+ * 再大只是白白多传字节（这条与 server 端 DERIVE_THUMB_SIZE 同源）。
+ */
+const THUMB_SIDE = 768
+/** 安全步骤里下载素材的实际上限（原图）；超过就回退 checkImage 的旧路径 */
+const SEC_DL_MS = 800
+/**
+ * 内联给识别服务的字节上限（base64 后 ≈1.33 倍）。
+ *
+ * 客户端上传前已压到 1080px JPEG（约 200~400KB），正常都在线内；
+ * 老客户端/视频封面可能更大 —— 超过就只用于安全检测、不再内联，
+ * 服务端照旧按 thumbUrl 下载，避免把识别请求体撑到几 MB。
+ */
+const INLINE_MAX_BYTES = 1.5 * 1024 * 1024
 
 
 /* ==================== 档案库 ==================== */
@@ -443,6 +470,82 @@ async function toTempUrl(fileId) {
   } catch (e) {
     console.warn('[vision] 换取临时链接失败', e && e.message)
     return ''
+  }
+}
+
+/**
+ * 临时链接 → 768px JPEG 缩略图链接（COS imageMogr2 现拼）。
+ *
+ * 非 COS 域名一律返回 ''：乱拼 imageMogr2 会让整条链接 404，
+ * 服务端/安全检测就再也拿不到图（服务端 media.force_jpeg 也是同样的判据）。
+ */
+function isCosUrl(url) {
+  return /\.(tcb\.qcloud\.la|myqcloud\.com|qcloud\.la)(\/|:|\?|$)/.test(url || '')
+}
+
+function jpegThumbUrl(url, size) {
+  if (!url || !isCosUrl(url)) return ''
+  if (url.indexOf('imageMogr2') >= 0) {
+    return /format\/jpg/.test(url) ? url : url + '/format/jpg'
+  }
+  const s = Math.max(320, Number(size) || THUMB_SIDE)
+  const sep = url.indexOf('?') >= 0 ? '&' : '?'
+  return url + sep + 'imageMogr2/thumbnail/' + s + 'x/format/jpg'
+}
+
+/** 超时返回 null（结果只是「有没有拿到」，拿不到的语义统一是 null） */
+function withTimeout(p, ms) {
+  let timer = null
+  return Promise.race([
+    Promise.resolve(p).catch(() => null),
+    new Promise(resolve => { timer = setTimeout(() => resolve(null), Math.max(1, ms)) })
+  ]).then(v => { if (timer) clearTimeout(timer); return v })
+}
+
+/**
+ * 把素材下到内存（**一次下载两用**的那一次下载）。
+ *
+ * 用 `cloud.downloadFile` 而不是「临时链接 + imageMogr2」：客户端上传前已把图片压到
+ * 1080px JPEG（约 200~400KB），再套一层缩略图处理的收益不足以抵消一次 getTempFileURL
+ * 往返；而且少一次网络调用，预算算术也保持与旧路径一致（失败直接回退 checkImage）。
+ *
+ * @returns {Promise<Buffer|null>} 拿不到就 null（调用方回退旧路径），不抛错
+ */
+async function fetchOriginalBuffer(fileID, timeoutMs) {
+  if (!fileID) return null
+  const ms = Math.max(300, Number(timeoutMs) || SEC_DL_MS)
+  const f = await withTimeout(cloud.downloadFile({ fileID }), ms)
+  return (f && f.fileContent) || null
+}
+
+/**
+ * 任务 id → 素材字节（内存级，不落库）。
+ *
+ * 为什么不塞进 partial：那是一条云数据库文档，超过体积上限后 update 会静默失败
+ * （见文件头铁律 2）。这份字节只在「同一次调用 / 同一个实例的后续步骤」里有价值 ——
+ * 同步路径与轮询若落在不同实例，第③步取不到就留空，服务端回退 url 下载，不影响正确性。
+ */
+const THUMB_CACHE = new Map()
+const THUMB_TTL_MS = 120000
+const THUMB_CACHE_MAX = 8
+
+function thumbCacheGet(taskId) {
+  if (!taskId) return null
+  const e = THUMB_CACHE.get(taskId)
+  if (!e) return null
+  if (Date.now() - e.at > THUMB_TTL_MS) {
+    THUMB_CACHE.delete(taskId)
+    return null
+  }
+  return e
+}
+
+function thumbCachePut(taskId, buf) {
+  if (!taskId || !buf) return
+  THUMB_CACHE.set(taskId, { buf, at: Date.now() })
+  // 单实例并发识别不会太多；超出上限按插入顺序淘汰最老的，防止常驻实例内存缓慢上涨
+  while (THUMB_CACHE.size > THUMB_CACHE_MAX) {
+    THUMB_CACHE.delete(THUMB_CACHE.keys().next().value)
   }
 }
 
@@ -990,7 +1093,7 @@ function deleteIndexEntry(catId, schoolId, timeoutMs) {
 /**
  * 调用第三方视觉接口。
  * @param timeoutMs 单次调用超时。**poll 路径必须传封顶值**（随剩余预算收缩）——
- *   客户端 callFunction 预算只有约 3s，沿用 AI_TIMEOUT_MS（可能配成 20s）必炸。
+ *   一次 poll 调用要在 POLL_BUDGET_MS(8s) 内返回，沿用 AI_TIMEOUT_MS 会把调用撑爆。
  *   同步路径（buildIndex/runSync）不传，用 AI_TIMEOUT_MS。
  */
 function callVisionApi(endpoint, payload, timeoutMs) {
@@ -1089,7 +1192,7 @@ function frameCount(t) {
  *
  * ctx = { deadline }：poll 路径必须传。剩余预算不够完成本步就返回 { deferred: true }，
  *   由 poll 释放租约并返回 pending，下一轮轮询继续 —— 已落库的产物不丢。
- *   不传 ctx（run/runSync 同步路径）则不受 3s 预算约束，AI 可等满 AI_TIMEOUT_MS。
+ *   不传 ctx（run/runSync 同步路径）则不受 poll 预算约束，AI 可等满 AI_TIMEOUT_MS。
  */
 async function advance(user, t, ctx) {
   const deadline = (ctx && ctx.deadline) ? ctx.deadline : Infinity
@@ -1102,10 +1205,10 @@ async function advance(user, t, ctx) {
   const mediaId = (type === 'video' && t.thumbId) ? t.thumbId : t.fileId
   const frames = frameCount(t)
 
-  // ① 内容安全（最慢的一步：downloadFile 下载整图 + imgSecCheck 往返）
+  // ① 内容安全（最慢的一步：下载图片 + imgSecCheck 往返）
   if (step === '') {
-    // 余量不足就别开工：checkImage 内部不可中断，硬做只会整次调用被 3s 预算打断，
-    // 这一步白干、下轮从头再来（27 轮全超时就是这么来的）。
+    // 余量不足就别开工：这一步内部不可中断，硬做只会整次调用被平台预算打断，
+    // 白干、下轮从头再来（27 轮全超时就是这么来的）。
     if (left() < SEC_RESERVE_MS) return { deferred: true }
     const secTries = Number(partial.secTries) || 0
     let imgOk
@@ -1116,7 +1219,35 @@ async function advance(user, t, ctx) {
       await sec.checkMediaAsync(mediaId, type === 'video' ? 'video' : 'image')
       imgOk = true
     } else {
-      imgOk = await sec.checkImage(mediaId)
+      // 「一次下载两用」：先下到内存一次，同一份字节
+      //  ① 送 imgSecCheck（客户端上传前已压到 1080px，通常落在微信 1MB 限制内；
+      //     老客户端的大图仍会被 checkImageBuffer 转成异步送检）；
+      //  ② 留给第③步 base64 内联给识别服务，省掉服务端再跨服务下载一次（实测 ~530ms）。
+      // 下载失败就整体回退旧路径（checkImage 自己再下一次），安全判定能力不打折。
+      let buf = thumbCacheGet(t._id)
+      if (!buf) {
+        // mediaId 在视频场景是封面帧；没有封面帧时 mediaId 是视频本体，字节不能当图片用
+        const isImageMedia = type !== 'video' || !!t.thumbId
+        // 给后续送检留 600ms：下载不能把整个安全步骤的预算吃光
+        const dlBudget = Math.min(SEC_DL_MS, left() - 600)
+        if (isImageMedia && dlBudget >= 300) {
+          try {
+            const got = await fetchOriginalBuffer(mediaId, dlBudget)
+            if (got && got.length) {
+              buf = { buf: got, at: Date.now() }
+              // 只有小图才值得内联（见 INLINE_MAX_BYTES）；大图存着也能省一次送检下载
+              if (got.length <= INLINE_MAX_BYTES) thumbCachePut(t._id, got)
+            }
+          } catch (e) {
+            buf = null
+          }
+        }
+      }
+      if (buf && buf.buf && buf.buf.length) {
+        imgOk = await sec.checkImageBuffer(buf.buf, { fileID: mediaId })
+      } else {
+        imgOk = await sec.checkImage(mediaId)
+      }
     }
     if (!imgOk) throw new AppError('素材未通过安全检测', 400)
     if (type === 'video') await sec.checkMediaAsync(t.fileId, 'video')
@@ -1140,10 +1271,15 @@ async function advance(user, t, ctx) {
     const url = await toTempUrl(mediaId)
     // 视频本体链接交给自建服务做真抽帧（云函数内没有 ffmpeg，做不了）
     const videoUrl = type === 'video' ? await toTempUrl(t.fileId) : ''
+    // 缩略图链接：原图常 3~10MB，识别服务跨服务出网拉原图是 15s 耗时的最大头。
+    // ReID 输入才 518px，768px 缩略图足够，下载量降到几百 KB。
+    // 用 imageMogr2 在临时链接上现拼（COS 在鉴权后做图处理），下载失败服务端会回退原图。
+    // 视频不拼（视频走抽帧，缩略无意义）。
+    const thumbUrl = type !== 'video' ? jpegThumbUrl(url, THUMB_SIDE) : ''
     const r = await patchTask(t, {
       step: 'cats',
       progress: 55,
-      partial: Object.assign({}, partial, { url, videoUrl })
+      partial: Object.assign({}, partial, { url, videoUrl, thumbUrl })
     })
     assertWrote(r, 'temp-urls')
     return { finished: false, progress: 55 }
@@ -1172,7 +1308,7 @@ async function advance(user, t, ctx) {
     if (endpoint && featFails < FEAT_FALLBACK_ATTEMPTS && aiAttempts < MAX_AI_ATTEMPTS) {
       // 两条路径都要按剩余预算裁剪 AI 超时 —— 早期只有 poll 裁剪，同步路径固定
       // 用满 AI_TIMEOUT_MS(8s)。后果：冷启动/换链吃掉几秒后，AI 那 8s 已经没有
-      // 对应的预算，云函数被平台在 3s 处掐断（FUNCTIONS_TIME_LIMIT_EXCEEDED），
+      // 对应的预算，云函数被平台在调用超时点掐断（FUNCTIONS_TIME_LIMIT_EXCEEDED），
       // 客户端看到 -504003。任务虽然安全（状态已落库、轮询可续），但白等一场。
       // 裁剪后：预算不够就提前 defer，让轮询轻装去跑，而不是硬撑到被掐。
       const aiCap = pollPath
@@ -1183,8 +1319,15 @@ async function advance(user, t, ctx) {
         : aiCap
       if (aiTimeout < 500) return { deferred: true }
       try {
+        // 内联素材：第①步安全检测时已经下到内存的那份字节（客户端上传前压过，
+        // 通常 1080px JPEG、200~400KB），服务端直接解码，省掉一次跨服务下载（实测 ~530ms）。
+        // 取不到（换实例/超 TTL/视频/大图超出内联上限）就留空，服务端回退按 url/thumbUrl
+        // 下载 —— 所以这是纯加速项，不影响正确性。
+        const inline = type !== 'video' ? thumbCacheGet(t._id) : null
         const raw = await callVisionApi(endpoint, {
-          url: partial.url, videoUrl: partial.videoUrl, fileId: mediaId,
+          url: partial.url, videoUrl: partial.videoUrl, thumbUrl: partial.thumbUrl || '',
+          imageBase64: (inline && inline.buf) ? inline.buf.toString('base64') : '',
+          fileId: mediaId,
           type, frames, schoolId,
           // 排队耐心：同一个素材若已有一次计算在跑（上一轮被我超时放弃的那次），
           // 本次就等它算完，而不是再开一遍。留 300ms 给响应回程与自身收尾。
@@ -1420,23 +1563,18 @@ async function start(user, event) {
  *
  * @param {Object} [ctx] { startedAt, deadline } —— 客户端同步快路径必须传。
  *
- * 【同步路径的预算该怎么定】（2026-10-15 定案）
- *   先想清楚客户端的行为：`wx.cloud.callFunction` 约 3s 硬预算，超时抛 -504003，
- *   而 recognize.js 收到 -504003 后会**转轮询接管**（这是设计好的，不是故障）。
- *   所以同步路径的正确目标不是「抢在 3s 前交还」，而是：
+ * 【同步路径的预算该怎么定】（2026-10-15 定案，2026-10-28 复核修订）
+ *   先厘清一件事：`-504003` 是**云函数执行超时**（FUNCTIONS_TIME_LIMIT_EXCEEDED），
+ *   不是 `wx.cloud.callFunction` 的独立 3s 限制。控制台超时已于 2026-10-28 调到 20s。
+ *   recognize.js 的策略仍然是「同步能一把出结果最好，等太久就转轮询接管」。
  *
- *     「尽量在 3s 内一把出结果；来不及就让它超时，但**已完成的步骤必须全部落库**，
- *       好让轮询从断点接续、不重跑前面。」
+ *   所以同步路径用 SYNC_BUDGET_MS=12000：语义是「云函数自己能跑多久」，
+ *   上限由云函数超时兜底，而不是由客户端愿等多久决定；预算小于云函数超时，
+ *   保证走到预算尽头也能正常返回、把 running 交给轮询，而不是被平台硬掐断。
  *
- *   于是预算不能沿用 poll 的 POLL_BUDGET_MS=2400 —— 那是为「一次调用只推进一步」定的。
- *   同步路径要串完三步，固定开销实测就 ≈2.4~2.6s（三次读任务 + 内容安全下载/送检 +
- *   换链 + 读档案 + 三次写库）。用 2400 卡它，结果是每一步刚开工就被 defer 掉、
- *   白花几十毫秒的往返后直接 409，**连第一步都做不完**（回归台 S1/S4 当场全红）。
- *
- *   所以同步路径用 SYNC_BUDGET_MS（默认远大于 3s），语义是「云函数自己能跑多久」，
- *   而不是「客户端愿等多久」。客户端 3s 放弃时任务仍在 running，轮询接着干 ——
- *   这正是改动前就有的行为，也是「超时不是失败」注释里写的设计。
- *   唯一要防的是**被平台按 action 超时掐断**（默认 15s），故留 PLATFORM_RESERVE_MS 余量。
+ *   poll 的 POLL_BUDGET_MS 不能拿来卡同步路径：同步路径要串完三步，固定开销
+ *   （三次读任务 + 内容安全下载/送检 + 换链 + 读档案 + 三次写库）实测 ≈2.4~2.6s，
+ *   用 2400 卡它会让每一步刚开工就 defer（回归台 S1/S4 当场全红）。
  */
 const SYNC_BUDGET_MS = 12000
 /** 同步路径给平台收尾留的余量（响应序列化 + SDK 上传），别贴着 action 超时跑 */
@@ -1508,12 +1646,14 @@ async function runSync(user, event, ctx) {
 
 /**
  * 轮询（分步推进版）
- * 租约机制：只有把 pending 改成 running 的那个请求才推进一个步骤，
+ * 租约机制：只有把 pending 改成 running 的那个请求才推进步骤，
  * 其它并发轮询直接返回「处理中」，避免重复调用第三方接口烧钱。
  *
  * 预算纪律（本函数的生存线）：整次调用必须在 POLL_BUDGET_MS 内返回。
  *  - 基础往返太慢 → 直接回 pending，不抢租约不干活；
  *  - 步骤余量不足 → advance 返回 deferred，释放租约下轮再来；
+ *  - 预算够就**连续推进多步**（2026-10-28 起）：8s 预算下一次调用串完
+ *    安全检测 → 换链 → 识别，把原来必然的三轮压成一轮；
  *  - 每一步成功即落库，被打断也不丢；写未生效会抛错重试，绝不静默。
  */
 async function poll(user, event, ctx) {
@@ -1521,7 +1661,7 @@ async function poll(user, event, ctx) {
   if (!taskId) throw new AppError('缺少 taskId')
   // ⚠️ 预算必须从「调用入口」（ctx.startedAt）起算，而不是从本函数起算：
   // 云函数冷启动（加载 node_modules）和 getMe() 的 DB 往返都发生在 poll() 之前，
-  // 从 handler 内部起算的 2.4s 加上这些前置开销就顶穿了客户端约 3s 的硬预算。
+  // 从 handler 内部起算会把这些前置开销漏掉，实际比预算晚到、被平台掐断。
   // 用入口时间起算后：前置慢 → 剩余预算自然变小 → 早退 pending，不再硬干活。
   const t0 = (ctx && ctx.startedAt) || Date.now()
   const deadline = t0 + POLL_BUDGET_MS
@@ -1540,9 +1680,9 @@ async function poll(user, event, ctx) {
     return { taskId, status: t.status, progress: t.progress || 40, result: t.result || null }
   }
 
-  // 回收过期租约（上一个执行者被 3s 预算打断的情况）。
+  // 回收过期租约（上一个执行者被预算打断的情况）。
   // ⚠️ 只在内存态确有过期租约时才发这次更新 —— 无脑发一遍是白扔一次 DB 往返，
-  // 而识别轮询全程都在跟 3s 预算赛跑。
+  // 而识别轮询全程都在跟 8s 预算赛跑。
   const leaseUntil = t.leaseUntil ? new Date(t.leaseUntil).getTime() : 0
   if (t.status === 'running' && leaseUntil && leaseUntil < Date.now()) {
     await db.collection(COL.aiTask)
@@ -1577,18 +1717,44 @@ async function poll(user, event, ctx) {
   })
 
   try {
-    const r = await advance(user, fresh, { deadline })
-    if (r.deferred) {
-      // 预算不够做完这一步：释放租约下轮再来，已完成阶段的产物不丢
-      await releaseLease(fresh)
-      return { taskId, status: 'pending', progress: fresh.progress || 40 }
+    // 一轮内连续推进所有步骤。
+    //
+    // 旧行为是「一轮只走一步」，那是 2400ms 预算下的妥协：三步 = 三轮，
+    // 每轮白付 0.6~0.9s 固定开销（getMe + 读任务 + 抢租约）+ 0.8~1.5s 轮询间隔。
+    // 预算按云函数 20s 超时重定为 8s 后，完全可以在一轮里串完（与 run() 的循环同构）——
+    // 把 3 轮压成 1 轮，这是比「调大 AI 窗口」更大的一块时间。
+    let cur = fresh
+    let guard = 0
+    while (guard++ < 10) {
+      const r = await advance(user, cur, { deadline })
+      if (r.finished) {
+        return { taskId, status: 'done', progress: 100, result: r.result }
+      }
+      if (r.deferred) {
+        // 预算不够做完这一步：释放租约下轮再来，已完成阶段的产物不丢
+        await releaseLease(cur)
+        return { taskId, status: 'pending', progress: cur.progress || 40 }
+      }
+      // ⚠️ 下一步必须重读文档，不能只在内存里推 step：
+      //   本步刚落库的 partial（url/videoUrl）是下一步的输入，advance 不会把它
+      //   回填到入参对象（它只读 const partial = t.partial）。省这次 get 会让
+      //   'cats' 步骤拿着空 url 去调 AI，等于把识别打空。
+      //   代价约 180ms/步，换来的是「一轮跑完三步」省下的两轮固定开销。
+      const nxt = (await db.collection(COL.aiTask).doc(taskId).get()).data
+      if (!nxt) break
+      if (nxt.status === 'done') {
+        return { taskId, status: 'done', progress: 100, result: nxt.result || null }
+      }
+      if (nxt.status === 'failed') {
+        return { taskId, status: 'failed', progress: 100, result: nxt.result || null, error: nxt.error || '' }
+      }
+      cur = nxt
+      // 剩余预算不够下一步开工：主动交还租约（已完成步骤全部落库），
+      // 不要让下一步在 advance 里刚开工就 defer —— 白花一次往返。
+      if (deadline - Date.now() < POLL_NEXT_STEP_RESERVE_MS) break
     }
-    if (r.finished) {
-      return { taskId, status: 'done', progress: 100, result: r.result }
-    }
-    // 本步骤完成、还有下一步：退回 pending 等下轮。进度取本步写入值，无需再读一次库
-    await releaseLease(fresh)
-    return { taskId, status: 'pending', progress: r.progress != null ? r.progress : (fresh.progress || 40) }
+    await releaseLease(cur)
+    return { taskId, status: 'pending', progress: cur.progress || 40 }
   } catch (e) {
     // 终局错误（如素材未过安全检测）才置 failed；其余一律可重试
     const isFinal = e instanceof AppError && Number(e.code) === 400

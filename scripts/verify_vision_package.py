@@ -38,7 +38,9 @@ import os
 from PIL import Image
 from app import engine, main as M, media, config
 
-media.fetch_image = lambda u: Image.open(CAT_PATH).convert("RGB")
+# 打桩：真实识别要出网拉图，验证包只关心「打包后的推理链路是否通」。
+# 必须吃下 fetch_image 的可选 timeout —— 热路径补库会按预算传它。
+media.fetch_image = lambda u, timeout=None: Image.open(CAT_PATH).convert("RGB")
 eng = engine.get_engine()
 
 print("reid     %s" % config.REID_ONNX)
@@ -81,6 +83,21 @@ r4 = M.recognize(M.RecognizeReq(url="http://x/a.jpg", type="image", schoolId="s3
 print("cache    first=%s second=%s" % (r3["meta"].get("cached"), r4["meta"].get("cached")))
 if r4["meta"].get("cached") is not True:
     raise SystemExit("第二次识别未命中缓存：包内代码与预期不一致（视频会被反复计算）")
+
+# 内联图片冒烟：云函数「一次下载两用」会把安全检测用的那份字节 base64 内联过来。
+# 这里把出网下载彻底打死后还能识别成功，才证明包里的服务端**真的走内联解码**，
+# 而不是「悄悄又去下载一次」（那样 530ms 的优化在线上根本没生效）。
+import base64
+
+def _no_net(u, timeout=None):
+    raise AssertionError("内联图片仍去出网下载：" + str(u))
+
+_raw = base64.b64encode(open(CAT_PATH, "rb").read()).decode()
+media.fetch_image = _no_net
+r5 = M.recognize(M.RecognizeReq(url="http://x/inline.jpg", imageBase64=_raw,
+                                type="image", schoolId="s4"), None)
+print("inline   ok tags=%d cands=%d" % (
+    len(r5["features"]["tags"]), len(r5["candidates"])))
 print("timing   " + json.dumps(r["meta"].get("timing") or {}, ensure_ascii=False))
 print("indexed  %s backend=%s" % (r["meta"].get("indexed"), r["meta"].get("indexBackend")))
 '''.replace('CAT_PATH', repr(CAT))

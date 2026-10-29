@@ -447,6 +447,38 @@ Page(Object.assign({
   },
 
   /**
+   * 上传前压缩（仅图片）。
+   *
+   * 手机原图常 3~8MB：上传要为它付一次流量，云端安全检测下载一次、识别服务再下载一次 ——
+   * 一张图在同一条链路上被搬三遍。服务端 ReID 输入只有 518px、检测输入 640px，
+   * 1080px JPEG(q85) 对识别精度没有可见影响，体积却降一个量级（实测 4MB → ~200KB）。
+   *
+   * 压缩失败（低版本基础库不支持 compressedWidth / 图片损坏）返回 '' 走原图上传：
+   * 这是纯优化，绝不能让「压缩失败」变成「识别失败」。
+   *
+   * @param {string} path 本地临时路径
+   * @returns {Promise<string>} 压缩后的临时路径；失败返回 ''
+   */
+  async compressForUpload(path) {
+    if (!path) return ''
+    try {
+      const r = await new Promise((resolve, reject) => {
+        wx.compressImage({
+          src: path,
+          quality: 85,
+          compressedWidth: 1080,
+          success: resolve,
+          fail: reject
+        })
+      })
+      return (r && r.tempFilePath) || ''
+    } catch (e) {
+      console.warn('[recognize] 图片压缩失败，按原图上传', e && (e.errMsg || e.message))
+      return ''
+    }
+  },
+
+  /**
    * 上传一个本地临时文件到云存储，**必定返回带 fileID 的结果**，否则抛可读错误。
    *
    * 为什么不能直接 `const up = await wx.cloud.uploadFile(...)`：
@@ -518,10 +550,20 @@ Page(Object.assign({
       const type = this.data.mode === 'video' ? 'video' : 'image'
 
       // 1) 上传到云存储
-      const ext = (tempPath.split('.').pop() || 'jpg').toLowerCase()
+      //    图片先压缩：一张原图要在「上传 → 安全检测下载 → 识别服务下载」三处各搬一遍，
+      //    压到 1080px JPEG 能把这三段流量都砍掉一个量级（见 compressForUpload）。
+      let upPath = tempPath
+      let ext = (tempPath.split('.').pop() || 'jpg').toLowerCase()
+      if (type === 'image') {
+        const small = await this.compressForUpload(tempPath)
+        if (small) {
+          upPath = small
+          ext = 'jpg'
+        }
+      }
       const stamp = Date.now() + '-' + Math.random().toString(36).slice(2)
       const cloudPath = `recognize/${stamp}.${ext}`
-      const up = await this.uploadToCloud(cloudPath, tempPath, type === 'video' ? '视频' : '照片')
+      const up = await this.uploadToCloud(cloudPath, upPath, type === 'video' ? '视频' : '照片')
 
       // 视频额外上传封面帧：云函数没有 ffmpeg，用封面帧作为代表帧（省一次解码）
       // ⚠️ 封面帧失败**不算致命**：没有 thumb 时云端会退回用视频本体（mediaId 取 fileId），
@@ -662,7 +704,10 @@ Page(Object.assign({
    */
   pollGap(n) {
     if (n >= 20) return 3000
-    return n < 3 ? 1200 : 2000
+    // 前几轮用更短的间隔：一次识别通常在前两三轮询内就出结果（尤其图片缩略图
+    // 下载后服务端秒回），固定 2s 等于白加 2.4 秒。缩到 0.8s 不增加调用压力，
+    // 却能让结果更早被轮询命中。慢段（20 轮之后）保持 3s，那是长尾降频。
+    return n < 3 ? 800 : 1500
   },
 
   /**

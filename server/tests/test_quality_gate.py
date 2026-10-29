@@ -113,6 +113,99 @@ class TestCowGrayGuard(unittest.TestCase):
         self.assertLess(config.ATTR_COW_MAX_GRAY, 0.5)
 
 
+class TestStudioWhiteBg(unittest.TestCase):
+    """棚拍白背景误判（2026-10-28，东南大学 18 张实拍图校准）。
+
+    白背景占框内一半以上时，white/black 桶被背景污染：
+    狸花（暖底毛+黑条纹）判成奶牛、三花（橘被稀释到 0.03）判成纯白。
+    这里的 ratio 全部来自当天实测统计量，锁的是三条规则的协同行为。
+    """
+
+    def _ratio(self, **kw):
+        r = {b: 0.0 for b in attrs._CAT_BUCKETS}
+        r.update(kw)
+        return r
+
+    def test_tabby_on_white_bg_not_cow(self):
+        # 狸花猫1实测：白背景 0.48 + 黑条纹 0.30 + warmish 0.37 + stripe 0.56（差线）
+        c, p = attrs._decide(
+            self._ratio(white=0.48, black=0.30, gray=0.07, brown=0.11, cream=0.01),
+            stripe=0.56, dgray=0.04, warmish=0.37)
+        self.assertEqual((c, p), ("tabby", "tabby"))
+
+    def test_true_cow_passes_warmish_guard(self):
+        # 奶牛猫1实测：stripe 0.48 卡在弱带下界之下、warmish 0.01 —— 两道闸都不该拦
+        c, p = attrs._decide(
+            self._ratio(white=0.56, black=0.35, gray=0.09),
+            stripe=0.48, dgray=0.05, warmish=0.01)
+        self.assertEqual((c, p), ("cow", "cow"))
+
+    def test_striped_cow_not_rescued_into_tabby(self):
+        # 大号奶牛猫1实测：stripe 0.52 落进弱条纹带，但 warmish 0.09 < 0.25
+        c, p = attrs._decide(
+            self._ratio(white=0.72, black=0.19, gray=0.07, brown=0.01, cream=0.01),
+            stripe=0.52, dgray=0.03, warmish=0.09)
+        self.assertEqual((c, p), ("cow", "cow"))
+
+    def test_calico_diluted_by_white_bg(self):
+        # 三花猫1实测：橘被白背景稀释到 0.03，dark=0.08 是真实黑块
+        c, p = attrs._decide(
+            self._ratio(white=0.71, black=0.06, orange=0.03, brown=0.08,
+                        cream=0.05, gray=0.05),
+            stripe=0.17, dgray=0.02, warmish=0.23)
+        self.assertEqual((c, p), ("calico", "calico"))
+
+    def test_buff_cat_wall_still_not_calico(self):
+        # 规则 4 注释里的乳橘猫+白墙+阴影案例：orange 0.003 必须继续被挡
+        c, p = attrs._decide(
+            self._ratio(white=0.285, black=0.10, brown=0.20, cream=0.08,
+                        orange=0.003, gray=0.20),
+            stripe=0.2, dgray=0.21, warmish=0.30)
+        self.assertNotEqual(c, "calico")
+
+    def test_orange_cat_on_white_bg_not_calico(self):
+        # 橘猫1实测：白 0.57 + 橘 0.12，但 dark≈0（没有黑块）→ 救援规则不触发
+        c, p = attrs._decide(
+            self._ratio(white=0.57, orange=0.12, brown=0.19, cream=0.09, gray=0.01),
+            stripe=0.16, dgray=0.00, warmish=0.43)
+        self.assertEqual(c, "orange")
+
+    def test_tortie_on_white_bg_not_calico(self):
+        # 玳瑁猫2实测：玳瑁+白背景不能借救援规则变三花（white 0.32 < 0.50）
+        c, p = attrs._decide(
+            self._ratio(white=0.32, black=0.38, orange=0.02, brown=0.20,
+                        cream=0.05, gray=0.02),
+            stripe=0.61, dgray=0.01, warmish=0.57)
+        self.assertNotEqual(c, "calico")
+
+    def test_tortie_on_white_bg_not_orange(self):
+        # 玳瑁猫1实测：白背景 0.59 + 真黑块 0.19 + 棕 0.14 → white+warm 够量，
+        # 但 dark=0.20 说明有真黑块，不该判橘白，应落到狸花规则
+        c, p = attrs._decide(
+            self._ratio(white=0.59, black=0.19, orange=0.01, brown=0.14,
+                        cream=0.04, gray=0.02),
+            stripe=0.70, dgray=0.01, warmish=0.36)
+        self.assertNotEqual(c, "orange")
+        self.assertEqual(c, "tabby")
+
+    def test_tabby_on_white_bg_not_orange(self):
+        # 狸花猫2实测：white 0.33 + black 0.31 + brown 0.17，dark=0.42 → 不判橘白
+        c, p = attrs._decide(
+            self._ratio(white=0.33, black=0.31, orange=0.0, brown=0.17,
+                        cream=0.02, gray=0.15),
+            stripe=0.68, dgray=0.11, warmish=0.42)
+        self.assertNotEqual(c, "orange")
+        self.assertEqual(c, "tabby")
+
+    def test_true_orange_white_still_orange(self):
+        # 真橘白猫：black 桶低（0.03），warm 来自棕/奶黄，闸门不该拦
+        c, p = attrs._decide(
+            self._ratio(white=0.40, orange=0.06, brown=0.15, cream=0.08,
+                        gray=0.05, black=0.03),
+            stripe=0.15, dgray=0.03, warmish=0.45)
+        self.assertEqual(c, "orange")
+
+
 class TestLowLightGate(unittest.TestCase):
     """低光门控（2026-10-26 深夜第二例）：夜间**近拍**占比够大，特征仍不可信。
 

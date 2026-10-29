@@ -152,6 +152,9 @@ Module._load = function (request, parent, isMain) {
     if (request === './security') {
       return {
         async checkImage() { await sleep(RT.imgCheck); return true },
+        // 「一次下载两用」后第①步改用 buffer 版（省掉 checkImage 自己的二次下载），
+        // 这里的耗时口径必须与 checkImage 一致，预算算术才可比。
+        async checkImageBuffer() { await sleep(RT.imgCheck); return true },
         async checkMediaAsync() {},
         async checkText() { return true },
         async assertSightingSafe() {}
@@ -277,20 +280,24 @@ async function run() {
 
   console.log('—— B2/C2. 预算只够前两步：做了的必须落库，第三步交轮询 ——')
   seedCats(10)
-  // AI 给 1200ms：同步路径第三步的 aiTimeout = max(300, min(1800, 450-500)) = 300 < 500
-  // 仍会 defer（我们要的就是它卡在第三步）；轮询路径下 aiTimeout ≈ 1540 能等到 1200ms 返回，
-  // 于是轮询接手一次即可收敛 —— 场景干净不拖泥带水。
+  // AI 给 1200ms：同步路径第三步的 aiTimeout 被预算压到 300（<500）→ defer（要的就是它卡在第三步）；
+  // 轮询路径下一次调用预算 8s，能等到 1200ms 返回，于是接手一次即可收敛。
   aiBehavior.mode = 'ok'; aiBehavior.delay = 1200
   {
     const taskId = await newTask()
-    // 预算 10500ms，这里只留 2700ms。逐步算（stub 开销：每轮 run 先 get 180，
-    // ① 下载 700 + 送检 350 + patch 180 = 1230，② tempUrl 300 + patch 180 = 480）：
-    //   ① ''     left 2700-180=2520 ≥ SEC_RESERVE_MS(1500) ✓ 做完剩 ≈1290
-    //   ② 'sec'  1290 ≥ URL_RESERVE_MS(1000) ✓ 做完剩 ≈630
-    //   ③ 'cats' left 630-180=450；aiTimeout = max(300, min(1800, 450-500)) = 300 < 500 → defer
+    // 预算里只留 3500ms。逐步算（实测 stub 开销：runSync 前置 get+抢租约+get 与异常交还写库
+    // 合计 ≈930；run 每步之间还要重读一次任务 = 180；
+    // ① 下载 700（现在由 advance 自己下、下完直接送 buffer 版检测）+ 送检 350 + patch 180 = 1230，
+    // ② tempUrl 300 + patch 180 = 480）：
+    //   ① ''     left 2570 ≥ SEC_RESERVE_MS(1500) ✓ 做完 + 重读剩 ≈1160
+    //   ② 'sec'  1160 ≥ URL_RESERVE_MS(1000) ✓ 做完 + 重读剩 ≈500
+    //   ③ 'cats' left 500；aiTimeout = max(300, min(1800, 500-180-500)) = 300 < 500 → defer
+    // ⚠️ 2026-10-28「一次下载两用」后第①步不再被 checkImage 的 IMG_DL_MS(600) 兜断，
+    //    会实打实等满 700ms 的下载，所以预算要把这 600→700 的差算进来
+    //    （旧值 -7800 是按「600 就放弃 → 转异步放行」算的）。
     // 关键断言：step 停在 'cats' 且 partial.url 已在库里 —— 前两步的产物没白做，
     // 轮询接手只需补最后一步（这正是「提前收工」相对「硬掐断」的价值）。
-    const t0 = Date.now() - 7800
+    const t0 = Date.now() - 7000
     let threw = null
     try { await vision.runSync(USER, { taskId }, { startedAt: t0 }) } catch (e) { threw = e }
     const task = store.ai_tasks.find(t => t._id === taskId)

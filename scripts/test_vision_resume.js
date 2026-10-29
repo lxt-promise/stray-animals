@@ -292,10 +292,14 @@ async function drive(taskId, opts) {
 }
 function assertBudget(rounds, label) {
   rounds.forEach((rd, i) => {
-    assertLt(rd.ms, 3000, label + ' 第' + (i + 1) + ' 次 poll 必须在 3s 内返回')
-    // 只数 DB 往返（cloud 的 downloadFile/imgSecCheck 等不计入，由时长断言覆盖）
+    // 【2026-10-28 重定】旧上限 3s 来自「云函数默认超时 3s」那个已消失的墙。
+    // 现在超时是 20s、POLL_BUDGET_MS=8000，且一次 poll 允许**一轮串完三步**，
+    // 所以这里改为守两条真实约束：
+    //   ① 单次调用不得超出 poll 预算 + 平台收尾余量 —— 超了就说明某步没跟着 deadline 收缩；
+    //   ② DB 往返有界（三步串完 ≈9，留 12）—— 防「租约/步骤没落库 → 每轮从头重跑」。
+    assertLt(rd.ms, 8500, label + ' 第' + (i + 1) + ' 次 poll 必须在 poll 预算（8s）内返回')
     const dbOps = rd.ops.filter(o => /^(get|update|where-update|where-get|add):/.test(o))
-    assert(dbOps.length <= 7, label + ' 第' + (i + 1) + ' 次 poll DB 往返过多：' + dbOps.length + ' (' + dbOps.join(',') + ')')
+    assert(dbOps.length <= 12, label + ' 第' + (i + 1) + ' 次 poll DB 往返过多：' + dbOps.length + ' (' + dbOps.join(',') + ')')
   })
 }
 

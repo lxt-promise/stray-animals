@@ -47,6 +47,44 @@ GAP_CLEAR = config.GAP_CLEAR
 app = FastAPI(title="CatCampus Vision", version="1.0.0")
 
 
+# ---------------- 启动预热 ----------------
+def _warmup() -> None:
+    """把「加载模型 + 拉特征库」从首个识别请求里挪到启动阶段。
+
+    为什么必须做：云托管容器重建（发版、扩容、实例回收）后，引擎是懒加载的 ——
+    第一个识别请求要同时付 90MB ONNX 会话构建 + 检测模型加载 + COS 特征库
+    全量 list/GET 的钱，实测 6~10s，全压在用户那一次点击上。
+    放到启动后立刻做（后台线程），这块钱由容器启动时间吸收；只要实例在跑
+    （云托管最小实例数=1），用户请求落到的是已经完全就绪的进程。
+
+    用后台线程而不是阻塞 startup：阻塞会让「端口就绪」推迟到模型加载完，
+    平台的启动/健康探针可能等不及而判实例不健康、反复重启（2026-10-14 现场）。
+    预热失败只记日志，服务照常启动 —— 特征库/模型坏了要降级而不是起不来。
+    """
+    t0 = time.time()
+    try:
+        eng = get_engine()
+        log.info("预热：引擎就绪 provider=%s dim=%s size=%s（%.0fms）",
+                 eng.provider, eng.dim, eng.embedder.size, (time.time() - t0) * 1000)
+    except Exception as e:  # noqa: BLE001 —— 见 docstring
+        log.error("预热：引擎加载失败（识别将降级）: %s: %s", type(e).__name__, e)
+        return
+    t1 = time.time()
+    try:
+        n = index_store.count()
+        log.info("预热：特征库就绪 %d 只 backend=%s（%.0fms）",
+                 n, index_store.BACKEND_NAME, (time.time() - t1) * 1000)
+    except Exception as e:  # noqa: BLE001
+        log.error("预热：特征库加载失败（识别将无候选）: %s: %s", type(e).__name__, e)
+
+
+@app.on_event("startup")
+def _on_startup() -> None:
+    import threading
+
+    threading.Thread(target=_warmup, name="catcampus-warmup", daemon=True).start()
+
+
 # ---------------- 鉴权 ----------------
 def authorize(authorization: str = Header(default="")) -> None:
     # ⚠️ 空 token 绝不能「对外开放」：识别服务多为公网可达的云托管实例，
@@ -70,7 +108,15 @@ class CatRef(BaseModel):
 class RecognizeReq(BaseModel):
     url: str = ""                 # 主图（图片走这条）
     videoUrl: str = ""            # 视频本体链接，用于真抽帧
+    thumbUrl: str = ""            # 主图的缩略图链接（云函数用 imageMogr2 现拼）。
+                                  # 识别服务优先下它：ReID 输入才 518px，768px 足够，
+                                  # 但原图动辄 3~10MB，跨服务出网下载要几十秒。
+                                  # 下载失败（缩略参数不支持 / 链接过期）自动回退 url。
     fileId: str = ""
+    # 内联图片（base64 / data URL）。云函数做安全检测时已经把缩略图下到内存了，
+    # 顺手内联过来就能省掉服务端再跨服务下载一次（实测 530ms）。
+    # ⚠️ url 仍必须传：缓存 key 用 url 区分素材，且内联解码失败时回退到 url 下载。
+    imageBase64: str = ""
     type: str = "image"
     frames: int = 1
     schoolId: str = ""
@@ -159,7 +205,12 @@ def _ensure_index_inner(cats: List[CatRef], school_id: str, limit: int,
             break
         if index_store.get(c.id) is not None:
             continue
-        im = media.fetch_image(c.photos[0])
+        # 单张下载必须跟着预算走：预算只在「猫与猫之间」检查，
+        # 一单的下载超时（默认 15s）仍会把整次请求拖穿 1800ms 的 AI 窗口。
+        dl_timeout = None
+        if deadline is not None:
+            dl_timeout = max(0.4, min(config.BOOTSTRAP_FETCH_TIMEOUT, deadline - time.time()))
+        im = media.fetch_image(c.photos[0], timeout=dl_timeout)
         if im is None:
             continue
         emb, _, _, _, _ = eng.features(im)
@@ -438,7 +489,7 @@ def recognize(req: RecognizeReq, _=Depends(authorize)):
     缓存让「第二次调用直接拿到第一次的结果」，视频才能在第二轮轮询里成功。
     详见 app/recocache.py 的模块注释。
     """
-    if not req.url and not req.videoUrl:
+    if not req.url and not req.videoUrl and not req.imageBase64:
         raise HTTPException(status_code=400, detail="url or videoUrl required")
 
     n_frames = max(1, min(config.MAX_FRAMES, int(req.frames or 1)))
@@ -475,14 +526,40 @@ def _recognize_run(req: RecognizeReq, n_frames: int, cached: bool):
     t0 = time.time()
     eng = get_engine()
     frames: List = []
+    # 素材获取（下载 / 抽帧）单独计时：现场「为什么这单 15 秒」里下载常常是最大头，
+    # 而原来的分段日志只有检测/推理/检索，下载时间被折进 total，等于没信息。
+    t_dl = time.time()
 
     if req.type == "video" and req.videoUrl and media.ffmpeg_ok():
         frames = media.extract_frames(req.videoUrl, n_frames)
         log.info("抽帧 %d 张", len(frames))
 
     if not frames:
-        im = media.fetch_image(req.url)
+        # 快路径：云函数已把缩略图下到内存并内联过来，直接解码，省掉一次出网下载。
+        im = None
+        if req.imageBase64:
+            try:
+                im = media.decode_base64_image(req.imageBase64)
+            except Exception as e:  # noqa: BLE001
+                log.warning("内联图片不可用（%s），回退链接下载", e)
+        if im is None:
+            # 优先下载缩略图（thumbUrl）：原图常 3~10MB，识别服务跨服务出网拉原图是
+            # 15 秒耗时的最大头；缩略图几百 KB 即可，ReID 输入仅 518px。任何下载失败
+            # （缩略参数失效 / 链接过期）都回退原图 —— 绝不让缩略图把一次正常识别拖挂。
+            #
+            # 云函数没传 thumbUrl 时（例如云函数侧没跟着更新），服务端自己按域名拼一次，
+            # 否则「服务升级了、缩略图也支持了」却因为上游没传而完全不起作用。
+            thumb = media.force_jpeg(req.thumbUrl) if req.thumbUrl else media.derive_thumb_url(req.url)
+            im = media.fetch_image(thumb) if thumb else None
+            if im is None:
+                # 注意：这里必须无条件回退到原图。thumb 为空（没有 thumbUrl、域名不认、
+                # 或关了 DERIVE_THUMB）时同样要下原图 —— 否则图片一个都下不来，
+                # 直接 502「素材下载失败」。回退条件写成 `and thumb` 就是这个坑。
+                if thumb:
+                    log.info("缩略图不可用（%s），回退原图", thumb[:60])
+                im = media.fetch_image(req.url)
         frames = [im] if im is not None else []
+    dl_ms = int((time.time() - t_dl) * 1000)
 
     if not frames:
         raise HTTPException(status_code=502, detail="素材下载失败")
@@ -590,11 +667,12 @@ def _recognize_run(req: RecognizeReq, n_frames: int, cached: bool):
     # 分段耗时进日志：现场排查「为什么这个请求 78 秒」时，只有总耗时等于没信息。
     # 五个数字一眼就能定位是补库下载、检测、模型推理、还是特征库读取卡住。
     # 末尾带上花色结论与来源，排查"上传白猫判成橘"时不用再翻响应体。
-    log.info("/v1/recognize %dms（补库%d/%dms 检测%dms 推理%dms 检索%dms 帧%d 候选%d 库%d）"
+    log.info("/v1/recognize %dms（下载%dms 补库%d/%dms 检测%dms 推理%dms 检索%dms 帧%d 候选%d 库%d）"
              " 检测=%s 花色=%s/%s(%s %.2f)%s | Top1=%s",
-             total_ms, built_now, boot_ms, detect_ms, embed_ms, search_ms,
+             total_ms, dl_ms, built_now, boot_ms, detect_ms, embed_ms, search_ms,
              len(frames), len(candidates), sinfo["indexed"],
-             ("%s@%.2f" % (analysis["box"], analysis["detectConf"])) if detected
+             (("%s@%.2f" % (analysis["box"], analysis["detectConf"]))
+              + ("·低光重试" if analysis.get("detectRetried") else "")) if detected
              else ("未框到：" + (analysis["detectReason"] or "未知")),
              color or "-", pattern or "-", attrs["source"] or "-", attrs["confidence"],
              " 未采信：" + attrs["reason"] if attrs["reason"] else "",
@@ -624,7 +702,7 @@ def _recognize_run(req: RecognizeReq, n_frames: int, cached: bool):
             "frames": len(frames),
             "latency": total_ms,
             # 分段耗时（毫秒）—— 客户端日志里带上它，定位慢在哪一步不用翻服务端日志
-            "timing": {"bootstrap": boot_ms, "detect": detect_ms,
+            "timing": {"download": dl_ms, "bootstrap": boot_ms, "detect": detect_ms,
                        "embed": embed_ms, "search": search_ms},
             # 诊断三件套（云函数必须消费 indexedIds，见 search 的 docstring）：
             "indexed": sinfo["indexed"],          # 特征库里有多少只猫
@@ -669,6 +747,10 @@ def _recognize_run(req: RecognizeReq, n_frames: int, cached: bool):
             "detectConf": analysis["detectConf"],
             "detectCandidates": analysis["detectCandidates"],
             "detectReason": analysis["detectReason"],
+            # 低光提亮重试是否命中（engine._Detector.detect 的兜底路径）。
+            # true 说明首试在暗图上空手、提亮降阈后才框到 —— 这类图的
+            # 框质量天然偏差，排查「框偏/识别错」时先看它。
+            "detectRetried": analysis.get("detectRetried", False),
             **index_health(req.schoolId),
         },
     }

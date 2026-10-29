@@ -131,26 +131,63 @@ async function checkImage(fileID, opts) {
     // ① 下载：拿不到内容（超时 / 无权限）就别再等同步送检了
     const f = await withTimeout(cloud.downloadFile({ fileID }), Math.min(IMG_DL_MS, left()))
     if (!f || !f.fileContent) return await fallbackAsync('下载超时或无内容')
+    // ② 下载吃掉的预算不再重复计给送检
+    return await checkImageBuffer(f.fileContent, { fileID, budgetMs: Math.max(200, left()) })
+  } catch (e) {
+    if (e === TIMEOUT) return await fallbackAsync('下载超时')
+    // 接口本身报错（配额、权限、网络）也不能阻断业务：降级放行并留日志
+    console.warn('[sec.img] 检测异常，降级放行', fileID, e && (e.errCode || e.errMsg))
+    return true
+  }
+}
 
-    const size = f.fileContent.length
+/**
+ * 图片安全检测（**已有图片字节**的版本）。
+ *
+ * 为什么需要它：识别链路第一步本来就要把缩略图下到内存（768px JPEG，约 100KB）。
+ * 同一份字节直接送检，就不用再为安全检测调用一次 `cloud.downloadFile` 下载原图
+ * （现场实测原图下载 300~600ms，且原图常 >1MB 会被迫转异步）。
+ *
+ * 所有失败路径都与 checkImage 对齐：超预算 / 超 1MB → 异步送检并放行；
+ * 只有命中 87014 才返回 false。降级只影响「等不等得到结果」，不影响违规判定。
+ *
+ * @param {Buffer} buf
+ * @param {Object} opts { fileID, budgetMs } —— fileID 仅用于转异步检测与日志
+ * @returns {Promise<boolean>} true=通过（含降级放行），false=命中违规
+ */
+async function checkImageBuffer(buf, opts) {
+  if (!buf || !buf.length) return true
+  if (off()) return true
+  const fileID = (opts && opts.fileID) || ''
+  const budget = Math.max(300, Number(opts && opts.budgetMs) || IMG_BUDGET_MS)
+  const t0 = Date.now()
+  const left = () => budget - (Date.now() - t0)
+
+  const fallbackAsync = async why => {
+    if (!fileID) return true
+    const ms = Math.min(IMG_ASYNC_MS, Math.max(150, left()))
+    await withTimeout(checkMediaAsync(fileID, 'image'), ms)
+    console.warn('[sec.img] 同步检测未完成（' + why + '），已转异步检测', fileID)
+    return true
+  }
+
+  try {
     // 微信 imgSecCheck 限制 1MB，超出只能走异步媒体检测
-    if (size > 1024 * 1024) return await fallbackAsync('超过 1MB')
+    if (buf.length > 1024 * 1024) return await fallbackAsync('超过 1MB')
 
-    // ② 同步送检：预算见底就干脆不赌，直接转异步
     const ms = Math.min(IMG_SEC_MS, left())
     if (ms < 150) return await fallbackAsync('预算已用尽')
     await withDeadline(cloud.openapi.security.imgSecCheck({
-      media: { contentType: 'image/jpeg', value: f.fileContent }
+      media: { contentType: 'image/jpeg', value: buf }
     }), ms)
     return true
   } catch (e) {
     if (e === TIMEOUT) return await fallbackAsync('同步送检超时')
     if (e && e.errCode === RISKY) {
-      console.warn('[sec.img] 命中违规', fileID)
+      console.warn('[sec.img] 命中违规', fileID || '(buffer)')
       return false
     }
-    // 接口本身报错（配额、权限、网络）也不能阻断业务：降级放行并留日志
-    console.warn('[sec.img] 检测异常，降级放行', fileID, e && (e.errCode || e.errMsg))
+    console.warn('[sec.img] 检测异常，降级放行', fileID || '(buffer)', e && (e.errCode || e.errMsg))
     return true
   }
 }
@@ -221,4 +258,4 @@ async function audit(openid, kind, fileID, note) {
   }
 }
 
-module.exports = { checkText, checkImage, checkMediaAsync, assertSightingSafe, audit }
+module.exports = { checkText, checkImage, checkImageBuffer, checkMediaAsync, assertSightingSafe, audit }

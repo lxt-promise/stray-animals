@@ -144,6 +144,34 @@ class TestResolveDetectModel(unittest.TestCase):
         self.assertEqual(_resolve_detect_model(), _MODEL)
 
 
+class TestAutoGamma(unittest.TestCase):
+    """低光检测重试的提亮器：暗图提亮、亮图不动、近黑图不放大噪声。"""
+
+    def test_dark_image_is_brightened(self):
+        import numpy as np
+        from app.engine import _auto_gamma
+        dark = Image.new("RGB", (64, 64), (60, 60, 62))
+        out = _auto_gamma(dark)
+        self.assertIsNotNone(out)
+        mean = float(np.asarray(out.convert("L"), dtype=np.float32).mean())
+        self.assertGreater(mean, 110.0, "暗图应被提亮（实际 %.1f）" % mean)
+
+    def test_normal_photo_returns_none(self):
+        from app.engine import _auto_gamma
+        bright = Image.new("RGB", (64, 64), (190, 190, 190))
+        self.assertIsNone(_auto_gamma(bright), "正常曝光不该触发提亮（否则每次检测都白跑两趟）")
+
+    def test_near_black_is_not_amplified(self):
+        import numpy as np
+        from app.engine import _auto_gamma
+        black = Image.new("RGB", (64, 64), (12, 12, 12))
+        out = _auto_gamma(black)
+        # gamma 被夹在 0.45：(12/255)^0.45*255 ≈ 64 —— 近黑图只含噪声，不能拉到目标亮度
+        self.assertIsNotNone(out)
+        mean = float(np.asarray(out.convert("L"), dtype=np.float32).mean())
+        self.assertLess(mean, 90.0, "近黑图不能被放大成噪声图（实际 %.1f）" % mean)
+
+
 @unittest.skipUnless(os.path.exists(_MODEL) and os.path.exists(_CAT),
                      "缺 models/yolov8n.onnx 或 tests/fixtures/sample_cat.jpg")
 class TestDetectorRealImage(unittest.TestCase):

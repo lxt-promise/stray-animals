@@ -241,7 +241,8 @@ def _wquantile(values: np.ndarray, weights: np.ndarray, p: float) -> float:
     return float(vs[min(vs.size - 1, int(np.searchsorted(cw, cw[-1] * p)))])
 
 
-def _exposure_shift(v: np.ndarray, weight: np.ndarray) -> float:
+def _exposure_shift(v: np.ndarray, weight: np.ndarray,
+                    s: Optional[np.ndarray] = None) -> float:
     """估计画面曝光偏差，返回**所有 V 阈值要整体平移的量**。
 
     为什么需要它（2026-10-25）：色桶里有 4 条分界线是**绝对亮度**：
@@ -258,8 +259,23 @@ def _exposure_shift(v: np.ndarray, weight: np.ndarray) -> float:
 
     平移而非缩放：缩放会压缩色桶之间的相对关系，把「灰」挤成「白」；
     整体平移保持各桶间距不变，只把整条亮度轴对齐到标准曝光。
+
+    眩光防护（2026-10-28，传了 s 才生效）：夜间点光源 / 强反光像素
+    （V≥ATTR_GLARE_V 且 S≤ATTR_GLARE_S）会把 p98 顶到 240+，让严重欠曝的
+    夜景误判成「曝光正常」—— 实测夜间白猫照 p98=242 全被一盏灯占据，
+    锚点失效，白毛（V 92~184）整桶掉进 gray/black。把这些像素从锚点统计里
+    剔除后再取 p98；眩光质量占比过半时放弃剔除（那说明画面主体就是白亮
+    区域，比如白天的白猫 —— 剔了反而没锚点）。
     """
     p_hi = _wquantile(v, weight, 0.98)
+    if s is not None:
+        gv = _cfg("ATTR_GLARE_V", 248.0)
+        gs = _cfg("ATTR_GLARE_S", 35.0)
+        glare = (v >= gv) & (s <= gs)
+        w2 = weight * (~glare)
+        total = float(weight.sum())
+        if total > 0 and float(w2.sum()) > 0.5 * total:
+            p_hi = _wquantile(v, w2, 0.98)
     # ⚠️ 这三个必须用「显式 None 判断」取值：`x or 默认值` 会把合法的 0 顶掉
     # （ATTR_EXPOSURE_GAIN=0 本意是「关闭自适应」，用 or 会变成 0.6 照旧生效，
     #  现场排查时表现为「环境变量明明配了却没变化」）。项目里这条踩过多次。
@@ -444,6 +460,17 @@ def _decide(ratio: dict, stripe: float, dgray: float = 0.0,
     #    条纹是唯一可靠的区分点，漏掉这条会把狸花全判成玳瑁。
     if dark >= 0.18 and warm >= 0.18 and light < 0.12 and not has_tabby:
         return "tortoiseshell", "tortoiseshell"
+    # 2b) 三花·白背景稀释救援（2026-10-28）：棚拍白背景占总像素六成以上时，
+    #     真三花的鲜明橘被稀释到 0.02~0.05，规则 1/4 的橘门槛永远够不着，
+    #     最终落到规则 8 判「纯白」—— 实测两张三花棚拍照（orange 0.03、
+    #     white 0.61/0.71）都如此。救援条件必须**四条同时成立**：
+    #     white≥0.50（稀释才可能发生）+ orange≥0.02（挡乳橘猫案例 0.003）+
+    #     dark≥0.05（真三花必有黑块；挡只有阴影的橘白猫）+ warm≥0.14（同规则4）。
+    #     放在奶牛规则之前：满足这四条的「白底照」橘块是真实猫毛，不是杂物。
+    if (white >= 0.50 and warm >= 0.14 and
+            orange >= config.ATTR_CALICO_LOOSE_ORANGE and
+            dark >= config.ATTR_CALICO_LOOSE_DARK):
+        return "calico", "calico"
     # 3) 黑白两色调（2026-10-24 重写）：有效浅色与有效暗色都够量、且暖色少、
     #    且不是条纹 → 奶牛 / 燕尾服。分界从「白 vs 黑谁多」改成 light≥0.22：
     #    民间「奶牛猫」指黑白斑块猫，黑多白少也是奶牛；只有白块很小的
@@ -455,7 +482,15 @@ def _decide(ratio: dict, stripe: float, dgray: float = 0.0,
     #    实测标准白猫素材 gray=0.45、用户夜间白猫 gray=0.51，都因此判成奶牛；
     #    真奶牛照 gray 都在 0.2 上下。所以把「gray 少」列为必要条件：
     #    颜色要真的分成黑白两块，不能是一团灰的渐变。
+    #    🔴 **warmish 必须少**（2026-10-28 新增，实测狸花猫棚拍照误判奶牛）：
+    #    「狸花猫 + 白背景棚拍」= 白（背景）+ 黑（条纹）双量齐高，规则原样命中；
+    #    但狸花底毛是暖黄褐（warmish 实测 0.37），而真奶牛猫黑白毛都不含暖色
+    #    （4 张实测 0.01~0.09）。ratio 里的 warm 桶有 V 门槛、夜间会塌，
+    #    warmish 是 V 免疫证据 —— 用它做这道闸，夜里也拦得住。
+    #    ⚠️ 已知边界：玄猫（纯黑）+ 白背景在色域空间里与奶牛无法区分
+    #    （warmish 同样 ≈0），仍会判奶牛 —— 直方图信息上限，不做硬猜。
     if (not has_tabby and warm < 0.25 and gray < config.ATTR_COW_MAX_GRAY and
+            (warmish is None or warmish < config.ATTR_COW_MAX_WARM) and
             ((light >= 0.15 and dark >= 0.16) or
              (white >= 0.45 and dark >= 0.08))):    # 白底 + 小块黑斑（大多白奶牛）
         return ("cow" if (light >= 0.22 or light >= dark) else "tuxedo"), "cow"
@@ -471,7 +506,13 @@ def _decide(ratio: dict, stripe: float, dgray: float = 0.0,
             orange >= config.ATTR_CALICO_MIN_ORANGE):
         return "calico", "calico"
     # 5) 白 + 暖色（橘白 / 白橘）
-    if white >= 0.22 and warm >= 0.18:
+    #    🔴 **black 桶必须少**（2026-10-29 新增，实测玳瑁/狸花棚拍误判橘白）：
+    #    白背景下玳瑁/狸花的 black 桶被真实黑毛撑高（0.19~0.38），
+    #    white（背景）+ warm（棕/橘底毛）双量齐高，规则原样命中判成橘白。
+    #    用 black 桶而非 dark：乳橘猫的 dgray（阴影）可达 0.23 但 black 只
+    #    有 0.08，用 dark 会误伤真橘白。
+    if (white >= 0.22 and warm >= 0.18 and
+            black < config.ATTR_ORANGE_WHITE_MAX_BLACK):
         return "orange", tabby_like
     # 6) 暖色主导：鲜明橘够多才是橘猫，否则按条纹判狸花。
     #    橘色占比门槛（0.15）不能省：狸花猫的底毛是浅黄褐（落 cream 桶）+ 黑条纹，
@@ -489,7 +530,14 @@ def _decide(ratio: dict, stripe: float, dgray: float = 0.0,
     #    趴在沙发/地毯上时，织物褶皱是强方向性周期纹理，stripe 分一样虚高
     #    （实测 0.63 过线），但暖色系像素只有 6.8% —— 低于门槛的高条纹分
     #    只能来自环境纹理，不能给黑猫凭空长出条纹。
-    if (has_tabby and dark >= 0.12 and
+    #    🔶 **弱条纹带**（2026-10-28 新增，实测狸花猫棚拍照 stripe=0.56 差线）：
+    #    条纹分卡在 [0.5, 门槛) 的图，要求**更强的暖色证据**（warmish≥0.25）
+    #    才认狸花 —— 真狸花底毛的暖色证据通常 0.3+；而条纹分虚高的奶牛猫
+    #    （斑块边界有方向性，实测 0.52）warmish 只有 0.01~0.09，进不来。
+    #    warmish=None（没这项证据）时弱带不生效，保守退回旧行为。
+    weak_tabby = (not has_tabby and stripe >= config.ATTR_TABBY_WEAK_STRIPE and
+                  warmish is not None and warmish >= config.ATTR_TABBY_WEAK_WARM)
+    if ((has_tabby or weak_tabby) and dark >= 0.12 and
             (warmish is None or warmish >= config.ATTR_TABBY_MIN_WARM)):
         return "tabby", "tabby"
     # 8) 单色：白 / 黑 / 灰
@@ -588,7 +636,7 @@ def _stats_of(rgb: Image.Image, cropped: bool) -> Optional[dict]:
     weight = (np.ones((_SIZE, _SIZE), dtype=np.float64) if cropped
               else _center_weight(_SIZE, _SIZE))
 
-    shift = _exposure_shift(v, weight)
+    shift = _exposure_shift(v, weight, s)
     idx = _classify(hd, s, v, shift)
 
     counts = np.bincount(idx.ravel(), weights=weight.ravel(),
@@ -609,7 +657,10 @@ def _stats_of(rgb: Image.Image, cropped: bool) -> Optional[dict]:
     # 唯一还能区分「真狸花」和「黑猫 + 织物纹理」的量。
     warmish = float(weight[(hd >= 5) & (hd <= 55) & (s >= 50)].sum()) / total
 
-    # 条纹检测：非裁剪图先内缩 10% 再算梯度，避开照片边框/水印造成的假边缘
+    # 条纹检测：非裁剪图先内缩 10% 再算梯度，避开照片边框/水印造成的假边缘。
+    # （2026-10-28 曾试过暗图先直方图均衡再测条纹：条纹分 85% 由尺度不变的
+    #  带数/调制比/方向性构成，均衡前后逐分不差，纯噪声场景也无效 —— 已撤掉，
+    #  暗光的真问题在曝光锚点被点光源劫持，见 _exposure_shift 的眩光防护。）
     g = np.asarray(small.convert("L"), dtype=np.float32)
     if not cropped:
         pad = int(_SIZE * 0.10)

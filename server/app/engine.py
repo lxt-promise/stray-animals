@@ -16,6 +16,7 @@ import hashlib
 import logging
 import math
 import os
+import threading
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -256,6 +257,35 @@ def _pad_box(box: List[int], w: int, h: int, ratio: float) -> List[int]:
 
 _AUTO_BOX = object()   # 哨兵：box=_AUTO_BOX 表示「没给框，自己检测」
 
+# PIL 的镜像枚举：Pillow ≥9.1 挪到 Image.Transpose 下，旧版是顶层常量
+_FLIP_LR = getattr(getattr(Image, "Transpose", None), "FLIP_LEFT_RIGHT", 0)
+
+
+def _auto_gamma(im: Image.Image, target: float = 150.0) -> Optional[Image.Image]:
+    """暗图 gamma 提亮；正常曝光返回 None（调用方据此决定要不要走重试）。
+
+    用途是「低光检测重试」（_Detector.detect）：夜间点光源照片对比度低，
+    YOLO 常整只漏检；提亮后 conf 明显回升。提亮不改尺寸，框坐标与原图 1:1。
+
+    gamma 由「把整图平均亮度抬到 target」反解，夹在 [0.45, 1.0]：
+    下界防止极端暗图被拉成噪声放大器，≥0.95 视为本来就够亮、不值得处理。
+    64×64 采样足够估计平均亮度，单张 <1ms。
+    """
+    try:
+        small = im.convert("L").resize((64, 64))
+        mean = float(np.asarray(small, dtype=np.float32).mean())
+    except Exception:  # noqa: BLE001 —— 亮度估不出来就不提亮，不拦主流程
+        return None
+    if mean >= 120.0 or mean <= 1.0:
+        return None
+    gamma = math.log(target / 255.0) / math.log(mean / 255.0)
+    gamma = max(0.45, min(1.0, gamma))
+    if gamma >= 0.95:
+        return None
+    lut = [min(255, int(round(((i / 255.0) ** gamma) * 255.0))) for i in range(256)]
+    # RGB 三通道共用同一张 LUT：PIL 要求按 band 拼成 768 项
+    return im.convert("RGB").point(lut * 3)
+
 
 def _run_detect(detector, im: Image.Image) -> Dict:
     """调检测器并统一成 dict 返回。
@@ -489,11 +519,30 @@ class _Detector:
         `reason` 只在没框到时非空，用于区分三种「没框到」：
         没启用模型 / 模型没看到猫 / 框退化。三者在前端的处理相同（退回整图），
         但现场排查时差别很大 —— 前者是配置问题，后两者是素材问题。
+
+        低光重试（2026-10-28）：首试空手且画面偏暗时，gamma 提亮后按
+        DETECT_RETRY_CONF 再试一次（提亮不改尺寸，框坐标与原图 1:1）。
+        命中时 retried=True 写进结果，排查「为什么这张图走了提亮」用。
         """
         if self.sess is None:
             return {"box": None, "core": None, "conf": 0.0, "candidates": 0,
                     "reason": "未启用检测模型" if not self.path else "检测模型加载失败"}
 
+        d = self._detect_once(im, float(config.DETECT_CONF))
+        if (d["box"] is None and d["reason"] == "模型没有识别到猫体"
+                and getattr(config, "DETECT_LOWLIGHT_RETRY", True)):
+            im2 = _auto_gamma(im)
+            if im2 is not None:
+                d2 = self._detect_once(im2, float(config.DETECT_RETRY_CONF))
+                if d2["box"] is not None:
+                    d2["retried"] = True
+                    log.info("低光重试检出猫体：conf=%.2f（阈值 %.2f）",
+                             d2["conf"], float(config.DETECT_RETRY_CONF))
+                    return d2
+        return d
+
+    def _detect_once(self, im: Image.Image, conf_thr: float) -> Dict:
+        """单趟检测：letterbox → YOLO → 滤猫类 → NMS → 按面积挑主体 → 外扩。"""
         w, h = im.size
         x = _to_nchw(im, self.size, (0, 0, 0), (1, 1, 1))
         out = self.sess.run(None, {self.input_name: x})[0]
@@ -510,7 +559,7 @@ class _Detector:
         cls = scores.argmax(1)
         conf = scores.max(1)
 
-        keep = np.where((conf > config.DETECT_CONF) & (cls == self.CAT_CLASS))[0]
+        keep = np.where((conf > conf_thr) & (cls == self.CAT_CLASS))[0]
         if not len(keep):
             return {"box": None, "core": None, "conf": 0.0, "candidates": 0, "reason": "模型没有识别到猫体"}
 
@@ -760,9 +809,19 @@ class Engine:
         core = det.get("core") or box
         embs, frame_attrs = [], []
         t_emb = time.time()
+        # 查询端翻转 TTA（config.QUERY_TTA_FLIP）：单/双帧时把 crop 镜像再提一次，
+        # 两条向量平均后归一化 —— 抵消单视角噪声，边缘样本（同猫另一构图）收益
+        # 正好落在 IDENTIFY_MIN 门槛附近。帧数 ≥3 时多帧平均已提供同等方差缩减，
+        # 不再加倍耗时（视频 8 帧开 TTA 会把推理时间翻倍到十几秒）。
+        tta = bool(getattr(config, "QUERY_TTA_FLIP", True)) and n <= 2
         for im in frames:
             crop = im.crop(box) if box else im
-            embs.append(self._embed(crop))
+            if tta:
+                e1 = self._embed(crop)
+                e2 = self._embed(crop.transpose(_FLIP_LR))
+                embs.append(l2((e1 + e2) * 0.5))
+            else:
+                embs.append(self._embed(crop))
             frame_attrs.append(self.attrs(im.crop(core) if core else im, cropped=bool(box)))
         embed_ms = int((time.time() - t_emb) * 1000)
 
@@ -783,6 +842,7 @@ class Engine:
             "detectConf": float(det.get("conf") or 0.0),
             "detectCandidates": int(det.get("candidates") or 0),
             "detectReason": det.get("reason") or "",
+            "detectRetried": bool(det.get("retried")),   # 低光提亮重试命中
             "attr": attr,
             "quality": self._quality(box, frames[0].size if frames else None, light=light),
             "timing": {"detect": detect_ms, "embed": embed_ms},
@@ -864,10 +924,15 @@ class Engine:
 
 
 _engine: Optional[Engine] = None
+# 启动预热线程与首个请求可能同时进来。没有锁时两边都会看到 None 并各自构造一份
+# 引擎（两份 90MB ONNX 会话），既费内存又让「谁在用哪份」变得不确定。
+_engine_lock = threading.Lock()
 
 
 def get_engine() -> Engine:
     global _engine
     if _engine is None:
-        _engine = Engine()
+        with _engine_lock:
+            if _engine is None:
+                _engine = Engine()
     return _engine

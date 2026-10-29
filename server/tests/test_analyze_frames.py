@@ -141,5 +141,23 @@ class TestEmbedDimGuardStillOn(unittest.TestCase):
             e.analyze_frames([_img()])
 
 
+class TestQueryTTA(unittest.TestCase):
+    """查询端翻转 TTA：单/双帧提两条向量（原图 + 镜像）平均，多帧不加倍。"""
+
+    def test_single_frame_embeds_original_and_flip(self):
+        e = _engine(_CountingDetector([20, 20, 120, 120]))
+        out = e.analyze_frames([_img()])
+        self.assertEqual(len(e.embedder.sizes), 2,
+                         "单帧应提 2 次（原 + 镜像），实际 %d" % len(e.embedder.sizes))
+        self.assertEqual(len(out["embs"]), 1, "TTA 是平均成一条，不是多给一帧")
+
+    def test_three_or_more_frames_skip_tta(self):
+        e = _engine(_CountingDetector([20, 20, 120, 120]))
+        e.analyze_frames([_img() for _ in range(3)])
+        self.assertEqual(len(e.embedder.sizes), 3,
+                         "3 帧有多帧平均兜底，不该再翻倍（实际 %d 次）"
+                         % len(e.embedder.sizes))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

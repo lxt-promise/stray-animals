@@ -282,6 +282,55 @@ QG_MIN_AREA_RATIO = _f("QG_MIN_AREA_RATIO", 0.06)
 # 125 落在两簇正中间，余量 >50：黄昏/室内灯下的照片（130~170）不受影响。
 QG_MIN_LIGHT_MEAN_V = _f("QG_MIN_LIGHT_MEAN_V", 125.0)
 
+# ---------------- 暗光 / 复杂背景 增强（2026-10-28）----------------
+
+# 低光检测重试：第一次没框到猫时，把暗图 gamma 提亮、按 DETECT_RETRY_CONF 再试一次。
+# 夜间点光源 / 背景杂乱的照片常整只漏检（对比度低），提亮后 conf 明显回升；
+# 提亮不改尺寸，框坐标与原图 1:1。只在首次空手时触发，正常照片零开销。
+# ⚠️ 这是「再试一次」的兜底，不是替代正常检测；提亮后仍框不到就退回整图路径。
+DETECT_LOWLIGHT_RETRY = _b("DETECT_LOWLIGHT_RETRY", True)
+# 重试时的置信阈值：比首试（DETECT_CONF 0.35）低一档，暗图里真猫的 conf 普遍
+# 落在 0.2~0.35；再低会开始把背景杂物框进来（框错比框不到更糟 —— crop 错了
+# 特征就是随机采样）。
+DETECT_RETRY_CONF = _f("DETECT_RETRY_CONF", 0.2)
+
+# 查询端翻转 TTA：单/双帧识别时把 crop 左右镜像再提一次特征，两条向量平均。
+# 猫左右不对称，DINOv2 的镜像不变性是软的；平均能抵消单视角噪声，对
+# 「同猫另一构图」的边缘样本有稳定的小幅余弦收益 —— 正好补在 IDENTIFY_MIN
+# 门槛附近的误判带上。帧数 ≥3 时多帧平均已提供同等的方差缩减，不再加倍耗时。
+# ⚠️ 只对查询端开：建库（/v1/index/build）保持单向量 —— 双侧同改要重校
+# SIM_MID，而「查询 TTA + 库不 TTA」的不对称是 ReID 常规做法，分布影响可忽略。
+QUERY_TTA_FLIP = _b("QUERY_TTA_FLIP", True)
+
+# 曝光锚点的眩光防护（attrs._exposure_shift）：V ≥ 此值且 S ≤ ATTR_GLARE_S 的
+# 像素视为点光源/强反光，从 p98 锚点统计中剔除（占比过半时放弃剔除）。
+# 夜间照片里一盏灯就能把 p98 顶到 240+，让严重欠曝画面误判「曝光正常」，
+# 白毛整桶掉进灰/黑（2026-10-26 夜间白猫判「黑猫 0.824」的锚点侧成因）。
+ATTR_GLARE_V = _f("ATTR_GLARE_V", 248.0)
+ATTR_GLARE_S = _f("ATTR_GLARE_S", 35.0)
+
+# ---- 2026-10-28 棚拍白背景误判的实测修正（18 张东南大学实拍猫图校准）----
+# 奶牛规则的暖色闸（V 免疫版）：「狸花/深猫 + 白背景棚拍」会让 white/black 同时
+# 够量、统计上与奶牛无法区分；真奶牛猫黑白毛都不含暖色（warmish 实测 0.01~0.09），
+# 狸花底毛是暖黄褐（0.37）。超过此值不许判奶牛。None（没证据）时闸门不生效。
+ATTR_COW_MAX_WARM = _f("ATTR_COW_MAX_WARM", 0.25)
+# 三花·白背景稀释救援：白占一半以上时鲜明橘被稀释到 0.02~0.05，正常门槛（0.08/
+# 0.05）够不着。降到 0.02 必须同时要求 dark ≥ 0.05（真三花必有黑块），
+# 挡住「乳橘猫+白墙+阴影」（orange 0.003、dark 全靠阴影）—— 见 _decide 规则 2b。
+ATTR_CALICO_LOOSE_ORANGE = _f("ATTR_CALICO_LOOSE_ORANGE", 0.02)
+ATTR_CALICO_LOOSE_DARK = _f("ATTR_CALICO_LOOSE_DARK", 0.05)
+# 弱条纹带：stripe 卡在 [0.5, ATTR_STRIPE_MIN) 时，要 warmish ≥ 0.25 才认狸花。
+# 真狸花底毛暖色证据 0.3+；条纹虚高的奶牛猫（斑块方向性，实测 0.52）warmish
+# 只有 0.01~0.09 进不来。下界不能低：奶牛斑块 stripe 实测最高 0.52。
+ATTR_TABBY_WEAK_STRIPE = _f("ATTR_TABBY_WEAK_STRIPE", 0.50)
+ATTR_TABBY_WEAK_WARM = _f("ATTR_TABBY_WEAK_WARM", 0.25)
+# 橘白规则（_decide 规则5）的黑色桶上限：白背景下真橘白猫的 black 桶很低
+# （<0.10，只来自阴影/眼线），超过此值说明有真实黑块 —— 玳瑁/狸花的黑毛
+# 被白背景衬托后 black 实测 0.19~0.38，不挡住会被规则 5 抢先判成橘白。
+# ⚠️ 用 black 桶而非 dark（black+dgray）：buff/乳橘猫的 dgray 可高达 0.23
+# （全是阴影），但 black 只有 0.08 —— 用 dark 会误伤真橘白（2026-10-29）。
+ATTR_ORANGE_WHITE_MAX_BLACK = _f("ATTR_ORANGE_WHITE_MAX_BLACK", 0.12)
+
 # 多张照片合成「代表向量」时保留的比例。
 # 档案里 6 张照片，其中 1 张糊了 / 拍的是另一只猫 / 背景占九成，
 # 直接平均会把代表向量拉偏（平均值对离群点没有抵抗力）。做法见 engine.rep_vector。
@@ -310,6 +359,27 @@ FETCH_TIMEOUT = _i("FETCH_TIMEOUT", 15)
 # 一个几百 MB 的视频 URL 即可打爆容器内存限额
 MAX_IMAGE_BYTES = _i("MAX_IMAGE_BYTES", 10 * 1024 * 1024)
 MAX_VIDEO_BYTES = _i("MAX_VIDEO_BYTES", 100 * 1024 * 1024)
+# 解码后保留的最长边（像素）。识别链路真正用到的分辨率远小于原图：
+# 检测输入 640、ReID 输入 224。手机原图 4000×3000 的 JPEG 解码本身就要
+# 200~400ms，之后再缩到 640 等于白解一遍。JPEG 走 libjpeg 的 draft 缩放
+# （按 1/2、1/4、1/8 直接低分辨率解码）+ 解码后兜底缩边，这一步通常能省一半以上。
+# 设为 0 关闭（退回「原分辨率解码」）。
+FETCH_MAX_SIDE = _i("FETCH_MAX_SIDE", 1024)
+
+# 云函数没传 thumbUrl 时（例如云函数侧还没更新），服务端自己给云存储图片
+# 拼 COS 图片处理参数做缩略图，避免退化成下载原图。只对已知 COS/云存储域名生效，
+# 其它域名（含自建图床）一律不动 —— 拼错参数会拿到 400，虽然能回退原图，
+# 但白跑一次失败请求。设为 0 关闭。
+DERIVE_THUMB = _b("DERIVE_THUMB", True)
+# 拼出来的缩略图边长：ReID 输入 224、检测 640，768 足够且体积只有原图零头
+DERIVE_THUMB_SIZE = _i("DERIVE_THUMB_SIZE", 768)
+# 缩略图强制走 JPEG。现场云托管日志：.png 上传的 768px 缩略图下载 902ms，
+# 转 JPEG 后体积通常只有 1/10 —— 这是「服务端 1977ms 卡在轮询窗口外」的主因。
+THUMB_JPEG = _b("THUMB_JPEG", True)
+
+# 识别热路径补库时，单张照片的下载超时上限（秒）。补库是顺手做的，
+# 不能因为一张慢图吃掉云函数给 AI 的 1800ms 窗口 —— 没补完下次接着补。
+BOOTSTRAP_FETCH_TIMEOUT = _f("BOOTSTRAP_FETCH_TIMEOUT", 1.5)
 
 # ---------------- 识别结果缓存 ----------------
 #

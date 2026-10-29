@@ -23,6 +23,7 @@ import re
 import sys
 import unittest
 
+import numpy as np
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -381,6 +382,37 @@ class TestTabbyWarmGate(unittest.TestCase):
         # 纯色无条纹 → 走规则 6 的既有兜底（暖色主导 + 无鲜明橘 → 橘系纯色）；
         # 这条断言锁的是「暖色证据在夜间仍然生效」，不是条纹判定。
         self.assertEqual(dark["color"], "orange")
+
+
+class TestDarkLight(unittest.TestCase):
+    """暗光 / 眩光场景（2026-10-28）：夜间点光源照片的实测塌方点。
+
+    一盏灯把 V 的 p98 锚点顶到 240+，严重欠曝的画面误判「曝光正常」，
+    白毛整桶掉进灰/黑（夜间白猫判「黑猫 0.824」的锚点侧成因）。
+    （同期试过「暗图直方图均衡救条纹」，逐分不差，已撤 —— 见 attrs._stats_of 注释。）
+    """
+
+    def test_glare_does_not_hijack_exposure_anchor(self):
+        """~7% 的点光源像素不该把曝光锚点从猫体（V≈100）劫持到 255。"""
+        v = np.full((96, 96), 100.0, dtype=np.float32)
+        s = np.full((96, 96), 60.0, dtype=np.float32)
+        v[:26, :24] = 255.0                      # 角落一盏灯（6.8%，够劫持 p98）
+        s[:26, :24] = 0.0
+        w = np.ones((96, 96), dtype=np.float64)
+        shift = attrs._exposure_shift(v, w, s)
+        self.assertLess(shift, 0.0,
+                        "剔除眩光后锚点应落在猫体亮度上限（~100），shift 应为负")
+        legacy = attrs._exposure_shift(v, w)     # 不传 s = 旧行为
+        self.assertGreater(legacy, 0.0, "旧锚点被眩光劫持到 255，shift 为正")
+
+    def test_glare_majority_keeps_original_anchor(self):
+        """画面主体本身白亮（白天白猫）时，放弃剔除 —— 否则连锚点都被剔没。"""
+        v = np.full((96, 96), 252.0, dtype=np.float32)
+        s = np.zeros((96, 96), dtype=np.float32)
+        v[:30, :] = 100.0                        # 31% 暗部，69% 都是"眩光"量级
+        w = np.ones((96, 96), dtype=np.float64)
+        shift = attrs._exposure_shift(v, w, s)
+        self.assertGreater(shift, 0.0, "眩光占比过半时必须保留原锚点")
 
 
 if __name__ == "__main__":

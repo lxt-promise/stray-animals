@@ -133,6 +133,13 @@ sys.modules["qcloud_cos"] = _fake_module
 
 from app import config, cos_store, index_store, main, sqlite_store  # noqa: E402
 
+# 全量 discover 时 app.config / app.index_store 会被先导入的测试模块提前缓存
+#（两者都是 import 时求值），本文件顶部设置的 INDEX_BACKEND=cos 与 COS_* 来不及生效，
+# TestCosStore 会因「缺少配置」全灭、TestDegradation 会把门面当成 sqlite 读到真实库。
+# reload 一次让两者与本文件的设定对齐，语义与单跑本文件一致（单跑时是无害空操作）。
+importlib.reload(config)  # noqa: E402
+importlib.reload(index_store)  # noqa: E402
+
 
 def vec(*vals):
     """构造 L2 归一化的 float32 向量（模拟引擎输出）。"""
