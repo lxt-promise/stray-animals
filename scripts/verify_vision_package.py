@@ -47,6 +47,10 @@ print("reid     %s" % config.REID_ONNX)
 print("engine   provider=%s dim=%s size=%s" % (eng.provider, eng.dim, eng.embedder.size))
 print("detector %s" % ("ON" if getattr(eng.detector, "sess", None) is not None else "OFF"))
 print("attrs    %s" % eng.attr_source)
+# tools/pattern_recognize.py 是**按路径懒加载**的：文件在包里 ≠ 模块能加载。
+# 只有真的加载成功，线上才不会静默回退 legacy 花色判定。
+from app import attrs as _attrs
+print("pattern  %s" % ("loaded" if _attrs._pattern_module() is not None else "MISSING"))
 
 r = M.recognize(M.RecognizeReq(url="http://x/a.jpg", type="image", schoolId="s1"), None)
 print("tags     " + " · ".join("%s=%s" % (t["k"], t["v"]) for t in r["features"]["tags"]))
@@ -168,6 +172,8 @@ def main():
             problems.append('特征引擎退化成了 hash 占位（生效的 reid 模型没加载上）')
         if 'detector ON' not in out:
             problems.append('检测模型没加载（models/yolov8n.onnx 在包里但引擎没用上）')
+        if 'pattern  loaded' not in out:
+            problems.append('tools/pattern_recognize.py 未加载（线上会静默回退 legacy 花色判定）')
         if problems:
             print('-' * 52)
             for x in problems:

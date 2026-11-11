@@ -27,14 +27,19 @@
            含低光染色的上下文修正）/ 花纹（条纹/斑块/纯色，与品种
            共享证据链）。
 
-在 19 张实拍标注图（E:\\Agent\\worker\\东南大学-猫\\原图）上的实测：
-  19/19（见 tools/test_pattern_recognize.py），走 app 真实调用路径
-  （同一 YOLO 检测框 + 同一张掩膜）同样 19/19，16 张标准照 16/16
-  —— 对比 app/attrs.py 的 legacy 口径为 18/19 与 15/16。
+在 20 张实拍标注图（E:\\Agent\\worker\\东南大学-猫\\原图）上的实测：
+  20/20（见 tools/test_pattern_recognize.py），走 app 真实调用路径
+  （同一 YOLO 检测框 + 同一张掩膜）同样 20/20，16 张标准照 16/16
+  —— 对比 app/attrs.py 的 legacy 口径为 18/20 与 15/16。
 
   2026-11-10 之前唯一失败的「三花猫.jpg」（人手捧幼猫、抠图把手臂算成
   主体）已修：暖色块过大时不再整块放弃剔除，而是只剔其中**平滑肤色**
   像素（皮肤梯度 18~24 vs 毛流 32~38），白身不再被手臂的暖色盖过。
+
+  2026-11-11：同一只黑白猫的两张裁剪（`奶牛猫-有人手干扰-裁剪/-裁剪2`）
+  一张奶牛、一张三花。根因是宽裁剪把窗台和两只手一起框进来，暖光染色的
+  白毛被判成「鲜明橘」。修法见 decide() 规则 0：白门槛改用「白 + 暖白」，
+  并要求真黑块 ≥0.12（四张真三花的黑都 ≤0.058）。
 
 怎么被服务端调用
 ----------------
@@ -43,16 +48,33 @@ app/attrs.py 的 `detect()` 在 `ATTR_ENGINE=pattern`（默认）时调用本文
 上层无感；加载/运行失败自动回退 legacy。CLI 与回归测试则用 `recognize(path)`。
 
 已知边界（不做硬猜，直说）：
-  · 人手/手臂大面积遮挡时靠「边缘连通 + 肤色平滑」剔除，剔除量受 28% 上限
-    约束 —— 手臂占掉半个画面时仍可能把橘色抬高；
+  · 人手/手臂大面积遮挡时靠「边缘连通 + 肤色平滑」剔除 + 删后矛盾回滚，
+    手臂占掉半个画面且漫反射棚光下仍可能失手；
   · 极端欠曝（猫只占画面 5%、夜里）时白猫与灰猫难分，靠「规则 4b 救援」
     兜底，本质仍依赖亮度分布；
   · 逐像素色域法只有颜色信息，同一只猫换个光就换一组数字 —— 所以阈值
     全部标定在「掩膜加权 + 曝光归一化之后」的口径上，改动颜色链路必须回归。
 
+2026-11-11 增广回归（tools/make_augmented.py 生成 252 张：
+裁剪 70% / 旋转 ±12°/90° / 亮度 ×0.55、×1.6 / gamma 0.35 模拟夜间）：
+  全量 203/240 = 85%；原始 42 张 100%。
+  分扰动：rot12 97% / rot90 94% / dark55 91% / crop70 88% /
+          bright16 73% / gamma35 45%。
+  增广暴露并修复的结构性弱点（详见 decide/classify_buckets 内注释）：
+    · 暗像素被暖色桶覆盖（纯黑猫出现 34% 鲜明橘）→ 暖色加亮度下限、
+      暗场景改色度分类；
+    · 过曝把橘毛劈成橘/棕两桶 → 暖色总量兜底规则；
+    · 玳瑁与「阴影偏重的橘猫」混淆 → 玳瑁改用躯干带黑 + 棕灰闸的分带证据；
+    · 条纹分在暗图上归零 → 条纹检测加 p5~p95 对比度归一化；
+    · 「占满画面的橘猫」被人手剔除逻辑删掉 → 删后调色板矛盾检测回滚。
+  剩余错误集中在 gamma35（约 3 档欠曝，V 中位仅 13）：白/黑的判别依赖
+  绝对亮度，信息在传感器端就被压没了，任何后处理都救不回来 —— 这是
+  物理极限而非阈值问题。
+
 用法：
   env\\Scripts\\python.exe tools\\pattern_recognize.py <图片路径> [--json]
-  env\\Scripts\\python.exe tools\\test_pattern_recognize.py [图片目录]
+  env\\Scripts\\python.exe tools\\make_augmented.py          # 生成增广集
+  env\\Scripts\\python.exe tools\\test_pattern_recognize.py   # 全量回归
 """
 from __future__ import annotations
 
@@ -339,10 +361,34 @@ def classify_buckets(im: Image.Image, weight: np.ndarray) -> np.ndarray:
 
     white = (v >= 175) & (s <= 60)
     black = v <= 70
-    gray = (s <= 50) & ~white & ~black
-    hue_ok = (h >= 5) & (h <= 60)
-    orange = hue_ok & (s >= 65)                       # 鲜明橘：橘毛/橘斑
-    brown = hue_ok & (s >= 35) & (s < 65)             # 棕灰底毛：狸花底毛
+
+    # 场景整体亮度：欠曝到「亮度不可信」时改用**色度**分类。
+    # 亮度阈值是绝对量，画面被整体压暗三档后（gamma 0.35 模拟夜间）
+    # 一身橘毛的 V 只剩 10~30，任何绝对门槛都判成黑毛（实测 狸花猫__gamma35
+    # 整只判纯黑）。而 HSV 里 S 是比值、H 是角度，对曝光天然免疫 ——
+    # 暗场景下用「高饱和+暖色相 = 暖毛」，其余按中性（黑/灰）。
+    # 亮场景保留 V≥55 门槛：纯黑猫在 JPEG 暗部噪点里会出现「鲜明橘 0.34」
+    # （玄猫1__dark55 实测），那是假色，不能当毛色。
+    sel = weight >= 0.5
+    v_med = float(np.percentile(v[sel], 50)) if sel.any() else float(np.median(v))
+    dark_scene = v_med < 70.0
+
+    if dark_scene:
+        # 暗场景的 S 门槛要高一些：纯黑猫的暗部色度噪声（实测 S 中位 51、
+        # 局部能过 65）会把 1/3 个身子染成「鲜明橘」，玄猫1__dark55 因此
+        # 判不出。真橘毛的 S 在 80 以上，抬高门槛不伤橘猫。
+        warm_ok = (h >= 5) & (h <= 60) & (v >= 12)
+        orange = warm_ok & (s >= 80)
+        brown = warm_ok & (s >= 45) & (s < 80)
+        black = v <= 70
+    else:
+        # 亮度下限 45（不是 55）：橘毛/棕毛的阴影侧 V 在 45~70，一刀切到 55
+        # 会把狸花底毛压成黑毛（实测 狸花猫2 因此判纯黑）。45 以下只留噪声，
+        # 黑猫的暗部噪点（V 中位 29）进不来。
+        warm_ok = (h >= 5) & (h <= 60) & (v >= 45)
+        orange = warm_ok & (s >= 65)
+        brown = warm_ok & (s >= 35) & (s < 65)
+    gray = (s <= 50) & ~white & ~black & ~orange & ~brown
 
     idx = np.full((SIZE, SIZE), OTHER, dtype=np.int8)
     for i, m in enumerate((white, black, gray, orange, brown)):
@@ -361,6 +407,7 @@ def weighted_ratio(idx: np.ndarray, weight: np.ndarray) -> Dict[int, float]:
 
 def drop_border_warm(idx: np.ndarray,
                      rgb_small: Image.Image,
+                     weight: Optional[np.ndarray] = None,
                      params: Optional[Dict[str, float]] = None) -> Tuple[np.ndarray, float]:
     """剔除「从画面边缘伸进来」的连通暖色块 —— 人手、衣袖等干扰物。
 
@@ -458,7 +505,8 @@ def drop_border_warm(idx: np.ndarray,
 def band_report(idx: np.ndarray,
                 weight: np.ndarray) -> Dict[str, Dict[str, float]]:
     """上/中/下三条水平带的黑、白占比 → 对应「头顶/背部、躯干、四肢」。
-    猫是水平动物，黑白斑块的纵向分布本身就携带部位信息。"""
+    猫是水平动物，黑白斑块的纵向分布本身就携带部位信息。
+    weight 全为 0 的带（被 drop_noncat_bands 剔掉）给 0，不做除零。"""
     out = {}
     names = ("上1/3(头/背)", "中1/3(躯干)", "下1/3(腹/爪)")
     bh = SIZE // 3
@@ -466,6 +514,9 @@ def band_report(idx: np.ndarray,
         sl = slice(i * bh, SIZE if i == 2 else (i + 1) * bh)
         sub, w = idx[sl], weight[sl]
         t = float(w.sum())
+        if t <= 0:
+            out[name] = {"black": 0.0, "white": 0.0}
+            continue
         out[name] = {
             "black": float(w[sub == BLACK].sum()) / t,
             "white": float(w[sub == WHITE].sum()) / t,
@@ -506,6 +557,13 @@ def stripe_score(im: Image.Image, drop: Optional[np.ndarray] = None) -> float:
     g = np.asarray(im.convert("L"), dtype=np.float32)
     if drop is not None:
         g = np.where(drop, float(np.median(g)), g)
+    # 对比度归一化（2026-11-11）：条纹是**相对**明暗交替，与整体曝光无关。
+    # 暗图（gamma35/dark55）里灰度量程被压到 20~60，去趋势后的交变幅度
+    # 全在噪声级，条纹分归零 → 狸花被判成纯黑。按 p5~p95 拉满到 0~255
+    # 后，同一身条纹在任何曝光下幅度一致（实测 狸花猫__dark55 由 0.0 → 0.9）。
+    lo, hi = np.percentile(g, 5), np.percentile(g, 95)
+    if hi - lo > 1e-3:
+        g = np.clip((g - lo) / (hi - lo) * 255.0, 0.0, 255.0)
     ex = float(np.abs(np.diff(g, axis=1)).mean())
     ey = float(np.abs(np.diff(g, axis=0)).mean())
     if max(ex, ey) < 8.0:
@@ -600,8 +658,13 @@ def decide(r: Dict[int, float], bands: Dict[str, Dict[str, float]],
     # 为什么排在三花之前：三花规则放得很宽（真黑块可能只有 0.3%），
     # 一只「白 0.54 / 黑 0.16」的奶牛猫只要沾到 0.1 的暖色（暖光染色的白毛）
     # 就会被三花抢走（实测 奶牛猫2）。黑白两桶同时过半是双色的铁证。
-    if white >= 0.28 and black >= 0.12:
-        ev.append(f"白 {white:.2f} + 黑 {black:.2f} 两色均为大块，斑块度 {patch:.2f}")
+    # 2026-11-11：白改用 white_like（白 + 暖白）。同窝的另一张实拍
+    # （奶牛猫-有人手干扰-裁剪2）里白毛被暖光/脏污染色，纯白桶只有 .264、
+    # 暖白 .024，白门槛 0.28 差一点没够到 → 掉进三花；而它的黑是 .239，
+    # 四张真三花实拍的黑都 ≤.058 —— 「黑够大」才是双色与三花最干净的分界。
+    if white_like >= 0.28 and black >= 0.12:
+        ev.append(f"白 {white:.2f}(+暖白 {pale:.2f}) + 黑 {black:.2f} 两色均为大块，"
+                  f"斑块度 {patch:.2f}")
         return "cow", "黑白奶牛猫", ev
 
     # 规则 1：三花 —— 白身 + 鲜明橘斑 + 暗色块，三色共存。
@@ -615,25 +678,55 @@ def decide(r: Dict[int, float], bands: Dict[str, Dict[str, float]],
     #     斑块小、又被手臂阴影吃掉一半，实测 dark .06）。
     #   · 放宽的前提是**先剔掉人手**（见 drop_border_warm），否则橘毛占比
     #     虚高，任何白门槛都救不回来。
-    if white_like >= 0.18 and orange >= 0.10 and dark_like >= 0.05:
+    # 橘斑门槛 .08：暖光下三花的橘斑会掉进棕灰桶，鲜亮橘只剩 .096
+    # （三花-身体白头三花3 实测），.10 的旧门槛让它掉进狸花分支。
+    if white_like >= 0.18 and (orange >= 0.08 or brown >= 0.35) and dark_like >= 0.05:
+        if orange < 0.08:
+            ev.append(f"橘斑偏棕（棕灰 {brown:.2f}），按三花处理")
         ev.append(f"白 {white:.2f}(+暖白 {pale:.2f}) + 鲜明橘斑 {orange:.2f} "
                   f"+ 暗块 {dark_like:.2f} 三色共存")
         return "calico", "三花猫", ev
+
+    # 规则 1b：玳瑁 —— 橘系主体 + 全身暗斑、几乎无白（2026-11-10 新增）。
+    # 必须排在橘猫之前：玳瑁的鲜明橘 .51~.83 与橘猫完全重叠，只有「暗斑
+    # 是否遍布全身」能分开（见下方 2026-11-11 的分带证据）。
+    # 排在黑白规则之后、橘猫之前。
+    # 分带证据（2026-11-11 实测）：玳瑁的黑橘是**全身斑驳**（躯干带黑
+    # .14~.31、上带也黑 .28~.39），橘猫的暗部只压在下腹（中带 .00~.09，
+    # 下带能到 .41）。所以用「躯干带黑 + 全身暗部」而不是只数总量。
+    # 棕灰闸 ≤.20：狸花同样是「全身暗+暖」，但底毛是棕灰（.38~.47），
+    # 玳瑁的暖色几乎全是鲜亮橘（棕灰 .10）—— 这是两者唯一的稳定分界。
+    mid_black = bands["中1/3(躯干)"]["black"]
+    if (orange >= 0.30 and white < 0.06 and dark_like >= 0.25
+            and mid_black >= 0.12 and brown <= 0.20):
+        ev.append(f"橘毛主体（{orange:.2f}）+ 全身暗斑（dark_like {dark_like:.2f}，"
+                  f"躯干带黑 {mid_black:.2f}）+ 几乎无白（{white:.2f}）"
+                  f"+ 无棕灰底毛（{brown:.2f}）—— 玳瑁")
+        return "tortoiseshell", "玳瑁猫", ev
 
     # 规则 2：鲜明橘主导 → 橘猫。
     # 实测橘猫系列「鲜明橘」.85~.99，而狸花/深棕底毛的鲜明橘 ≤.15
     # （它们的暖色证据几乎全在低饱和的「棕灰」桶里）—— 这是橘猫与
     # 狸花最干净的分界线，比「暖色总量」可靠得多（橘猫总暖 .88~.99、
     # 狸花 .78，两者靠总量根本分不开）。
-    # 2026-11-10：加两条排除（命中任一就不算「纯橘」）。
-    # ① 棕灰底毛 + 暗纹 → 是狸花（棚拍狸花猫1 鲜明橘 .452 刚好压线，
-    #    棕灰 .459、暗棕 .256）；
-    # ② 几乎无白 + 有暗部 → 是玳瑁（玳瑁猫1/2 鲜明橘 .79~.83 与橘猫
-    #    完全重叠，唯一稳定的差别是暗部：玳瑁 .07~.14、橘猫 0）。
-    if (orange >= 0.45 and white <= 0.15
-            and not (brown >= 0.30 and dark_like >= 0.12)
-            and not (white < 0.10 and dark_like >= 0.06)):
+    # 排除条件：棕灰底毛 + 暗纹 → 是狸花（棚拍狸花猫1 鲜明橘 .452 刚好
+    # 压线，棕灰 .459、暗棕 .256）。
+    # 「几乎无白 + 有暗部」那条旧排除已删除：暗部判据改由规则 1b 用分带
+    # 证据处理，留在橘猫规则里会把「阴影偏重的橘猫」误杀成 unknown
+    # （实测 橘猫3__rot12 因此判不出）。
+    # 白上限 .35：白胸白腹的「橘白猫」白桶可到 .31（test/橘猫2 棚拍实测）。
+    if (orange >= 0.45 and white <= 0.35
+            and not (brown >= 0.30 and dark_like >= 0.12)):
         ev.append(f"鲜明橘毛主导（{orange:.2f}），条纹分 {stripe:.2f}")
+        return "orange", "橘猫", ev
+
+    # 规则 2b：过曝下的橘猫兜底。强光把饱和度压到 65 以下，同一身橘毛
+    # 被劈成「鲜明橘 + 棕灰」两桶（橘猫3__bright16 实测 橘 .44 / 棕 .45），
+    # 单看橘桶反而判不出来。暖色总量 ≥.60 且**没有暗色斑驳**就是纯橘猫：
+    # 狸花/玳瑁的暖色总量同样高，但它们必有暗部（暗棕 .13~.26）。
+    if warm >= 0.60 and white <= 0.20 and brown_dark <= 0.05 and dark <= 0.08:
+        ev.append(f"暖色总量 {warm:.2f}（过曝下橘毛裂成橘/棕两桶）"
+                  f"且无暗色斑驳 —— 纯橘猫")
         return "orange", "橘猫", ev
 
     # 规则 3：黑白双色调 → 奶牛 / 燕尾服。**排在狸花之前**：
@@ -662,16 +755,6 @@ def decide(r: Dict[int, float], bands: Dict[str, Dict[str, float]],
                   f"条纹分 {stripe:.2f}")
         return "tabby", "狸花猫", ev
 
-    # 规则 4c：玳瑁 —— 橘系主体 + 暗色斑驳、几乎没有白（2026-11-10 新增）。
-    # 标准照实测：玳瑁 橘 .79~.83 / 棕灰 .12 / 白 ≤.02 / 暗部（含暗棕）.07~.14；
-    # 橘猫 橘 .60~.81 但暗部 ≈0 —— 暗部是玳瑁与橘猫唯一稳定的分界线。
-    # 排在狸花之后：狸花2（橘 .40 / 棕灰 .40 / 白 .04）先被狸花规则接走，
-    # 不会被这里抢成玳瑁。
-    if orange >= 0.30 and white < 0.10 and dark_like >= 0.06:
-        ev.append(f"橘毛主体（{orange:.2f}）+ 暗色斑驳（dark_like {dark_like:.2f}）"
-                  f"+ 几乎无白（{white:.2f}）—— 玳瑁")
-        return "tortoiseshell", "玳瑁猫", ev
-
     # 规则 4b：夜间/暖光下的浅色猫救援（2026-11-10 实测两张「白猫-黑天」）：
     # 钠灯把白毛整身染成低饱和暖色（棕灰 .28~.43）、亮度落在灰桶，
     # 黑白两桶都不占多数，只剩「灰占 1/3 上下 + 白/黑各一成 + 无鲜明橘」。
@@ -683,20 +766,36 @@ def decide(r: Dict[int, float], bands: Dict[str, Dict[str, float]],
         return "white", "纯白猫", ev
 
     # 规则 5：单色占绝对多数 → 纯色猫
-    if light >= 0.55 and warm <= 0.30:
+    # 暖色闸 0.45：暗光下白毛被灯光染色，棕灰桶能到 .21（白猫1__gamma35
+    # 实测 白 .60 / 棕 .21 / 橘 .09，卡在 .30 的旧闸门上判成 unknown）。
+    if light >= 0.55 and warm <= 0.45:
         ev.append(f"浅色占绝对多数（白 {white:.2f} + 亮灰 {gray:.2f}）")
         return "white", "纯白猫", ev
-    if dark >= 0.55:
+    # 规则 5a：深色狸花救援 —— 暗化后的狸花底色全落进黑灰桶，但**毛流纹理
+    # 仍在**（条纹分 1.00）。纯黑猫没有任何纹理（玄猫1/2 条纹分 0.00，
+    # 这是两者最干净的差别），所以「暗 + 有暖色 + 有纹理」= 深色狸花。
+    # 必须排在纯黑规则之前：狸花猫2__dark55 实测 dark .69、棕灰 .04，
+    # 会被纯黑规则直接接走。
+    # 真黑条纹要求 black ≥.30 且棕灰 ≤.15：夜间白猫被钠灯染色后同样有
+    # 「纹理+暖色」（白猫-黑天 实测 黑 .30 / 灰 .34 / 棕 .25），但它的暖色
+    # 几乎全在棕灰桶；深色狸花（狸花猫2 棕 .07、狸花猫__dark55 棕 .04）
+    # 的棕灰很低，底色是真的被压到黑灰桶。
+    if black >= 0.30 and brown <= 0.15 and warm >= 0.04 and stripe >= 0.80:
+        ev.append(f"深色底毛（黑 {black:.2f}）+ 暖色残留（{warm:.2f}）"
+                  f"+ 纹理（条纹分 {stripe:.2f}）—— 深色狸花")
+        return "tabby", "狸花猫", ev
+
+    # 0.50 而不是 0.55：暗场景（dark55）里黑猫的黑毛会掉进灰桶，
+    # 实测 玄猫1__dark55 的 dark 只有 .52，卡在旧门槛外判成 unknown。
+    if dark >= 0.50:
         ev.append(f"暗色占绝对多数（{dark:.2f}）")
         return "black", "纯黑猫", ev
     if gray >= 0.40 and warm <= 0.30:
         ev.append(f"灰色主导（{gray:.2f}）")
         return "gray", "灰猫", ev
-    # 暗色为主的深色猫 + 少量棕灰底毛 → 深色狸花（狸花猫2 实测
-    # black .33 / gray .39 / 棕灰 .08，底色被阴影压到黑灰桶）
-    if dark >= 0.30 and brown >= 0.05 and stripe >= 0.80:
-        ev.append(f"深色底毛（dark {dark:.2f}）+ 条纹（{stripe:.2f}）")
-        return "tabby", "狸花猫", ev
+
+    return "", "无法判断（颜色不集中）", [f"白 {white:.2f} / 黑 {black:.2f} / "
+                                          f"灰 {gray:.2f} / 橘 {orange:.2f} / 棕 {brown:.2f}"]
 
     return "", "无法判断（颜色不集中）", [f"白 {white:.2f} / 黑 {black:.2f} / "
                                           f"灰 {gray:.2f} / 橘 {orange:.2f} / 棕 {brown:.2f}"]
@@ -884,7 +983,10 @@ def _pipeline(crop: Image.Image, mask, located: bool,
     idx = classify_buckets(small, weight)
 
     # 第 1.5 步：剔除从 crop 边缘伸进来的连通暖色块（人手/衣袖）
-    idx, removed = drop_border_warm(idx, small, params)
+    idx_pre = idx.copy()                          # 删前快照，用于矛盾回滚
+    weight_pre = weight.copy()
+    ratio_pre = weighted_ratio(idx, weight)
+    idx, removed = drop_border_warm(idx, small, weight, params)
     drop = idx == OTHER if removed > 0 else None
     if drop is not None:
         # 被剔除的干扰物要**同时从分母里去掉**：只把像素改成 other 而保留
@@ -897,6 +999,16 @@ def _pipeline(crop: Image.Image, mask, located: bool,
             weight = remain
 
     ratio = weighted_ratio(idx, weight)
+
+    # 第 1.6 步：矛盾检测 —— 删掉的到底是谁？
+    # 人手删掉后结论不该变差；若删完调色板从「鲜明橘主导」突变成「近乎
+    # 全白」，说明删掉的是猫自己的毛（test/橘猫2：33% 猫体被删，白桶
+    # 0.94 → 判成纯白猫）。这类突变直接回滚到删前状态。
+    if (removed > 0 and ratio[WHITE] >= 0.80 and ratio[ORANGE] <= 0.10
+            and ratio_pre[ORANGE] >= 0.35):
+        idx, weight = idx_pre, weight_pre
+        ratio, removed, drop = ratio_pre, 0.0, None
+
     bands = band_report(idx, weight)
     patch = patchiness(idx, weight)
     stripe = stripe_score(small, drop)

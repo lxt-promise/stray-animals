@@ -11,11 +11,11 @@ __pycache__/
 data/
 *.sqlite3
 
-# 开发/调试脚本、本地工具链（**但 pattern_recognize.py 是运行时依赖**：
-# app/attrs.py 会按路径加载 tools/pattern_recognize.py 做花色判定，
-# 漏掉它不会报错，只会在线上静默回退 legacy —— 所以单独放行这一个文件）
-tools/
-!tools/pattern_recognize.py
+# tools/ **不排除**：app/attrs.py 按路径加载 tools/pattern_recognize.py 做花色判定，
+# 排除 tools/ 不会报错，只会在线上静默回退 legacy（识别口径悄悄变差）。
+# 整个 tools/ 不到 1MB；构建上下文已由 scripts/package_vision.py 精确裁剪，
+# 上面的 __pycache__/ 与 *.pyc 规则已挡掉缓存文件。
+# 注意：Docker 里「排除父目录后用 !子文件 放行」不一定生效，别再写回 tools/ 规则。
 *.bat
 *.ps1
 

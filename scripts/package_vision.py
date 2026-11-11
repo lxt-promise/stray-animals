@@ -3,8 +3,9 @@
 
 对照 server/.dockerignore 的排除清单，只打进构建必需内容：
   必含：Dockerfile、requirements.txt、.dockerignore、app/*.py、models/*.onnx、
-        tools/pattern_recognize.py（运行时被 app/attrs.py 按路径加载）
-  排除：__pycache__/*.pyc、.env、.env.example、data/、*.sqlite3、其余 tools/、
+        tools/*.py（整个工具目录；pattern_recognize.py 是运行时依赖，
+        app/attrs.py 按路径加载它做花色判定）
+  排除：__pycache__/*.pyc、.env、.env.example、data/、*.sqlite3、
         *.bat/*.ps1、env//venv/、deploy/、docker-compose.yml、Dockerfile.gpu、
         .git、*.md、tests/
 zip 根目录必须是 Dockerfile（云托管解压后按根目录 Dockerfile 构建）。
@@ -13,6 +14,7 @@ zip 根目录必须是 Dockerfile（云托管解压后按根目录 Dockerfile �
       python scripts/package_vision.py --out dist/xxx.zip   # 指定输出名
 """
 import datetime
+import hashlib
 import os
 import shutil
 import sys
@@ -23,7 +25,7 @@ SRC = r'E:\Agent\project\stray-animals\server'
 OUT_DIR = r'E:\Agent\project\stray-animals\dist'
 
 ROOT_FILES = ['Dockerfile', 'requirements.txt', '.dockerignore']
-DIRS = ['app', 'models']
+DIRS = ['app', 'models', 'tools']
 
 # 必须进包的模块。**不写死总数** —— 早期这里是 `len(app_pys) == 8`，加一个
 # attrs.py 就整条打包流程 AssertionError，而这本是正常的代码演进。
@@ -39,9 +41,10 @@ REQUIRED_MODULES = {
 # 引擎优先用 mega_descriptor_t.onnx；按需求不把它打进包（省体积），保留 mega 即可。
 REQUIRED_MODELS = ['models/mega_descriptor_t.onnx', 'models/yolov8n.onnx']
 
-# 运行时依赖的工具模块。app/attrs.py 用 importlib 按路径加载它做花色判定，
-# 漏打包不会报错，只会在线上静默回退 legacy（/health 的 attr.source 会一直是
-# heuristic），所以和模型一样在打包这关就卡死。
+# tools/ 是**整个目录**进包的（开发脚本一并带上，体积 <1MB，便于线上排查）。
+# 其中 pattern_recognize.py 是运行时依赖：app/attrs.py 用 importlib 按路径加载它
+# 做花色判定，漏打包不会报错，只会在线上静默回退 legacy（/health 的
+# attr.source 会一直是 heuristic），所以和模型一样在打包这关就卡死。
 REQUIRED_TOOLS = ['tools/pattern_recognize.py']
 
 # 与 .dockerignore 对齐的硬排除（tools/ 不再整目录排除：要带 REQUIRED_TOOLS）
@@ -78,7 +81,7 @@ def main():
         assert os.path.isfile(src_f), 'missing ' + src_f
         shutil.copy2(src_f, os.path.join(stage, f))
 
-    # 2) app/ 与 models/（复制时剔除缓存目录）
+    # 2) app/、models/、tools/（复制时剔除缓存目录；tools/ 整个进包）
     for d in DIRS:
         src_d = os.path.join(SRC, d)
         assert os.path.isdir(src_d), 'missing ' + src_d
@@ -93,13 +96,12 @@ def main():
                     continue
                 shutil.copy2(os.path.join(root, fn), os.path.join(target_root, fn))
 
-    # 2.5) 运行时依赖的工具模块（只拷 REQUIRED_TOOLS，其余开发脚本不进包）
+    # 2.5) 兜底：DIRS 已把整个 tools/ 复制过来，这里再确认运行时依赖确实在。
+    #      宁可在本地打包时失败，也不要线上「不报错但静默回退 legacy」。
     for rel in REQUIRED_TOOLS:
         src_f = os.path.join(SRC, rel)
         assert os.path.isfile(src_f), 'missing ' + src_f
-        dst_f = os.path.join(stage, rel)
-        os.makedirs(os.path.dirname(dst_f), exist_ok=True)
-        shutil.copy2(src_f, dst_f)
+        assert os.path.isfile(os.path.join(stage, rel)), 'staging 缺少 ' + rel
 
     # 3) 打包前断言：staging 内容正确
     assert os.path.isfile(os.path.join(stage, 'Dockerfile')), 'Dockerfile 不在 staging 根'
@@ -133,7 +135,6 @@ def main():
             assert req in names, 'zip 根缺少 ' + req
         leaks = [n for n in names
                  if '__pycache__' in n or n.endswith('.pyc') or n.startswith('data/')
-                 or (n.startswith('tools/') and n not in REQUIRED_TOOLS)
                  or n.startswith('deploy/')
                  or n.endswith('.md') or n.endswith('.bat') or n.endswith('.ps1')
                  or n.endswith('.env') or 'docker-compose' in n or 'Dockerfile.gpu' in n]
@@ -143,9 +144,20 @@ def main():
         zmissing = REQUIRED_MODULES - zapp
         assert not zmissing, 'zip 内 app/ 缺模块: %s' % sorted(zmissing)
         assert not any(n.startswith('tests/') for n in names), 'zip 含 tests/'
+        # 包里的花色识别器必须就是当前工作区的最新源码。
+        # 出现过「脚本改了、包没重打」→ 线上一直跑旧判定口径，且不报错、不异常。
+        tool_rel = REQUIRED_TOOLS[0]
+        tool_src = open(os.path.join(SRC, tool_rel), 'rb').read()
+        assert zf.read(tool_rel) == tool_src, '包内 %s 不是最新源码' % tool_rel
 
     print('OK -> %s' % out)
     print('size: %.2f MB' % (os.path.getsize(out) / 1024.0 / 1024.0))
+    tool_src = open(os.path.join(SRC, REQUIRED_TOOLS[0]), 'rb').read()
+    print('pattern: %s  sha256=%s（与源码逐字节一致）'
+          % (REQUIRED_TOOLS[0], hashlib.sha256(tool_src).hexdigest()[:16]))
+    with zipfile.ZipFile(out) as zf:
+        tools = [n for n in zf.namelist() if n.startswith('tools/') and n.endswith('.py')]
+    print('tools:   %d 个脚本已进包' % len(tools))
     print('entries:')
     with zipfile.ZipFile(out) as zf:
         for info in sorted(zf.infolist(), key=lambda i: i.filename):

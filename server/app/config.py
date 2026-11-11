@@ -122,9 +122,9 @@ ATTR_CONF_MIN = _f("ATTR_CONF_MIN", 0.5)
 #
 # CLIP 不可用 / 置信度不足时，本地用哪套算法：
 #   pattern → tools/pattern_recognize.py：6 色桶 + 分带布局 + 斑块度 +
-#             边缘肤色剔除（"看图说话"口径，默认；19 张实拍 19/19、
+#             边缘肤色剔除（"看图说话"口径，默认；20 张实拍 20/20、
 #             16 张标准照 16/16）
-#   legacy  → app/attrs.py：8 色桶 + 条纹频率 + 曝光平移（18/19、15/16）
+#   legacy  → app/attrs.py：8 色桶 + 条纹频率 + 曝光平移（18/20、15/16）
 #
 # 两套算法输出契约完全一致（color/pattern/breed/confidence/palette/
 # reason/refused），所以切换只影响判定口径，不影响 engine/search/前端。
