@@ -1,0 +1,10 @@
+<view class="page">
+  <view class="card">
+    <view class="card-title">规则说明</view>
+    <view class="rule-block" wx:for="{{rules}}" wx:for-item="r" wx:key="title">
+      <view class="rule-title">{{r.title}}</view>
+      <view class="rule-line" wx:for="{{r.lines}}" wx:for-item="line" wx:for-index="li" wx:key="*this">{{line}}</view>
+    </view>
+    <view class="note small muted">规则以实际发放为准；如有调整会在本页更新。</view>
+  </view>
+</view>

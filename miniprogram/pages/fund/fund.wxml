@@ -20,6 +20,15 @@
     每一笔支出都可追溯到具体猫咪，成员可查看资金去向。
   </view>
 
+  <view class="card camp-entry" bindtap="goCampaigns">
+    <view class="ce-left">
+      <view class="bold">咪咪筹</view>
+      <view class="small muted">为生病或要绝育的猫咪筹治疗费，账目并入下方公示</view>
+    </view>
+    <view class="ce-go">查看 ›</view>
+  </view>
+  <!-- 发起入口统一放在咪咪筹列表页（所有人都能发起），这里不再重复放按钮 -->
+
   <view class="card" wx:for="{{list}}" wx:key="_id">
     <view class="flex-between">
       <view>

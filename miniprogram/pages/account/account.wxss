@@ -1,0 +1,87 @@
+/* 账号设置页：核心卡片/表单/按钮样式走全局 app.wxss，这里只补页面局部 */
+
+.acct-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20rpx 0;
+  border-bottom: 2rpx solid var(--line);
+}
+.acct-status .label { color: var(--text-sub); }
+.acct-status .value { color: var(--text); font-weight: 600; }
+
+/* 模式切换：两段式 tab，选中态用品牌渐变描边 */
+.mode-tabs {
+  display: flex;
+  gap: 16rpx;
+  margin: 24rpx 0 8rpx;
+}
+.tab {
+  flex: 1;
+  height: 72rpx;
+  line-height: 72rpx;
+  text-align: center;
+  font-size: 26rpx;
+  color: var(--text-sub);
+  background: rgba(255, 255, 255, .6);
+  border: 2rpx solid var(--card-line);
+  border-radius: 16rpx;
+}
+.tab.on {
+  color: var(--brand-dark);
+  background: var(--brand-light);
+  border-color: rgba(249, 115, 22, .4);
+  font-weight: 600;
+}
+
+.tip {
+  line-height: 1.7;
+  padding: 0 8rpx;
+}
+
+/* ===== 测试账号切换 =====
+   三行槽位，每行左「角色 + 当前账号」，右「选择/更换 + 切换」。
+   按钮做小一号：它是超管自测工具，不该抢「账号与安全」那张卡的视觉重量。 */
+.sw-row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 20rpx 0;
+  border-bottom: 2rpx solid var(--line);
+}
+.sw-row:last-child { border-bottom: none; }
+.sw-main { flex: 1; min-width: 0; }
+.sw-label {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4rpx;
+}
+.sw-btns {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  flex-shrink: 0;
+}
+.mini-btn {
+  padding: 0 22rpx;
+  height: 56rpx;
+  line-height: 56rpx;
+  border-radius: 999rpx;
+  font-size: 24rpx;
+  color: var(--brand-dark);
+  background: var(--brand-light);
+  border: 2rpx solid rgba(249, 115, 22, .25);
+  white-space: nowrap;
+}
+.mini-btn.primary {
+  color: #fff;
+  background: var(--brand-grad);
+  border-color: transparent;
+}
+/* 昵称可能很长：单行省略，别把右侧按钮挤出去 */
+.sw-main .small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

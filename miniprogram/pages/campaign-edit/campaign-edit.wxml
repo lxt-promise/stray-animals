@@ -1,0 +1,221 @@
+<view class="page chou-edit">
+
+  <!-- ==================== 发起筹款 ==================== -->
+  <block wx:if="{{mode === 'create'}}">
+
+    <!-- 1. 筹款对象 -->
+    <view class="card">
+      <view class="card-title">筹款对象</view>
+
+      <view class="cat-empty" bindtap="openCatPicker" wx:if="{{!cat}}">
+        <view class="ce-plus">＋</view>
+        <view class="ce-text">
+          <view class="bold">选择猫咪档案</view>
+          <view class="small muted">筹款必须绑定已有档案，钱要能对上这只猫</view>
+        </view>
+      </view>
+
+      <view class="cat-picked" bindtap="openCatPicker" wx:else>
+        <image class="cp-ava" src="{{cat.avatar}}" mode="aspectFill" wx:if="{{cat.avatar}}"></image>
+        <view class="cp-ava ph" wx:else>🐱</view>
+        <view class="cp-main">
+          <view class="bold">{{cat.name || '未命名'}}</view>
+          <view class="small muted">{{cat.statusText || '在校'}} · 点击更换</view>
+        </view>
+        <view class="cp-go">›</view>
+      </view>
+    </view>
+
+    <!-- 2. 类型 -->
+    <view class="card">
+      <view class="card-title">筹款类型</view>
+      <view class="kind-row">
+        <view class="kind-item {{kind === item.value ? 'on' : ''}}"
+              wx:for="{{kinds}}" wx:key="value"
+              data-kind="{{item.value}}" bindtap="pickKind">
+          <view class="ki-ico">{{item.ico}}</view>
+          <view class="ki-label">{{item.label}}</view>
+          <view class="ki-desc">{{item.desc}}</view>
+        </view>
+      </view>
+    </view>
+
+    <!-- 3. 基本信息 -->
+    <view class="card">
+      <view class="card-title">基本信息</view>
+
+      <view class="form-item">
+        <text class="label">标题</text>
+        <input placeholder="如：橘座车祸骨折，急需手术费" maxlength="40"
+               value="{{form.title}}" data-key="form.title" bindinput="onInput" />
+      </view>
+
+      <view class="form-item col">
+        <text class="label">情况说明</text>
+        <textarea class="area" maxlength="1000"
+                  placeholder="发现经过、目前诊断、治疗方案、费用构成。写清楚别人更愿意帮。"
+                  value="{{form.reason}}" data-key="form.reason" bindinput="onInput" />
+        <view class="count small muted">{{form.reason.length}}/1000</view>
+      </view>
+
+      <view class="form-item">
+        <text class="label">目标金额</text>
+        <input type="digit" placeholder="100 ~ 200000"
+               value="{{form.goalAmount}}" data-key="form.goalAmount" bindinput="onInput" />
+        <text class="unit">元</text>
+      </view>
+
+      <view class="form-item">
+        <text class="label">就诊医院</text>
+        <input placeholder="选填，如：XX 宠物医院" maxlength="40"
+               value="{{form.hospital}}" data-key="form.hospital" bindinput="onInput" />
+      </view>
+
+      <view class="form-item">
+        <text class="label">截止日期</text>
+        <picker mode="date" start="{{minDate}}" value="{{form.endDate}}" bindchange="onEndDate">
+          <view class="picker">{{form.endDate || '不限期 ›'}}</view>
+        </picker>
+        <text class="clear" wx:if="{{form.endDate}}" catchtap="clearEndDate">清除</text>
+      </view>
+
+      <view class="form-item">
+        <text class="label">联系方式</text>
+        <input placeholder="选填，仅审核管理员可见" maxlength="40"
+               value="{{form.contact}}" data-key="form.contact" bindinput="onInput" />
+      </view>
+    </view>
+
+    <!-- 4. 材料 -->
+    <view class="card">
+      <view class="card-title">
+        证明材料
+        <text class="small muted">{{materials.length}}/9</text>
+      </view>
+      <view class="small muted mat-tip">诊断书、费用清单、患处照片都可以。材料越实在，越容易通过审核。</view>
+
+      <view class="mat-types">
+        <view class="mat-type {{materialType === item.value ? 'on' : ''}}"
+              wx:for="{{materialTypes}}" wx:key="value"
+              data-type="{{item.value}}" bindtap="pickMaterialType">
+          {{item.label}}
+        </view>
+      </view>
+
+      <view class="mat-grid">
+        <view class="mat-cell" wx:for="{{materials}}" wx:key="fileID">
+          <image class="mat-img" src="{{item.preview}}" mode="aspectFill"
+                 data-url="{{item.fileID}}" bindtap="previewMaterial"></image>
+          <view class="mat-badge">{{item.typeLabel}}</view>
+          <view class="mat-del" data-index="{{index}}" catchtap="removeMaterial">×</view>
+        </view>
+        <view class="mat-add" bindtap="addMaterial" wx:if="{{materials.length < 9}}">
+          <view class="ma-plus">＋</view>
+          <view class="ma-text">添加</view>
+        </view>
+      </view>
+
+      <view class="switch-row">
+        <view class="sw-main">
+          <view>材料公开展示</view>
+          <view class="small muted">关闭后仅审核管理员可见（病历上有个人信息时建议关闭）</view>
+        </view>
+        <switch checked="{{materialsPublic}}" bindchange="toggleMaterialsPublic" color="#F97316" />
+      </view>
+    </view>
+
+    <!-- 5. 承诺 -->
+    <view class="card">
+      <view class="card-title">发起人承诺</view>
+      <view class="promise small">
+        <view>1. 以上信息与材料真实，愿意配合管理员核验；</view>
+        <view>2. 筹得款项全部用于该猫咪的治疗 / 绝育，不挪作他用；</view>
+        <view>3. 治疗结束后配合上传票据，接受资金公示与同学监督。</view>
+      </view>
+      <view class="agree-row" bindtap="toggleAgree">
+        <view class="checkbox {{agree ? 'on' : ''}}">{{agree ? '✓' : ''}}</view>
+        <view class="small">我已阅读并同意以上承诺</view>
+      </view>
+    </view>
+
+    <button class="btn-submit" loading="{{submitting}}" bindtap="submit">提交审核</button>
+    <view class="submit-tip small muted">
+      管理员会核对档案与材料，通过后公开展示。管理员发起的筹款直接生效。
+    </view>
+  </block>
+
+  <!-- ==================== 记进展 ==================== -->
+  <block wx:if="{{mode === 'update'}}">
+    <view class="card">
+      <view class="card-title">更新进展</view>
+      <textarea class="area" maxlength="500" placeholder="如：手术顺利完成，正在住院观察，附术后照片"
+                value="{{updateText}}" data-key="updateText" bindinput="onInput" />
+      <view class="mat-grid">
+        <view class="mat-cell" wx:for="{{updateImages}}" wx:key="*this">
+          <image class="mat-img" src="{{item}}" mode="aspectFill"
+                 data-url="{{item}}" bindtap="previewOne"></image>
+          <view class="mat-del" data-index="{{index}}" catchtap="removeUpdateImage">×</view>
+        </view>
+        <view class="mat-add" bindtap="addUpdateImage" wx:if="{{updateImages.length < 9}}">
+          <view class="ma-plus">＋</view>
+          <view class="ma-text">配图</view>
+        </view>
+      </view>
+    </view>
+    <button class="btn-submit" loading="{{submitting}}" bindtap="submit">发布进展</button>
+  </block>
+
+  <!-- ==================== 记支出 ==================== -->
+  <block wx:if="{{mode === 'expense'}}">
+    <view class="card">
+      <view class="card-title">登记支出</view>
+      <view class="form-item">
+        <text class="label">支出说明</text>
+        <input placeholder="如：XX 宠物医院 骨折内固定手术费" maxlength="40"
+               value="{{expenseTitle}}" data-key="expenseTitle" bindinput="onInput" />
+      </view>
+      <view class="form-item">
+        <text class="label">金额</text>
+        <input type="digit" placeholder="0.00"
+               value="{{expenseAmount}}" data-key="expenseAmount" bindinput="onInput" />
+        <text class="unit">元</text>
+      </view>
+      <view class="mat-tip small muted">上传收费票据，会展示在详情页「支出公示」里。</view>
+      <view class="mat-grid">
+        <view class="mat-cell" wx:for="{{proof}}" wx:key="*this">
+          <image class="mat-img" src="{{item}}" mode="aspectFill"
+                 data-url="{{item}}" bindtap="previewOne"></image>
+          <view class="mat-del" data-index="{{index}}" catchtap="removeProof">×</view>
+        </view>
+        <view class="mat-add" bindtap="addProof" wx:if="{{proof.length < 9}}">
+          <view class="ma-plus">＋</view>
+          <view class="ma-text">票据</view>
+        </view>
+      </view>
+    </view>
+    <button class="btn-submit" loading="{{submitting}}" bindtap="submit">提交支出</button>
+  </block>
+
+  <!-- ==================== 选猫弹层 ==================== -->
+  <view class="mask" wx:if="{{showCatPicker}}" bindtap="closeCatPicker">
+    <view class="sheet cat-sheet" catchtap="noop">
+      <view class="sheet-title">选择猫咪档案</view>
+      <input class="cat-search" placeholder="搜索名字" value="{{catKeyword}}" bindinput="onCatKeyword" />
+      <scroll-view scroll-y class="cat-list">
+        <view class="cat-row" wx:for="{{cats}}" wx:key="_id"
+              data-id="{{item._id}}" bindtap="pickCat">
+          <image class="cr-ava" src="{{item.avatar}}" mode="aspectFill" wx:if="{{item.avatar}}"></image>
+          <view class="cr-ava ph" wx:else>🐱</view>
+          <view class="cr-main">
+            <view class="bold">{{item.name || '未命名'}}</view>
+            <view class="small muted">{{item.statusText || '在校'}}</view>
+          </view>
+          <view class="cr-go">选择</view>
+        </view>
+        <view class="empty" wx:if="{{!cats.length}}">还没有档案，先去猫谱建一只</view>
+      </scroll-view>
+      <button class="btn-ghost" bindtap="closeCatPicker">取消</button>
+    </view>
+  </view>
+
+</view>

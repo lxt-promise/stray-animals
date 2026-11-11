@@ -83,7 +83,8 @@ const CORE = {
   COL: { cat: 'cats', sighting: 'sightings', school: 'schools', user: 'users' },
   isMember: u => !!(u && u.role === 'member'),
   blurLocation: loc => Object.assign({}, loc, { blurred: true }),
-  needBlur: () => false
+  needBlur: () => false,
+  normalizeEnum: x => x
 }
 
 function applyQuery(docs, q) {

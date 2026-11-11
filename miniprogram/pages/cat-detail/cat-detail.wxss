@@ -150,3 +150,7 @@
   border: 2rpx solid rgba(194, 65, 12, .3);
   box-shadow: none;
 }
+
+/* 空态两行文案：主句 + 弱化的可见性说明（竖排居中） */
+.empty-line { display: block; line-height: 1.8; }
+.empty-line.subtle { font-size: 24rpx; opacity: .75; }

@@ -2,9 +2,11 @@
 """打包云托管「代码包上传」用的识别服务 zip。
 
 对照 server/.dockerignore 的排除清单，只打进构建必需内容：
-  必含：Dockerfile、requirements.txt、.dockerignore、app/*.py、models/*.onnx
-  排除：__pycache__/*.pyc、.env、.env.example、data/、*.sqlite3、tools/、*.bat/*.ps1、
-        env//venv/、deploy/、docker-compose.yml、Dockerfile.gpu、.git、*.md、tests/
+  必含：Dockerfile、requirements.txt、.dockerignore、app/*.py、models/*.onnx、
+        tools/pattern_recognize.py（运行时被 app/attrs.py 按路径加载）
+  排除：__pycache__/*.pyc、.env、.env.example、data/、*.sqlite3、其余 tools/、
+        *.bat/*.ps1、env//venv/、deploy/、docker-compose.yml、Dockerfile.gpu、
+        .git、*.md、tests/
 zip 根目录必须是 Dockerfile（云托管解压后按根目录 Dockerfile 构建）。
 
 用法：python scripts/package_vision.py
@@ -31,13 +33,21 @@ REQUIRED_MODULES = {
     'media.py', 'index_store.py', 'sqlite_store.py', 'cos_store.py',
 }
 # 必须进包的模型。漏掉 yolov8n 不会报错，只会在线上静默退化成「整图提特征」——
-# 正是「代码改了、线上没生效」最难查的一类，所以在打包这关就卡死。
-REQUIRED_MODELS = ['models/reid.onnx', 'models/yolov8n.onnx']
+# 漏掉生效的 reid 模型（mega_descriptor_t.onnx）则特征引擎直接退化成 hash 占位，
+# 建库照跑、识别全错，是最难查的一类，所以在打包这关就卡死。
+# 注意：models/reid.onnx（DINOv2 ViT-Base，86MB）是 reid 的**回退**模型，
+# 引擎优先用 mega_descriptor_t.onnx；按需求不把它打进包（省体积），保留 mega 即可。
+REQUIRED_MODELS = ['models/mega_descriptor_t.onnx', 'models/yolov8n.onnx']
 
-# 与 .dockerignore 对齐的硬排除
-EXCLUDE_DIRS = {'__pycache__', 'env', 'venv', 'deploy', 'tools', 'data', '.git'}
+# 运行时依赖的工具模块。app/attrs.py 用 importlib 按路径加载它做花色判定，
+# 漏打包不会报错，只会在线上静默回退 legacy（/health 的 attr.source 会一直是
+# heuristic），所以和模型一样在打包这关就卡死。
+REQUIRED_TOOLS = ['tools/pattern_recognize.py']
+
+# 与 .dockerignore 对齐的硬排除（tools/ 不再整目录排除：要带 REQUIRED_TOOLS）
+EXCLUDE_DIRS = {'__pycache__', 'env', 'venv', 'deploy', 'data', '.git'}
 EXCLUDE_SUFFIX = ('.pyc', '.pyo', '.md', '.bat', '.ps1', '.sqlite3', '.env', '.env.example')
-EXCLUDE_NAMES = {'docker-compose.yml', 'Dockerfile.gpu', '.gitignore', 'start.bat'}
+EXCLUDE_NAMES = {'docker-compose.yml', 'Dockerfile.gpu', '.gitignore', 'start.bat', 'reid.onnx'}
 
 
 def skip(name):
@@ -83,9 +93,17 @@ def main():
                     continue
                 shutil.copy2(os.path.join(root, fn), os.path.join(target_root, fn))
 
+    # 2.5) 运行时依赖的工具模块（只拷 REQUIRED_TOOLS，其余开发脚本不进包）
+    for rel in REQUIRED_TOOLS:
+        src_f = os.path.join(SRC, rel)
+        assert os.path.isfile(src_f), 'missing ' + src_f
+        dst_f = os.path.join(stage, rel)
+        os.makedirs(os.path.dirname(dst_f), exist_ok=True)
+        shutil.copy2(src_f, dst_f)
+
     # 3) 打包前断言：staging 内容正确
     assert os.path.isfile(os.path.join(stage, 'Dockerfile')), 'Dockerfile 不在 staging 根'
-    for rel in REQUIRED_MODELS:
+    for rel in REQUIRED_MODELS + REQUIRED_TOOLS:
         assert os.path.isfile(os.path.join(stage, rel)), '%s 缺失（线上会静默降级）' % rel
     app_pys = set(f for f in os.listdir(os.path.join(stage, 'app')) if f.endswith('.py'))
     missing = REQUIRED_MODULES - app_pys
@@ -111,11 +129,12 @@ def main():
         names = zf.namelist()
         bad = zf.testzip()
         assert bad is None, 'zip 损坏: ' + bad
-        for req in ['Dockerfile', 'requirements.txt', '.dockerignore'] + REQUIRED_MODELS:
+        for req in ['Dockerfile', 'requirements.txt', '.dockerignore'] + REQUIRED_MODELS + REQUIRED_TOOLS:
             assert req in names, 'zip 根缺少 ' + req
         leaks = [n for n in names
                  if '__pycache__' in n or n.endswith('.pyc') or n.startswith('data/')
-                 or n.startswith('tools/') or n.startswith('deploy/')
+                 or (n.startswith('tools/') and n not in REQUIRED_TOOLS)
+                 or n.startswith('deploy/')
                  or n.endswith('.md') or n.endswith('.bat') or n.endswith('.ps1')
                  or n.endswith('.env') or 'docker-compose' in n or 'Dockerfile.gpu' in n]
         assert not leaks, 'zip 含违禁条目: %s' % leaks

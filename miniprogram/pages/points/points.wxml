@@ -23,7 +23,8 @@
       <view class="lv-cap">当前等级 · 只升不降</view>
 
       <view class="lv-value-row">
-        <text class="lv-value">{{view.peak}}</text>
+        <text class="lv-value" wx:if="{{!loading}}">{{view.peak}}</text>
+        <text class="lv-value sk-text" wx:else>···</text>
         <text class="lv-value-lbl">积分值</text>
       </view>
 
@@ -59,32 +60,43 @@
 
   <!-- ==================== 猫粮模式：余额 + 流水 ==================== -->
   <block wx:else>
-    <!-- 当前账本的余额：一屏只看一种货币，避免「-20」被误读成掉级 -->
+    <!-- 当前账本的余额：一屏只看一种货币，避免「-20」被误读成掉级。
+         加载期间用骨架占位，避免一进页面先闪 0 再跳真实余额。 -->
     <view class="wallet-card food">
-      <view class="w-num">{{head.num}}</view>
+      <view class="w-num" wx:if="{{!loading}}">{{head.num}}</view>
+      <view class="w-num sk" wx:else>···</view>
       <view class="w-lbl">{{head.label}}</view>
       <view class="w-sub" wx:if="{{head.sub}}">{{head.sub}}</view>
     </view>
 
     <view class="card mt">
       <view class="flex-between small muted">
-        <text>今日已获得 {{wallet.foodToday}}/{{wallet.foodCap}}</text>
+        <text wx:if="{{!loading}}">今日已获得 {{wallet.foodToday}}/{{wallet.foodCap}}</text>
+        <text wx:else>今日已获得 —/—</text>
         <text>识别 20/次 · 首次免费</text>
       </view>
     </view>
 
     <view class="card mt">
-      <view class="row p-item" wx:for="{{list}}" wx:key="_id">
-        <view class="p-main">
-          <text class="p-reason">{{item.reason}}</text>
-          <text class="small muted">{{item.timeText}}</text>
+      <block wx:if="{{loading}}">
+        <view class="p-item sk-row" wx:for="{{[1,2,3]}}" wx:for-item="n" wx:key="*this">
+          <view class="sk-line"></view>
+          <view class="sk-line short"></view>
         </view>
-        <text class="p-delta {{item.minus ? 'minus' : ''}}">{{item.deltaText}}</text>
-      </view>
-      <view class="empty" wx:if="{{!loading && !list.length}}">
-        <text class="emoji">🐾</text>
-        {{emptyText}}
-      </view>
+      </block>
+      <block wx:else>
+        <view class="row p-item" wx:for="{{list}}" wx:key="_id">
+          <view class="p-main">
+            <text class="p-reason">{{item.reason}}</text>
+            <text class="small muted">{{item.timeText}}</text>
+          </view>
+          <text class="p-delta {{item.minus ? 'minus' : ''}}">{{item.deltaText}}</text>
+        </view>
+        <view class="empty" wx:if="{{!list.length}}">
+          <text class="emoji">🐾</text>
+          {{emptyText}}
+        </view>
+      </block>
     </view>
 
     <view class="tip small muted">

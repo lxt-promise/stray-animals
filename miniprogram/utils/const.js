@@ -1,11 +1,16 @@
 // 枚举 & 常量：前后端共用语义，云函数里保持一致的取值
 module.exports = {
   // 猫的状态
+  // 2026-11-07：「休学」下线（概念太笼统，与「失踪」语义重叠）——老数据在云端
+  // sanitizeCat 里归一到 missing；「毕业」改称「已领养」，直白说明去向。
+  // 2026-11-07 追加：用户要求把「休学」这个位置改成「看病中」（正在送医/治疗、
+  // 暂不在校园出没），取值 treating。它与「寄养中」的区别：寄养是有人管着，
+  // 看病中是在医院/治疗期，都不参与地图投喂提醒。
   CAT_STATUS: [
     { value: 'campus', label: '在校', tag: 'ok', desc: '常驻校园，稳定出没' },
     { value: 'foster', label: '寄养中', tag: 'purple', desc: '在寄养家庭或医疗点' },
-    { value: 'suspend', label: '休学', tag: 'gray', desc: '超过 30 天未见踪迹' },
-    { value: 'adopted', label: '毕业', tag: 'info', desc: '已被领养' },
+    { value: 'treating', label: '看病中', tag: 'warn', desc: '正在就医治疗，暂不在校园' },
+    { value: 'adopted', label: '已领养', tag: 'info', desc: '已被领养，有了自己的家' },
     { value: 'missing', label: '失踪', tag: 'warn', desc: '疑似离开或遭遇意外' },
     { value: 'rainbow', label: '去喵星', tag: 'gray', desc: '已离世，仅作纪念' }
   ],
@@ -25,6 +30,8 @@ module.exports = {
   ],
 
   // 毛色/花纹（用于图鉴与筛选）
+  // 2026-11-07：下线「灰蓝」「暹罗」——它们是**品种**不是花色，校园流浪猫里按品种分类
+  // 既不准也没必要（AI 识别出的重点色/蓝猫一律归「其他」，老数据在云端归一）。
   PATTERN: [
     { value: 'tabby', label: '狸花' },
     { value: 'orange', label: '橘猫' },
@@ -34,10 +41,15 @@ module.exports = {
     { value: 'tortoiseshell', label: '玳瑁' },
     { value: 'white', label: '纯白' },
     { value: 'black', label: '纯黑' },
-    { value: 'gray', label: '灰蓝' },
-    { value: 'siamese', label: '暹罗' },
     { value: 'other', label: '其他' }
   ],
+
+  // 已下线的老枚举值 → 归一目标（老数据、AI 识别结果里仍可能出现）
+  // 云端 core.sanitizeCat / saveCat 与地图 mapPoints 都按这份口径归一。
+  RETIRED_VALUES: {
+    status: { suspend: 'missing' },
+    pattern: { gray: 'other', siamese: 'other' }
+  },
 
   // 性格标签
   CHARACTER: [
@@ -219,5 +231,20 @@ module.exports = {
     feed: 10,          // 本人投喂（额外）
     feedPhoto: 15,     // 本人投喂且上传照片（额外，照片是投喂佐证）
     dailyCap: 60       // 每日打卡积分上限
-  }
+  },
+
+  /* ===================== 咪咪筹 ===================== */
+  // 与 cloudfunctions/catcampus/lib/donation.js 的 KIND_LABEL / MATERIAL_LABEL 同口径。
+  // 新增类型必须两边一起加，否则云端会把未知值归到 medical / other。
+  CHOU_KIND: [
+    { value: 'medical', label: '医疗救助', desc: '生病、受伤、手术等治疗费用', ico: '🏥' },
+    { value: 'tnr', label: '绝育救助', desc: '绝育手术、住院观察费用', ico: '✂️' }
+  ],
+
+  CHOU_MATERIAL: [
+    { value: 'diagnosis', label: '诊断证明', hint: '病历、诊断书' },
+    { value: 'invoice', label: '费用清单', hint: '医院报价或催缴单' },
+    { value: 'photo', label: '患处照片', hint: '术前 / 患处实拍' },
+    { value: 'other', label: '其他材料', hint: '检查报告等' }
+  ]
 }

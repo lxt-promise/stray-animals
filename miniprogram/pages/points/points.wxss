@@ -104,8 +104,26 @@
   box-shadow: 0 10rpx 24rpx rgba(180, 83, 9, .22);
 }
 .w-num { font-size: 64rpx; font-weight: 800; line-height: 1.1; }
+.w-num.sk { opacity: .55; letter-spacing: 8rpx; }
 .w-lbl { font-size: 24rpx; opacity: .94; margin-top: 8rpx; }
 .w-sub { font-size: 20rpx; opacity: .8; margin-top: 6rpx; }
+
+/* 加载态骨架屏：进入页面先用占位替代「0」与空列表，避免数字跳变误导 */
+.lv-value.sk-text { opacity: .5; letter-spacing: 6rpx; }
+.sk-row { align-items: center; }
+.sk-line {
+  height: 26rpx;
+  border-radius: 8rpx;
+  margin: 10rpx 0;
+  background: linear-gradient(90deg, #ececec 25%, #f6f6f6 50%, #ececec 75%);
+  background-size: 400% 100%;
+  animation: sk-shimmer 1.2s ease-in-out infinite;
+}
+.sk-line.short { width: 38%; }
+@keyframes sk-shimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: 0 0; }
+}
 
 .p-item { align-items: center; justify-content: space-between; }
 .p-main { display: flex; flex-direction: column; }

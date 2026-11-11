@@ -64,7 +64,7 @@
         wx:for="{{list}}"
         wx:key="_id"
         cat="{{item}}"
-        bind:tap="goDetail"
+        bind:open="goDetail"
       />
       <view class="empty" wx:if="{{!loading && !list.length}}">
         <text class="emoji">🐈</text>

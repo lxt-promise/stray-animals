@@ -1,0 +1,149 @@
+/* ===================== 咪咪筹列表 ===================== */
+
+/* 顶部说明卡：暖橙渐变，和「资金公示」的收支卡形成同一套视觉语言 */
+.chou-hero {
+  display: flex;
+  align-items: center;
+  padding: 32rpx 30rpx;
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, #FFF3E2 0%, #FFE3C4 100%);
+  border: 2rpx solid rgba(249, 115, 22, .18);
+  box-shadow: 0 10rpx 26rpx rgba(249, 115, 22, .1);
+}
+.hero-main { flex: 1; min-width: 0; }
+.hero-title {
+  font-size: 40rpx;
+  font-weight: 700;
+  color: var(--brand-dark);
+  letter-spacing: 2rpx;
+}
+.hero-sub { margin-top: 8rpx; font-size: 26rpx; color: #8a5a2b; }
+.hero-sub2 { margin-top: 4rpx; font-size: 22rpx; color: var(--text-weak); }
+.hero-btn {
+  flex: none;
+  margin-left: 20rpx;
+  padding: 16rpx 28rpx;
+  border-radius: 999rpx;
+  background: var(--brand-grad);
+  color: #fff;
+  font-size: 26rpx;
+  font-weight: 600;
+  box-shadow: var(--glow);
+}
+
+/* 分类 tab */
+.chou-tabs {
+  display: flex;
+  align-items: center;
+  margin: 22rpx 0 18rpx;
+  padding: 8rpx;
+  border-radius: 999rpx;
+  background: rgba(255, 255, 255, .75);
+  border: 2rpx solid var(--line);
+}
+.chou-tab {
+  flex: 1;
+  text-align: center;
+  padding: 14rpx 0;
+  font-size: 26rpx;
+  color: var(--text-sub);
+  border-radius: 999rpx;
+  transition: all .2s;
+}
+.chou-tab.on {
+  background: var(--brand-grad);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 6rpx 16rpx rgba(249, 115, 22, .25);
+}
+
+/* 卡片 */
+.chou-card {
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFFCF8 100%);
+  border: 2rpx solid var(--card-line);
+  border-radius: var(--radius);
+  padding: 26rpx;
+  margin-bottom: 20rpx;
+  box-shadow: var(--shadow);
+}
+.cc-head { display: flex; align-items: flex-start; }
+.cc-cover {
+  width: 132rpx; height: 132rpx; border-radius: 24rpx;
+  background: var(--brand-light); flex: none;
+}
+.cc-cover.ph {
+  display: flex; align-items: center; justify-content: center; font-size: 56rpx;
+}
+.cc-main { flex: 1; margin-left: 22rpx; min-width: 0; }
+.cc-title {
+  font-size: 30rpx; font-weight: 600; line-height: 1.4;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.cc-meta { margin-top: 12rpx; display: flex; flex-wrap: wrap; }
+.tag {
+  font-size: 20rpx;
+  padding: 4rpx 14rpx;
+  border-radius: 999rpx;
+  margin-right: 10rpx;
+  margin-bottom: 6rpx;
+  line-height: 1.6;
+}
+.tag.kind { background: var(--brand-light); color: var(--brand-dark); }
+.tag.ghost { background: #F5EFE7; color: var(--text-sub); }
+.tag.days { background: rgba(47, 134, 214, .1); color: var(--info); }
+.tag.pending { background: rgba(234, 179, 8, .16); color: #92700a; }
+
+.cc-summary {
+  margin-top: 16rpx;
+  font-size: 25rpx;
+  color: var(--text-sub);
+  line-height: 1.55;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.cc-progress {
+  margin-top: 22rpx;
+  height: 16rpx;
+  border-radius: 999rpx;
+  background: #F3E8DA;
+  overflow: hidden;
+}
+.cc-bar {
+  height: 100%;
+  border-radius: 999rpx;
+  background: var(--brand-grad);
+  transition: width .4s ease;
+}
+.cc-nums {
+  display: flex;
+  align-items: baseline;
+  margin-top: 12rpx;
+  font-size: 24rpx;
+}
+.cc-nums .raised { color: var(--ok); font-weight: 700; font-size: 28rpx; }
+.cc-nums .goal { color: var(--text-weak); margin-left: 12rpx; flex: 1; }
+.cc-nums .pct { color: var(--brand-dark); font-weight: 600; }
+
+.cc-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16rpx;
+  padding-top: 16rpx;
+  border-top: 2rpx dashed var(--line);
+  font-size: 22rpx;
+  color: var(--text-weak);
+}
+.cc-state.on { color: var(--ok); }
+.cc-state.off { color: var(--text-weak); }
+
+.chou-tip {
+  margin-top: 30rpx;
+  padding: 0 12rpx;
+  font-size: 22rpx;
+  line-height: 1.7;
+  color: var(--text-weak);
+  text-align: center;
+}

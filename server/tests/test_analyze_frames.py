@@ -65,7 +65,7 @@ def _engine(detector, dim=8):
     e.clf = None
     e.dim = dim
     # 属性识别替换成「亮度即置信度」，方便验证挑的是分数最高那一帧
-    e.attrs = lambda im, cropped=False: {
+    e.attrs = lambda im, cropped=False, mask=None: {
         "color": "orange" if im.getpixel((0, 0))[0] > 128 else "",
         "pattern": "solid", "breed": "橘猫",
         "confidence": im.getpixel((0, 0))[0] / 255.0,
@@ -141,15 +141,21 @@ class TestEmbedDimGuardStillOn(unittest.TestCase):
             e.analyze_frames([_img()])
 
 
-class TestQueryTTA(unittest.TestCase):
-    """查询端翻转 TTA：单/双帧提两条向量（原图 + 镜像）平均，多帧不加倍。"""
+class TestQueryViews(unittest.TestCase):
+    """查询端多视图：单帧提三条向量（灰底外扩 + 原始 + 核心）平均，多帧不加倍。
 
-    def test_single_frame_embeds_original_and_flip(self):
+    2026-10-31 起单帧不再用「原图 + 镜像」的翻转 TTA，改成三视图平均 ——
+    实测 8 张东南大学原图里，俯拍/趴卧照靠它把 Top1 从错的玳瑁档案纠正回
+    狸花档案（0.364 → 0.490）。多帧仍走原来的翻转 TTA（若开启）。
+    """
+
+    def test_single_frame_embeds_three_views(self):
         e = _engine(_CountingDetector([20, 20, 120, 120]))
         out = e.analyze_frames([_img()])
-        self.assertEqual(len(e.embedder.sizes), 2,
-                         "单帧应提 2 次（原 + 镜像），实际 %d" % len(e.embedder.sizes))
-        self.assertEqual(len(out["embs"]), 1, "TTA 是平均成一条，不是多给一帧")
+        self.assertEqual(len(e.embedder.sizes), 3,
+                         "单帧应提 3 次（灰底外扩 + 原始 + 核心），实际 %d"
+                         % len(e.embedder.sizes))
+        self.assertEqual(len(out["embs"]), 1, "多视图是平均成一条，不是多给一帧")
 
     def test_three_or_more_frames_skip_tta(self):
         e = _engine(_CountingDetector([20, 20, 120, 120]))

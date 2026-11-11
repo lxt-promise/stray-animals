@@ -11,8 +11,11 @@ __pycache__/
 data/
 *.sqlite3
 
-# 开发/调试脚本、本地工具链
+# 开发/调试脚本、本地工具链（**但 pattern_recognize.py 是运行时依赖**：
+# app/attrs.py 会按路径加载 tools/pattern_recognize.py 做花色判定，
+# 漏掉它不会报错，只会在线上静默回退 legacy —— 所以单独放行这一个文件）
 tools/
+!tools/pattern_recognize.py
 *.bat
 *.ps1
 

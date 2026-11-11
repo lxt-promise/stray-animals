@@ -872,6 +872,82 @@ async function indexStatus(user, event) {
 }
 
 /**
+ * 管理端「校园管理」板块用：一次性拉回**每所学校**的特征库数量。
+ *
+ * 与 `indexStatus` 的区别：`indexStatus` 只查当前绑定学校（或全环境），返回未录入清单；
+ * 这里遍历所有校区，每只给一个紧凑摘要 `{total, indexed, missing, bankTotal}`，
+ * 让超管在「校园管理」里一眼看到每所校区的特征库覆盖情况，并就地触发该校重建。
+ *
+ * 容错口径：
+ *   - 档案读取失败 → `total=null`（界面显示「—」，不把"查不到"说成"没猫"）；
+ *   - 特征库读不到 → `indexed=null / missing=null`，但 `total` 仍来自云库，
+ *     管理员能区分「这所学校到底有没有猫」和「特征库连不上查不出来」。
+ */
+async function indexStatusBySchool(opts) {
+  const o = opts || {}
+  const maxSchools = Math.max(1, Number(o.maxSchools) || 500)
+  const sres = await db.collection(COL.school).limit(maxSchools).get()
+    .catch(e => { console.error('[vision] 读取校区列表失败', e && e.message); return { data: [] } })
+  const schools = (sres.data || []).filter(s => s && s._id)
+
+  const out = []
+  for (let i = 0; i < schools.length; i++) {
+    const sc = schools[i]
+    const sid = sc._id
+    // ① 该校档案数（云库真相）
+    let total = null
+    let catError = ''
+    try {
+      const c = await db.collection(COL.cat).where({ schoolId: sid }).count()
+      total = Number(c && c.total) || 0
+    } catch (err) {
+      catError = (err && (err.errMsg || err.message)) || '档案读取失败'
+      console.error('[vision] 读档案数失败', sid, catError)
+    }
+    // ② 该校特征库向量数（识别服务真相，按 schoolId 过滤：已删猫的残留向量会算进 bankTotal）
+    let bankIds = null
+    let bankTotal = 0
+    let bankError = ''
+    try {
+      const r = await fetchIndexIds(sid)
+      bankIds = r.ids
+      bankTotal = r.total
+    } catch (err) {
+      bankError = (err && err.message) || '特征库查询失败'
+      console.warn('[vision] 特征库查询失败', sid, bankError)
+    }
+    // ③ 真正在库（向量对应现存档案）：避免「已删猫残留向量」被算成已录入
+    let indexed = null
+    if (bankIds && !catError) {
+      try {
+        // 只取 _id：这次查询纯粹是为了和特征库 id 求交集，没必要把整份档案拉回来。
+        // ⚠️ .field() 不是所有环境的 SDK 都支持（loadCatsLite 里同一处坑），缺了它
+        //    拉全字段也能算对，只是重一些 —— 所以退化要安全，不能整个统计挂掉。
+        let q = db.collection(COL.cat).where({ schoolId: sid }).limit(500)
+        if (typeof q.field === 'function') q = q.field({ _id: true })
+        const cr = await q.get()
+        const idset = new Set((cr.data || []).map(c => c._id))
+        indexed = bankIds.filter(id => idset.has(id)).length
+      } catch (err) {
+        console.warn('[vision] 比对已录入失败', sid, err && err.message)
+      }
+    }
+    out.push({
+      schoolId: sid,
+      name: sc.name || '',
+      campus: sc.campus || '',
+      total,
+      indexed,
+      missing: (total != null && indexed != null) ? Math.max(0, total - indexed) : null,
+      bankTotal,
+      bankError,
+      catError
+    })
+  }
+  return { ok: true, schools: out }
+}
+
+/**
  * 管理端「识别引擎体检」：检测模型有没有生效、花色走哪条路、特征库有多少只。
  *
  * 与 `indexStatus` 分开两个 action 的理由：
@@ -902,21 +978,30 @@ async function engineHealth(user, event) {
   try {
     const h = await fetchEngineHealth(3000, schoolId)
     const num = v => (typeof v === 'number' && isFinite(v)) ? v : -1
+    // 识别服务 2026-10-31 起 /health 按排查维度分组（model/detect/attr/match/media/cache/index）。
+    // 这里把分组结构摊回下面这套稳定字段 —— 云函数对外口径不变，管理端不用跟着改。
+    // 同时兼容旧的平铺结构（灰度期可能先发云函数后发识别服务），两边都读。
+    const m = h.model || {}
+    const d = h.detect || {}
+    const a = h.attr || {}
+    const md = h.media || {}
+    const ix = h.index || {}
+    const pick = (grouped, flat) => (grouped !== undefined ? grouped : flat)
     return Object.assign(out, {
       ok: !!h.ok,
-      provider: h.provider || '',
-      detector: !!h.detector,
-      detectModel: h.detectModel || '',
-      detectConf: num(h.detectConf),
-      detectPad: num(h.detectPad),
-      attrSource: h.attrSource || '',
-      indexed: num(h.indexed),
+      provider: pick(m.backend, h.provider) || '',
+      detector: !!pick(d.enabled, h.detector),
+      detectModel: pick(d.file, h.detectModel) || '',
+      detectConf: num(pick(d.conf, h.detectConf)),
+      detectPad: num(pick(d.pad, h.detectPad)),
+      attrSource: pick(a.source, h.attrSource) || '',
+      indexed: num(pick(ix.count, h.indexed)),
       // 全库条数（含其它学校 + 已删档案残留）。> indexed 时后台会注明差值，
       // 「本校 7 / 全库 11」比一个来历不明的 11 可解释得多。
-      indexedTotal: num(h.indexedTotal),
-      indexedScoped: h.indexedScoped !== false,
-      indexBackend: h.indexBackend || '',
-      framesMax: num(h.framesMax),
+      indexedTotal: num(pick(ix.total, h.indexedTotal)),
+      indexedScoped: pick(ix.scoped, h.indexedScoped) !== false,
+      indexBackend: pick(ix.backend, h.indexBackend) || '',
+      framesMax: num(pick(md.framesMax, h.framesMax)),
       error: h.ok ? '' : '识别服务返回 ok=false'
     })
   } catch (err) {
@@ -1656,6 +1741,35 @@ async function runSync(user, event, ctx) {
  *    安全检测 → 换链 → 识别，把原来必然的三轮压成一轮；
  *  - 每一步成功即落库，被打断也不丢；写未生效会抛错重试，绝不静默。
  */
+/**
+ * 取某次识别任务上传的素材（历史记录回看用）。
+ *
+ * 为什么需要它（2026-11-10）：历史识别记录现在本地只存 fileID，但**这之前存下的
+ * 记录**里只有 tempPath（早失效）+ taskId。查询图本体一直躺在云存储里，
+ * 任务文档也一直记着 fileId —— 让它自己认领回来，老记录也能看到当时的照片，
+ * 而不是永远显示「照片已不在本机」。
+ *
+ * 纯只读一次文档，无副作用；越权照旧按 openid 判。
+ */
+async function taskPhoto(user, event) {
+  const taskId = event.taskId
+  if (!taskId) throw new AppError('缺少 taskId')
+  let t = null
+  try {
+    t = (await db.collection(COL.aiTask).doc(taskId).get()).data
+  } catch (e) {
+    t = null
+  }
+  if (!t) throw new AppError('任务不存在', 404)
+  if ((t.openid || t._openid) !== user.openid) throw new AppError('无权访问该任务', 403)
+  return {
+    taskId,
+    fileId: t.fileId || '',
+    thumbId: t.thumbId || '',
+    type: t.type === 'video' ? 'video' : 'image'
+  }
+}
+
 async function poll(user, event, ctx) {
   const taskId = event.taskId
   if (!taskId) throw new AppError('缺少 taskId')
@@ -1986,6 +2100,29 @@ async function buildIndexAuto(user, event) {
     console.warn('[vision] 建档后自动入库未当场完成，交给定时任务兜底', err && err.message)
     return { ok: false, deferred: true, msg: (err && err.message) || '入库延后' }
   }
+}
+
+/**
+ * 单校重建：给「校园管理 → 某校区 → 重建特征库」用。
+ *
+ * 与 buildIndexAll 的唯一区别是作用域（只跑一所学校），以及**必须回一个明确的时间戳**。
+ *
+ * 为什么 finishedAt 不能省：管理端点完「重建」是不知道到底跑没跑完的 ——
+ * 客户端 callFunction 约 3s 预算经常先到（-504003），界面上只剩一句 toast，
+ * 管理员分不清「提交了但还在跑」和「已经跑完」。给一个「云端真正返回时的时刻」，
+ * 落到界面上就是可核对的答案（也和 buildIndexAll 的口径保持一致）。
+ */
+async function buildIndexSchool(user, event) {
+  const e = event || {}
+  const r = await buildIndex(user, {
+    schoolId: e.schoolId,
+    // force=true：单校重建就是要无视 aiIndexAt 记账重算，否则「换存储 / 清桶」
+    // 之后那些带着"已入库"标记的猫会被永久跳过（和 buildIndexAll 的 force 同理）。
+    force: true,
+    photosPerCat: Math.max(1, Math.min(INDEX_PHOTOS_AUTO, Number(e.photosPerCat) || INDEX_PHOTOS_AUTO))
+  })
+  // 此刻 = 这次重建在云端真正跑完的时刻（前面 buildIndex 是 await 的）
+  return Object.assign({}, r, { finishedAt: new Date().toISOString() })
 }
 
 /* ==================== 确认样本库（人工确认 → 特征库） ==================== */
@@ -2487,6 +2624,9 @@ async function buildIndexAll(opts) {
 
   return {
     startedAt: new Date(started),
+    // 全部特征库重建完成的时间戳（ISO 字符串），前端用来展示「最新更新时间」。
+    // 取函数返回前的此刻，即整轮（含所有学校）真正跑完的时刻。
+    finishedAt: new Date().toISOString(),
     elapsed: Date.now() - started,
     schools: schools.length,
     processed: results.length,
@@ -2521,7 +2661,10 @@ function mulberry32(a) {
 
 module.exports = {
   runSync, start, poll, confirm, run, index, buildIndex, buildIndexAuto, buildIndexAll,
-  indexStatus, indexOneCat, engineHealth,
+  buildIndexSchool,
+  // 历史识别记录回看：按 taskId 取回上传素材（只读，越权按 openid 判）
+  taskPhoto,
+  indexStatus, indexOneCat, engineHealth, indexStatusBySchool,
   fetchIndexIds, fetchEngineHealth, deleteIndexEntry,
   scoreCat, match, TOP_N, LOW_CONF,
   candidateReason, shapeCandidates,

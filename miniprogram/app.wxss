@@ -351,3 +351,32 @@ button.btn {
 .flex { display: flex; align-items: center; }
 .flex-between { display: flex; align-items: center; justify-content: space-between; }
 .text-center { text-align: center; }
+
+/* ===== 测试身份横幅（超管专用：以其他账号身份浏览时提示） =====
+   两处共用（账号页 / 我的页），放全局避免各页各写一份配色。
+   用紫色而非品牌橙：它不是业务功能，是一层「你现在看到的是别人」的覆盖态。 */
+.acting-bar {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+  margin: 8rpx 0 4rpx;
+  padding: 18rpx 20rpx;
+  border-radius: 16rpx;
+  background: rgba(168, 85, 247, .1);
+  border: 2rpx solid rgba(168, 85, 247, .25);
+}
+.acting-ico { font-size: 28rpx; }
+.acting-txt {
+  flex: 1;
+  min-width: 0;
+  font-size: 26rpx;
+  color: #7E22CE;
+  font-weight: 600;
+}
+.acting-exit {
+  font-size: 24rpx;
+  color: #7E22CE;
+  padding: 4rpx 16rpx;
+  border-radius: 999rpx;
+  background: rgba(168, 85, 247, .14);
+}

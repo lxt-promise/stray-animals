@@ -1,0 +1,147 @@
+/* 猫名片：仿收藏卡版式。顶部强调色随稀有度变（颜色由 JS 通过 inline style 注入）。 */
+
+.cc {
+  padding: 28rpx 28rpx calc(48rpx + env(safe-area-inset-bottom));
+}
+
+.cc-loading {
+  text-align: center;
+  padding: 160rpx 0;
+}
+.cc-loading .emoji {
+  display: block;
+  font-size: 72rpx;
+  margin-bottom: 16rpx;
+}
+
+/* ============ 名片 ============ */
+.namecard {
+  position: relative;
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFFBF6 100%);
+  border: 2rpx solid var(--card-line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 0 32rpx 32rpx;
+  overflow: hidden;
+}
+
+/* 顶部整条强调线：稀有度越高颜色越「贵」 */
+.nc-accent {
+  height: 10rpx;
+  /* 负 margin 抵消卡片内边距，让色条真正贴到卡片左右边缘 */
+  margin: 0 -32rpx 24rpx;
+  width: calc(100% + 64rpx);
+}
+
+.nc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  margin-bottom: 24rpx;
+}
+.nc-rare {
+  padding: 8rpx 22rpx;
+  border-radius: 999rpx;
+  color: #fff;
+  font-size: 24rpx;
+  font-weight: 600;
+  box-shadow: 0 4rpx 14rpx rgba(146, 88, 32, .18);
+}
+.nc-school {
+  flex: 1;
+  text-align: right;
+}
+
+/* 主图：标准照。没照片时用名字首字占位（不摆假图） */
+.nc-photo {
+  width: 100%;
+  height: 480rpx;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--brand-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.nc-photo image {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.nc-initial {
+  font-size: 140rpx;
+  font-weight: 700;
+  color: var(--brand-dark);
+  opacity: .5;
+}
+
+.nc-name {
+  margin-top: 28rpx;
+  font-size: 44rpx;
+  font-weight: 700;
+  color: var(--text);
+  text-align: center;
+}
+.nc-pattern {
+  margin-top: 8rpx;
+  text-align: center;
+}
+
+/* 三格统计 */
+.nc-stats {
+  display: flex;
+  margin-top: 32rpx;
+  border-top: 1rpx solid var(--line);
+  border-bottom: 1rpx solid var(--line);
+}
+.nc-stat {
+  flex: 1;
+  padding: 24rpx 0;
+  text-align: center;
+  border-right: 1rpx solid var(--line);
+}
+.nc-stat:last-child { border-right: none; }
+.nc-v {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--text);
+}
+.nc-k {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: var(--text-weak);
+}
+
+.nc-divider {
+  height: 1rpx;
+  background: var(--line);
+  margin: 28rpx 0;
+}
+
+.nc-rescue-title { margin-bottom: 16rpx; }
+.nc-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+}
+
+.nc-foot {
+  margin-top: 32rpx;
+  text-align: center;
+  color: var(--text-weak);
+}
+
+/* ============ 操作 ============ */
+.cc-actions {
+  margin-top: 32rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.tip {
+  margin-top: 28rpx;
+  text-align: center;
+  line-height: 1.6;
+}

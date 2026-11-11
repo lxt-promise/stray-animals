@@ -33,7 +33,9 @@ const COL = {
   aiSample: 'ai_samples', // 用户确认的识别样本（人机协同闭环，为后续训练攒数据）
   vpayOrder: 'vpay_orders',       // 虚拟支付订单（待支付/已支付/已发货/已退款）
   vpayNotify: 'vpay_notifies',    // 微信推送原始事件（发货/退款/投诉等，审计用）
-  vpayDelivery: 'vpay_deliveries' // 发货意图（业务侧消费：发放权益后标记 delivered）
+  vpayDelivery: 'vpay_deliveries',// 发货意图（业务侧消费：发放权益后标记 delivered）
+  campaign: 'medical_campaigns',  // 医疗求助 / 募捐活动（绑定单只猫，admin 发起）
+  notice: 'notices'               // 站内通知（入校/建校申请提交时推给超管）
 }
 
 /**
@@ -52,6 +54,21 @@ const COL = {
 const _collectionReady = {}
 /** 正在后台创建中的集合（避免并发重复发起 createCollection） */
 const _collectionCreating = {}
+
+/**
+ * 判断错误是不是「集合还没建」（`-502005 database collection not exists`）。
+ *
+ * 为什么要有它：后加的集合（school_applies / notices…）没跑过 initCollections 时，
+ * 每个用户每次进「我的」页都会读到它 —— 于是每次都在控制台刷一条 -502005，
+ * 而真相只是「还没有任何数据」。集合缺失 = 数据为空，不是故障，
+ * 必须和真正的读失败区分开，否则会把「没数据」报成「加载失败」。
+ *
+ * 放在 core 里是为了让 lib/* 也能用（notify 等模块同样要自愈集合）。
+ */
+function isCollectionMissing(e) {
+  const msg = String((e && (e.errMsg || e.message)) || '')
+  return /-502005|collection not exists|Db or Table not exist/i.test(msg)
+}
 
 /**
  * ⚠️ 性能红线：这个函数**绝不能**在请求热路径上被 await。
@@ -257,7 +274,25 @@ function frac(n) {
 
 /** 判断该猫的点位是否需要对当前用户隐藏/模糊 */
 function needBlur(cat) {
-  return !!(cat && (cat.spotPrivate || cat.status === 'kitten' || cat.health === 'sick'))
+  // 看病中的猫（status=treating）多半在医院/治疗点，点位同样不该外泄，
+  // 与幼猫 / 病猫 / 私密点位同一口径：对非成员模糊。
+  return !!(cat && (cat.spotPrivate || cat.status === 'kitten' ||
+    cat.status === 'treating' || cat.health === 'sick'))
+}
+
+/* 已下线的枚举值 → 归一目标（与小程序 utils/const.js 的 RETIRED_VALUES 同口径）。
+ * status.suspend（休学）语义与「失踪」重叠，已从选择器下线；
+ * pattern.gray / siamese 是**品种**不是花色，也不该出现在校园猫分类里。
+ * 老数据 + AI 识别结果里仍可能出现，统一在这里归一，避免前端显示「未知」。 */
+const RETIRED_STATUS = { suspend: 'missing' }
+const RETIRED_PATTERN = { gray: 'other', siamese: 'other' }
+
+/** 把一只猫的状态/花色归一到当前枚举（原地修改传入对象的副本由调用方负责） */
+function normalizeEnum(c) {
+  if (!c) return c
+  if (RETIRED_STATUS[c.status]) c.status = RETIRED_STATUS[c.status]
+  if (RETIRED_PATTERN[c.pattern]) c.pattern = RETIRED_PATTERN[c.pattern]
+  return c
 }
 
 /**
@@ -268,12 +303,16 @@ function sanitizeCat(cat, user) {
   if (!cat) return cat
   // saveToken 是「保存档案」的幂等标记（客户端超时重发时防止重复建档），
   // 纯服务端内部字段，不下发给任何客户端。
-  const out = Object.assign({}, cat)
+  const out = normalizeEnum(Object.assign({}, cat))
   delete out.saveToken
+  // 成员（管理员 / 社团成员）看全字段：编辑档案要回填点位、内部备注、医疗与联系方式
   if (isMember(user)) return out
-  if (out.location) {
-    out.location = needBlur(cat) ? blurLocation(out.location) : Object.assign({}, out.location)
-  }
+  // 🔴 防虐猫（2026-11-07，用户要求）：**具体位置只给管理员与社团成员**。
+  // 以前是对幼猫/病猫/私密点位做 ±120m 模糊、其余照发——但「梅园1D号楼」
+  // 这种地名本身就是精确位置，模糊坐标配精确地名等于没保护。
+  // 现在非成员直接拿不到 location（坐标 + 地名一起删），档案页「常驻点」整行消失；
+  // 地图打点走 mapPoints 自己的通道，不受这里影响（那里对 spot 单独脱敏）。
+  delete out.location
   delete out.internalNote
   delete out.medicalNote
   delete out.contact
@@ -310,7 +349,13 @@ function sanitizeSighting(s, user) {
   // 老数据无 visibility 字段（改造前写入）→ 视为 private。
   if (s.visibility !== 'public') return null
   const out = Object.assign({}, s)
-  if (out.location) out.location = blurLocation(out.location)
+  // 非成员只给模糊坐标，且**不给她名**（locationName / location.name）：
+  // 「梅园1D号楼」这类文字就是精确位置，防虐猫口径与 sanitizeCat 保持一致。
+  if (out.location) {
+    out.location = blurLocation(out.location)
+    if (out.location) out.location.name = ''
+  }
+  delete out.locationName
   // 用户生成内容一律不下发（合规红线）
   delete out.photos
   delete out.reporter
@@ -375,10 +420,10 @@ function cosine(a, b) {
 
 module.exports = {
   cloud, db, _, COL, ROLE_LEVEL, AppError,
-  ensureCollection, ensureAllCollections, coll, warmCollection,
+  ensureCollection, ensureAllCollections, coll, warmCollection, isCollectionMissing,
   roleOf, isMember, isAdmin, requireRole,
   SUPER_ADMIN_OPENIDS, isSuper, requireSuper,
   resolveSchoolId, assertSchool, scopeWhere,
-  blurLocation, needBlur, sanitizeCat, sanitizeSighting,
+  blurLocation, needBlur, sanitizeCat, sanitizeSighting, normalizeEnum,
   escapeReg, pageOf, dayKey, startOfDay, distanceM, cosine
 }

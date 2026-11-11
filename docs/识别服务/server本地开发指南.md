@@ -72,7 +72,7 @@ cd E:\Agent\project\stray-animals\server
 ```bat
 curl http://127.0.0.1:8090/health
 ```
-返回 JSON 含 `indexed`（特征库猫数量）、`provider`（应为 `onnx`）、`detector`（应为 `on`）。
+返回 JSON 按排查维度分组：`index.count`（特征库猫数量）、`model.backend`（应为 `onnx`）、`detect.enabled`（应为 `true`）。字段全表见 [接口文档 3.1](识别服务接口文档.md)。
 
 > 端口说明：本地用 **8090**；云托管注入 `PORT`（通常 80），`Dockerfile` 里已用 `uvicorn ... --port ${PORT:-8000}` 处理。
 

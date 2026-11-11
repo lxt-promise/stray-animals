@@ -479,6 +479,9 @@ async function history(openid, event) {
 /** 新手礼包：一次性，登录时若未领过则补发 */
 async function claimGift(user) {
   if (!user || !user._id) return { gained: 0, food: 0, claimed: false }
+  // 快路径：登录链路刚读出的档案里 giftAt 已在 → 已领过，省掉每次登录的一次 doc.get。
+  // 未领路径照旧 doc.get + 条件更新抢占（并发兜底仍在，不依赖这份内存快照）。
+  if (user.giftAt) return { gained: 0, food: Number(user.food) || 0, claimed: false }
   const doc = await db.collection(COL.user).doc(user._id).get()
   const cur = doc.data || {}
   if (cur.giftAt) return { gained: 0, food: Number(cur.food) || 0, claimed: false }
@@ -516,6 +519,16 @@ async function claimGift(user) {
 async function grantAdminPrivilege(user) {
   if (!user || !user._id || !isSuper(user)) return { applied: false }
   const top = level.LEVELS[level.LEVELS.length - 1]
+  // 快路径：内存快照里 adminGrantAt 已在 → 礼遇已发过，省掉每次登录的一次 doc.get。
+  // applied:false 时返回的 points/food 仅供调用方回声，登录快照的鲜度足够。
+  if (user.adminGrantAt) {
+    return {
+      applied: false,
+      points: Number(user.points) || 0,
+      food: Number(user.food) || 0,
+      level: Number(user.level) || top.lv
+    }
+  }
   try {
     const doc = await db.collection(COL.user).doc(user._id).get()
     const cur = doc.data || {}

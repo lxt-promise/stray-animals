@@ -236,14 +236,23 @@ function hydrateCats(list, opts, apply) {
   const pending = []
   const mapped = (list || []).map(c => {
     const out = Object.assign({}, c)
-    if (c.avatar !== undefined || (c.photos && c.photos.length)) {
-      // 头像口径与云端 attachCatMediaUrls 保持一致：没设 avatar 就用 photos[0] 顶，
-      // 否则「档案有照片、列表却是占位图」（小灰灰那类）
-      const src = c.avatar || (Array.isArray(c.photos) && c.photos[0]) || ''
+    const firstPhoto = (Array.isArray(c.photos) && c.photos[0]) || ''
+    // 头像口径与云端 attachCatMediaUrls 保持一致：没设 avatar 就用 photos[0] 顶，
+    // 否则「档案有照片、列表却是占位图」（小灰灰那类）。
+    // 再退一层到 avatarId：历史识别记录的快照**只存 fileID**（avatar 被刻意清空，
+    // 因为临时链接 2h 后就 403），没有这层兜底就永远渲染 🐱。
+    const src = c.avatar || firstPhoto || (isFileId(c.avatarId) ? c.avatarId : '')
+    if (c.avatar !== undefined || firstPhoto || src) {
       // 记下**原始 fileID**：头像被换成临时链接后，src 已不含 cloud://，
       // binderror 兜底就没法重新换链了（临时链接过期时只能干等着失败）。
       // 渲染字段用 avatar，兜底字段用 avatarId —— 与云端 mapPoints 的 avatarId 同口径。
-      if (src) out.avatarId = src
+      //
+      // ⚠️ 只接受真的 fileID。旧写法 `out.avatarId = src` 会在二次 hydrate
+      // （历史记录回看）时被**已经过期的 https 临时链接**覆盖掉原始 fileID，
+      // 之后再想重新换链就没原料了，头像永久退化成 🐱 —— 那是 2026-11-10
+      // 「历史记录里猫都是空的」的根因之一。
+      if (isFileId(src)) out.avatarId = src
+      else if (!isFileId(out.avatarId)) out.avatarId = ''
       out.avatar = display(src, px, pending)
     }
     if (Array.isArray(c.photos)) {

@@ -2,6 +2,9 @@
 // 云开发环境 ID（微信开发者工具 → 云开发 → 环境 ID）
 const ENV_ID = 'cloud1-d5goanqd3a600dc8f'
 
+// 测试身份缓存键：{ id, nickName, realSuper }，只有超管能写入（服务端还会二次校验）
+const ACT_AS_KEY = 'testActAs'
+
 App({
   globalData: {
     envId: ENV_ID,
@@ -14,10 +17,19 @@ App({
      *  （catsTab = 猫谱切到哪个 tab；mineAction = 到「我的」后自动打开哪个设置） */
     catsTab: '',
     mineAction: '',
+    /** 测试身份（超管专用）：以哪个账号的身份浏览。
+     *  actAs 非空时每次云调用都会带上它，服务端把 me 解析成该账号 ——
+     *  权限、脱敏、记账全部按那个账号生效，等于「预览别人看到的界面」。 */
+    actAs: '',
+    actAsLabel: '',
+    actAsRealSuper: false,
     ready: false
   },
 
   onLaunch() {
+    // 先恢复测试身份，再初始化：否则第一轮 homeInit 会按真实超管身份跑，
+    // 页面先闪一下管理员界面再变成测试账号，看起来像「切换没生效」。
+    this._restoreActAs()
     if (!wx.cloud) {
       wx.showModal({ title: '环境不支持', content: '请将微信基础库升级到 2.2.3 以上', showCancel: false })
       return
@@ -49,6 +61,15 @@ App({
       this.globalData.school = pack.school
       this.globalData.homeOverview = pack.overview
     } catch (e) {
+      // 测试身份失效（超管解绑了 / 测试账号被删）：清掉本地缓存，按真实身份重跑一次。
+      // 不清的话会一直报错，而用户多半已经忘了自己还挂在测试身份上。
+      // 403 = 不在测试账号列表 / 不是超管；404 = 测试账号已被删除。
+      if (this.globalData.actAs && e && (e.code === 403 || e.code === 404)) {
+        console.warn('[boot] 测试身份已失效，自动退出切换', e.message)
+        this._clearActAs()
+        await this._boot()
+        return
+      }
       // 回落：老链路逐项拉。homeInit 是新接口，线上云函数还没部署时走这里，
       // 不至于因为「后端没更新」就登录不上。
       console.warn('[boot] homeInit 失败，回落逐项登录', e && e.message)
@@ -75,21 +96,31 @@ App({
 
   // 登录：拿 openid + upsert 用户档案
   async login() {
-    const res = await wx.cloud.callFunction({ name: 'catcampus', data: { action: 'login' } })
+    const data = { action: 'login' }
+    // 测试身份由服务端解析：这里只是把「以谁的身份」带上，真实身份仍是本机 openid
+    if (this.globalData.actAs) data.actAs = this.globalData.actAs
+    const res = await wx.cloud.callFunction({ name: 'catcampus', data })
     if (res && res.errMsg && res.errMsg.indexOf('fail') >= 0) {
       throw new Error('云函数调用失败：' + res.errMsg)
     }
     const r = res.result
     if (!r) throw new Error('云函数无返回（很可能 catcampus 还没部署到当前环境）')
-    if (!r.ok) throw new Error((r && r.msg) || '登录失败')
+    if (!r.ok) {
+      const err = new Error((r && r.msg) || '登录失败')
+      err.code = r && r.code
+      throw err
+    }
     return r.data
   },
 
   // 统一云函数调用
   async callApi(action, payload = {}) {
+    const data = Object.assign({ action }, payload)
+    // 测试身份开关只有超管能打开；服务端仍会用 openid 白名单再校验一次
+    if (this.globalData.actAs) data.actAs = this.globalData.actAs
     const res = await wx.cloud.callFunction({
       name: 'catcampus',
-      data: Object.assign({ action }, payload)
+      data
     })
     const r = res.result
     if (!r || !r.ok) {
@@ -130,8 +161,73 @@ App({
   },
 
   isSuper() {
+    // 测试身份下一律按被切换账号的权限走（服务端也是这么判的）——
+    // 否则超管会看到「明明以普通用户身份浏览，却还能点进后台」的假象。
+    if (this.globalData.actAs) return false
     const u = this.globalData.user
     return !!(u && u.isSuper)
+  },
+
+  /** 真实身份是不是超管：测试身份下也要能显示「退出切换」入口 */
+  isRealSuper() {
+    if (this.globalData.actAs) return !!this.globalData.actAsRealSuper
+    return this.isSuper()
+  },
+
+  _restoreActAs() {
+    let info = null
+    try { info = wx.getStorageSync(ACT_AS_KEY) || null } catch (e) { info = null }
+    if (!info || !info.id) return
+    this.globalData.actAs = info.id
+    this.globalData.actAsLabel = info.nickName || ''
+    this.globalData.actAsRealSuper = !!info.realSuper
+  },
+
+  _clearActAs() {
+    try { wx.removeStorageSync(ACT_AS_KEY) } catch (e) { /* 忽略：缓存坏了不影响身份 */ }
+    this.globalData.actAs = ''
+    this.globalData.actAsLabel = ''
+    // actAsRealSuper 只是「切换前是否超管」的快照：active 时用它显示退出入口，
+    // 退出后清掉，isRealSuper() 重新按真实档案判断。
+    this.globalData.actAsRealSuper = false
+  },
+
+  /**
+   * 切换到测试账号：清空当前用户/学校/概览缓存，再以目标身份重新 homeInit。
+   * 必须清缓存 —— 否则首页还顶着超管的统计数据，看起来像「切换没成功」。
+   */
+  async switchTestAccount(info) {
+    if (!info || !info.id) throw new Error('缺少测试账号')
+    const realSuper = this.isRealSuper()
+    try {
+      wx.setStorageSync(ACT_AS_KEY, {
+        id: info.id,
+        nickName: info.nickName || '',
+        realSuper: realSuper
+      })
+    } catch (e) { /* 缓存写不进去也能切换，只是重启后回到真实身份 */ }
+    this.globalData.actAs = info.id
+    this.globalData.actAsLabel = info.nickName || ''
+    this.globalData.actAsRealSuper = realSuper
+    this.globalData.user = null
+    this.globalData.school = null
+    this.globalData.homeOverview = null
+    // 置回未就绪：页面里的 ensureReady() 会等这一轮身份解析完，
+    // 不会拿着上一份（超管的）user 先渲染一屏。
+    this.globalData.ready = false
+    await this._boot()
+    return this.globalData.user
+  },
+
+  /** 退出测试身份，回到真实的超管账号 */
+  async exitTestAccount() {
+    this._clearActAs()
+    this.globalData.user = null
+    this.globalData.school = null
+    this.globalData.homeOverview = null
+    this.globalData.ready = false
+    await this._boot()
+    return this.globalData.user
   },
 
   /**
@@ -158,6 +254,24 @@ App({
       const prevId = (this.globalData.school && this.globalData.school._id) || ''
       if (prevId !== (u.schoolId || '')) this.setSchool(null)
       return u
+    })
+  },
+
+  // 软引导补全手机号（非拦截）：识别/打卡/绑校前调用，不 await、不阻断主流程。
+  // 仅当 user 未填手机号、且本次会话尚未提示过时弹一次。个人主体下替代官方 getPhoneNumber。
+  maybeGuidePhone() {
+    const u = this.globalData && this.globalData.user
+    if (u && u.phone) return
+    if (this._phoneGuided) return
+    this._phoneGuided = true
+    wx.showModal({
+      title: '补全手机号',
+      content: '建议补全手机号，让识别、打卡、绑定学校等体验更完整（也可在「我的」稍后设置）。',
+      confirmText: '去设置',
+      cancelText: '继续',
+      success: (r) => {
+        if (r && r.confirm) wx.switchTab({ url: '/pages/mine/mine' })
+      }
     })
   }
 })

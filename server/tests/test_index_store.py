@@ -547,13 +547,16 @@ class TestDegradation(unittest.TestCase):
 
 
 class TestHealthScope(unittest.TestCase):
-    """`/health` 的双口径：`indexed` 按校、`indexedTotal` 恒为全库。
+    """`/health` 的双口径：`index.count` 按校、`index.total` 恒为全库。
 
     守的是 2026-10-25 那个现场：管理后台「识别引擎」卡显示**特征库 11 只**、
     下方「花色比对」卡却是**本校 7 条**（档案 6）—— 管理员以为出了灵异事件。
     实际是两个数字各说各话：`/health` 原来不带 schoolId，返回的是**全库**
     （含其它学校 + 已删档案的残留向量），而花色比对卡按校查。
     两边统一到「本校优先 + 全库注明」的口径，差值才能一眼解释。
+
+    2026-10-31 起响应按排查维度分组（model/detect/attr/match/media/cache/index），
+    这里同时守住分组结构 —— 字段平铺回去又会变成「一堆数字里找对应项」。
     """
 
     def setUp(self):
@@ -562,30 +565,41 @@ class TestHealthScope(unittest.TestCase):
     def tearDown(self):
         reset_cos()
 
+    def test_response_is_grouped(self):
+        h = main.health(schoolId="s1")
+        self.assertIs(h["ok"], True)
+        for group in ("model", "detect", "attr", "match", "media", "cache", "index"):
+            self.assertIn(group, h, f"缺少分组 {group}")
+            self.assertIsInstance(h[group], dict)
+        # 旧的平铺字段必须消失，否则「字段太多」的原始问题没解决
+        for legacy in ("indexed", "indexedTotal", "attrSource", "detectModel",
+                       "simMid", "ffmpeg", "cached"):
+            self.assertNotIn(legacy, h, f"平铺字段 {legacy} 未清理")
+
     def test_scoped_indexed_and_total(self):
         cos_store.put("a1", "s1", V_A)
         cos_store.put("a2", "s1", V_B)
         cos_store.put("b1", "s2", V_C)
         h = main.health(schoolId="s1")
-        self.assertEqual(h["indexed"], 2, "按校：只统计 s1")
-        self.assertEqual(h["indexedTotal"], 3, "全库：三个都在")
-        self.assertTrue(h["indexedScoped"])
+        self.assertEqual(h["index"]["count"], 2, "按校：只统计 s1")
+        self.assertEqual(h["index"]["total"], 3, "全库：三个都在")
+        self.assertTrue(h["index"]["scoped"])
 
     def test_unscoped_is_full_bank(self):
         cos_store.put("a1", "s1", V_A)
         cos_store.put("b1", "s2", V_B)
         h = main.health()
-        self.assertEqual(h["indexed"], 2, "不传 schoolId 时 indexed 就是全库（兼容旧语义）")
-        self.assertEqual(h["indexedTotal"], 2)
-        self.assertFalse(h["indexedScoped"])
+        self.assertEqual(h["index"]["count"], 2, "不传 schoolId 时 count 就是全库（兼容旧语义）")
+        self.assertEqual(h["index"]["total"], 2)
+        self.assertFalse(h["index"]["scoped"])
 
     def test_backend_error_keeps_degradation(self):
         """双口径下后端挂了照样降级，不能因为多查一次全库就把 /health 打成 500。"""
         with mock.patch.object(index_store, "count", side_effect=RuntimeError("cos is down")):
             h = main.health(schoolId="s1")
-        self.assertEqual(h["indexed"], -1)
-        self.assertEqual(h["indexedTotal"], -1)
-        self.assertIn("cos is down", h["indexError"])
+        self.assertEqual(h["index"]["count"], -1)
+        self.assertEqual(h["index"]["total"], -1)
+        self.assertIn("cos is down", h["index"]["error"])
 
     def test_ensure_index_never_raises(self):
         cats = [main.CatRef(id="c1", name="小花", photos=["https://example.com/a.jpg"])]

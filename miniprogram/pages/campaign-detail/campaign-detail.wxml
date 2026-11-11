@@ -1,0 +1,251 @@
+<view class="page cd-page" wx:if="{{campaign}}">
+
+  <!-- ==================== 头部：进度 ==================== -->
+  <view class="cd-hero">
+    <view class="cd-head">
+      <image class="cd-ava" src="{{campaign.avatar}}" mode="aspectFill" wx:if="{{campaign.avatar}}"></image>
+      <view class="cd-ava ph" wx:else>{{campaign.kindIco}}</view>
+      <view class="cd-head-main">
+        <view class="cd-title">{{campaign.title}}</view>
+        <view class="cd-tags">
+          <text class="cd-tag kind">{{campaign.kindIco}} {{campaign.kindLabel}}</text>
+          <text class="cd-tag ghost" wx:if="{{campaign.catName}}" bindtap="goCat">{{campaign.catName}} ›</text>
+          <text class="cd-tag days" wx:if="{{campaign.daysText}}">{{campaign.daysText}}</text>
+          <text class="cd-tag warn" wx:if="{{campaign.reviewStatus === 'pending'}}">审核中</text>
+          <text class="cd-tag warn" wx:if="{{campaign.reviewStatus === 'rejected'}}">审核未通过</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="cd-progress">
+      <view class="cd-bar" style="width:{{campaign.percent}}%"></view>
+    </view>
+
+    <view class="cd-nums">
+      <view class="cd-num-main">
+        <text class="cd-raised">¥{{campaign.raisedText}}</text>
+        <text class="cd-goal">目标 ¥{{campaign.goalText}}</text>
+      </view>
+      <text class="cd-pct">{{campaign.percent}}%</text>
+    </view>
+
+    <view class="cd-stats">
+      <view class="cd-stat">
+        <view class="cs-num">{{donationCount}}</view>
+        <view class="cs-label">人次帮助</view>
+      </view>
+      <view class="cd-stat">
+        <view class="cs-num">¥{{campaign.expenseText}}</view>
+        <view class="cs-label">已支出</view>
+      </view>
+      <view class="cd-stat">
+        <view class="cs-num">{{campaign.materialCount}}</view>
+        <view class="cs-label">份材料</view>
+      </view>
+    </view>
+
+    <view class="cd-closed" wx:if="{{campaign.status !== 'active'}}">
+      {{campaign.status === 'fulfilled' ? '已完成 · ' : '已结束 · '}}{{campaign.closedReason || '不再接受捐助'}}
+    </view>
+    <view class="cd-closed" wx:if="{{campaign.reviewStatus === 'rejected'}}">
+      审核未通过：{{campaign.reviewNote}}
+    </view>
+  </view>
+
+  <!-- ==================== 求助故事 ==================== -->
+  <view class="card">
+    <view class="card-title">求助故事</view>
+    <view class="cd-story">{{campaign.reason}}</view>
+    <view class="cd-meta-row" wx:if="{{campaign.hospital}}">
+      <text class="cmr-label">就诊医院</text>
+      <text class="cmr-value">{{campaign.hospital}}</text>
+    </view>
+    <view class="cd-meta-row" wx:if="{{campaign.catName}}">
+      <text class="cmr-label">筹款猫咪</text>
+      <text class="cmr-value link" bindtap="goCat">{{campaign.catName}} 的档案 ›</text>
+    </view>
+  </view>
+
+  <!-- ==================== 材料公示 ==================== -->
+  <view class="card" wx:if="{{materials.length || campaign.hiddenMaterialCount}}">
+    <view class="card-title">
+      证明材料
+      <text class="cd-verified" wx:if="{{campaign.reviewStatus === 'approved'}}">已核验</text>
+    </view>
+
+    <view class="cd-mats">
+      <view class="cd-mat" wx:for="{{materials}}" wx:key="fileID">
+        <image class="cd-mat-img" src="{{item.src || item.fileID}}" mode="aspectFill"
+               data-url="{{item.src || item.fileID}}" bindtap="previewMaterial"></image>
+        <view class="cd-mat-label">{{item.typeLabel}}</view>
+      </view>
+    </view>
+
+    <view class="cd-hidden small muted" wx:if="{{campaign.hiddenMaterialCount}}">
+      另有 {{campaign.hiddenMaterialCount}} 份材料仅管理员可见（含个人信息）
+    </view>
+    <view class="cd-hidden small muted" wx:if="{{!campaign.hiddenMaterialCount}}">
+      材料已由社团管理员核对，涉及个人信息的原件不公开展示。
+    </view>
+  </view>
+
+  <!-- ==================== 进展 ==================== -->
+  <view class="card" wx:if="{{updates.length}}">
+    <view class="card-title">最新进展</view>
+    <view class="cd-tl" wx:for="{{updates}}" wx:key="createdAt" wx:for-item="u">
+      <view class="tl-dot"></view>
+      <view class="tl-body">
+        <view class="tl-text">{{u.text}}</view>
+        <view class="tl-imgs" wx:if="{{u.imageSrc.length}}">
+          <image class="tl-img" wx:for="{{u.imageSrc}}" wx:for-item="img" wx:key="*this"
+                 src="{{img}}" mode="aspectFill" data-url="{{img}}" bindtap="previewUpdate"></image>
+        </view>
+        <view class="tl-time small muted">{{u.createdAtText}}</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- ==================== 支出公示 ==================== -->
+  <view class="card" wx:if="{{expenses.length}}">
+    <view class="card-title">支出公示</view>
+    <view class="cd-exp" wx:for="{{expenses}}" wx:key="_id">
+      <view class="flex-between">
+        <view class="bold">{{item.title}}</view>
+        <view class="cd-exp-amt">-¥{{item.amountText}}</view>
+      </view>
+      <view class="small muted">{{item.dateText}} <text wx:if="{{item.operator}}">· {{item.operator}}</text></view>
+      <view class="cd-proofs" wx:if="{{item.proofSrc.length}}">
+        <image class="cd-proof" wx:for="{{item.proofSrc}}" wx:for-item="p" wx:key="*this"
+               src="{{p}}" mode="aspectFill" data-url="{{p}}" bindtap="previewProof"></image>
+      </view>
+    </view>
+  </view>
+
+  <!-- ==================== 捐助记录 ==================== -->
+  <view class="card" wx:if="{{recentDonors.length}}">
+    <view class="card-title">
+      爱心记录
+      <text class="more" bindtap="loadDonors" wx:if="{{isAdmin || isMine}}">完整名单 ›</text>
+    </view>
+    <view class="cd-donor" wx:for="{{recentDonors}}" wx:key="index">
+      <view class="cd-donor-ava">{{item.donorName[0]}}</view>
+      <view class="cd-donor-name">{{item.donorName}}</view>
+      <view class="cd-donor-amt">¥{{item.amountText}}</view>
+    </view>
+  </view>
+
+  <!-- ==================== 发起人 ==================== -->
+  <view class="card">
+    <view class="cd-owner">
+      <view class="cd-owner-ava">{{campaign.applicantName[0]}}</view>
+      <view class="cd-owner-main">
+        <view class="bold">{{campaign.applicantName}}</view>
+        <view class="small muted">
+          {{campaign.applicantIsAdmin ? '社团管理员 · ' : ''}}发起于 {{campaign.createdText}}
+        </view>
+      </view>
+      <view class="cd-report" bindtap="openReport">举报</view>
+    </view>
+    <view class="cd-owner-tip small muted">
+      筹款需审核通过后展示。所有款项按笔记入「资金公示」，治疗票据由管理员核销，任何人可查。
+    </view>
+  </view>
+
+  <!-- ==================== 管理操作 ==================== -->
+  <view class="cd-admin" wx:if="{{isAdmin || isMine}}">
+    <view class="cda-btn" wx:if="{{isAdmin && campaign.reviewStatus === 'pending'}}" bindtap="openReview">审核</view>
+    <view class="cda-btn" bindtap="goUpdate">记进展</view>
+    <view class="cda-btn" wx:if="{{isAdmin}}" bindtap="goExpense">记支出</view>
+    <view class="cda-btn" bindtap="loadDonors">捐助名单</view>
+    <view class="cda-btn danger" wx:if="{{campaign.status === 'active'}}" bindtap="closeCampaign">结束筹款</view>
+  </view>
+
+  <!-- 底部占位，避免内容被固定操作条盖住 -->
+  <view class="cd-bottom-space"></view>
+</view>
+
+<!-- 空态：id 非法或已被删除 -->
+<view class="page" wx:if="{{!campaign && notFound}}">
+  <view class="empty">
+    <text class="emoji">🐈</text>
+    这条筹款不存在或已被删除
+    <view class="cd-back" bindtap="goBack">返回</view>
+  </view>
+</view>
+
+<!-- ==================== 底部固定操作条 ==================== -->
+<view class="cd-bar-fixed" wx:if="{{campaign}}">
+  <view class="cbf-btn ghost" bindtap="onShareTap">分享</view>
+  <view class="cbf-btn main"
+        wx:if="{{campaign.status === 'active' && campaign.reviewStatus === 'approved' && !isMine}}"
+        bindtap="openDonate">我要帮一把</view>
+  <view class="cbf-btn main" wx:elif="{{isMine && campaign.status === 'active'}}" bindtap="goUpdate">更新进展</view>
+  <view class="cbf-btn disabled" wx:else>
+    {{campaign.reviewStatus === 'pending' ? '等待审核' : '暂不可捐助'}}
+  </view>
+</view>
+
+<!-- ==================== 捐助弹层 ==================== -->
+<view class="mask" wx:if="{{showDonate}}" bindtap="closeDonate">
+  <view class="sheet" catchtap="noop">
+    <view class="sheet-title">帮 {{campaign.catName || '这只猫'}} 一把</view>
+    <input class="amt-input" type="digit" placeholder="0.00" value="{{amount}}"
+           bindinput="onAmount" focus="{{showDonate}}" />
+    <view class="quick">
+      <view class="quick-item" data-v="10" bindtap="onQuick">¥10</view>
+      <view class="quick-item" data-v="30" bindtap="onQuick">¥30</view>
+      <view class="quick-item" data-v="50" bindtap="onQuick">¥50</view>
+      <view class="quick-item" data-v="100" bindtap="onQuick">¥100</view>
+    </view>
+    <view class="pay-note small muted">
+      通过微信支付完成，款项计入本筹款并同步「资金公示」，不收取手续费。
+    </view>
+    <button class="btn-donate" loading="{{donating}}" bindtap="doDonate">确认捐助</button>
+    <view class="sheet-tip small muted">捐助前请确认信息真实；发现异常可点详情页「举报」。</view>
+  </view>
+</view>
+
+<!-- ==================== 捐助名单 ==================== -->
+<view class="mask" wx:if="{{showDonors}}" bindtap="closeDonors">
+  <view class="sheet" catchtap="noop">
+    <view class="sheet-title">捐助名单（{{donors.length}}）</view>
+    <scroll-view scroll-y class="donor-list">
+      <view class="donor" wx:for="{{donors}}" wx:key="_id">
+        <view class="donor-name">{{item.donorName}}</view>
+        <view class="donor-amt">¥{{item.amountText}}</view>
+        <view class="donor-date small muted">{{item.dateText}}</view>
+      </view>
+      <view class="empty" wx:if="{{!donors.length}}">暂无捐助记录</view>
+    </scroll-view>
+    <button class="btn-ghost" bindtap="closeDonors">关闭</button>
+  </view>
+</view>
+
+<!-- ==================== 审核弹层 ==================== -->
+<view class="mask" wx:if="{{showReview}}" bindtap="closeReview">
+  <view class="sheet" catchtap="noop">
+    <view class="sheet-title">审核筹款</view>
+    <view class="rv-info small muted">
+      {{campaign.catName}} · {{campaign.kindLabel}} · 目标 ¥{{campaign.goalText}} · {{campaign.materialCount}} 份材料
+    </view>
+    <view class="rv-contact small" wx:if="{{campaign.contact}}">联系方式：{{campaign.contact}}</view>
+    <textarea class="rv-note" placeholder="驳回时必填：说明缺什么材料（会原样发给发起人）"
+              maxlength="100" value="{{reviewNote}}" bindinput="onReviewNote" />
+    <view class="rv-actions">
+      <button class="rv-btn reject" data-pass="0" bindtap="doReview" loading="{{reviewing}}">驳回</button>
+      <button class="rv-btn pass" data-pass="1" bindtap="doReview" loading="{{reviewing}}">通过</button>
+    </view>
+    <button class="btn-ghost" bindtap="closeReview">取消</button>
+  </view>
+</view>
+
+<!-- ==================== 举报弹层 ==================== -->
+<view class="mask" wx:if="{{showReport}}" bindtap="closeReport">
+  <view class="sheet" catchtap="noop">
+    <view class="sheet-title">举报这条筹款</view>
+    <textarea class="rv-note" placeholder="如：信息不实、重复筹款、钱没用在这只猫身上"
+              maxlength="80" value="{{reportReason}}" bindinput="onReportReason" />
+    <button class="btn-donate" bindtap="doReport">提交举报</button>
+    <view class="sheet-tip small muted">举报只发给社团管理员，不会公开你的身份。</view>
+  </view>
+</view>

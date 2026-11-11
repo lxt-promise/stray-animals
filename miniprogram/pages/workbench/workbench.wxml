@@ -1,0 +1,76 @@
+<view class="wb-page">
+
+  <view class="wb-header">
+    <view class="wb-h-left">
+      <view class="wb-h-title">工作台</view>
+      <view class="wb-h-sub">校园猫咪运营管理</view>
+    </view>
+    <view class="wb-h-role {{isSuper ? 'super' : ''}}">{{isSuper ? '超级管理员' : '管理员'}}</view>
+  </view>
+
+  <!-- 数据概览 -->
+  <view class="sec">
+    <view class="sec-head">
+      <text class="sec-title">数据概览</text>
+    </view>
+    <view class="sec-body">
+      <view class="stat-row">
+        <view class="stat">
+          <view class="num">{{wb.pendingSighting}}</view>
+          <view class="lbl">待建档目击</view>
+        </view>
+        <view class="stat">
+          <view class="num">{{wb.todoTnr}}</view>
+          <view class="lbl">待抓捕 TNR</view>
+        </view>
+        <view class="stat">
+          <view class="num">{{wb.openTask}}</view>
+          <view class="lbl">待认领任务</view>
+        </view>
+      </view>
+
+      <view class="flex-between" style="margin-top:20rpx">
+        <view>
+          <view class="small muted">资金结余</view>
+          <view class="balance">¥ {{wb.balance}}</view>
+        </view>
+        <view class="btn btn-ghost btn-sm" data-url="/pages/fund/fund" bindtap="go">收支明细</view>
+      </view>
+
+      <!-- 待审申请只给超管看：审核权限就是超管，给普通管理员摆一个他点不动的数字只会造成困惑 -->
+      <view class="apply-row" wx:if="{{isSuper}}" data-url="/pages/admin/admin" bindtap="go" hover-class="pressed">
+        <view>
+          <view class="small">待审入校 / 建校申请</view>
+          <view class="small muted">有人申请时会推送通知给你</view>
+        </view>
+        <view class="apply-num {{wb.pendingApply ? 'hl' : ''}}">{{wb.pendingApply}}</view>
+      </view>
+
+      <view class="notify-link small muted" wx:if="{{isSuper}}" bindtap="enableApplyNotify" hover-class="pressed">
+        开启申请通知（有人申请时微信提醒我）›
+      </view>
+    </view>
+  </view>
+
+  <!-- 快捷入口 -->
+  <view class="sec">
+    <view class="sec-head"><text class="sec-title">快捷入口</text></view>
+    <view class="sec-body">
+      <view class="entry-grid">
+        <view class="entry" wx:for="{{entries}}" wx:key="txt"
+              data-url="{{item.url}}" data-tab="{{item.tab}}" bindtap="goEntry" hover-class="pressed">
+          <view class="entry-inner">
+            <view class="ico">{{item.ico}}</view>
+            <view class="txt">{{item.txt}}</view>
+            <view class="desc">{{item.desc}}</view>
+          </view>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <view class="tip small muted">
+    校园创建、成员身份、上传记录均由管理员在云端二次校验，普通账号无法越权。
+  </view>
+
+</view>

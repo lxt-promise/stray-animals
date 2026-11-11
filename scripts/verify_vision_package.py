@@ -135,8 +135,9 @@ def main():
         # 于是「包里的 reid.onnx 损坏 / 没打进去」这种致命问题被验证过程掩盖。
         os.makedirs(os.path.join(stage, 'data'), exist_ok=True)
         env.update({
-            'REID_ONNX': os.path.join(stage, 'models', 'reid.onnx'),
+            'REID_ONNX': os.path.join(stage, 'models', 'mega_descriptor_t.onnx'),
             'REID_SIZE': '224',
+            'FEATURE_POOL_VERSION': '4',
             'INDEX_DB': os.path.join(stage, 'data', 'index.sqlite3'),
             'FETCH_TIMEOUT': '20',
             'MAX_FRAMES': '8',
@@ -159,11 +160,12 @@ def main():
             return 1
 
         # 两条硬门槛，对应两类「不报错但线上废掉」的事故：
-        #   ① provider=hash → 包里 reid.onnx 没用上，特征全随机，建库照跑、识别全错；
+        #   ① provider=hash → 包里生效的 reid 模型(mega_descriptor_t.onnx)没用上，
+        #     特征全随机，建库照跑、识别全错；
         #   ② detector OFF  → 检测没生效，退化成整图提特征，表现就是「识别不准」。
         problems = []
         if 'provider=hash' in out:
-            problems.append('特征引擎退化成了 hash 占位（reid.onnx 没加载上）')
+            problems.append('特征引擎退化成了 hash 占位（生效的 reid 模型没加载上）')
         if 'detector ON' not in out:
             problems.append('检测模型没加载（models/yolov8n.onnx 在包里但引擎没用上）')
         if problems:

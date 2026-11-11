@@ -97,14 +97,14 @@ Page(Object.assign({
     this.setData({ loading: true })
     try {
       await app.ensureReady()
-      const summary = (await app.callApi('pointsSummary', {})) || {}
-      // 判级依据是历史最高积分（积分只增不减，但异常调账/合并仍可能让它下降，
-      // 用当前值判会出现「掉级」，与规则冲突）。展示也用同一个数，
-      // 否则会出现「进度条差 50 分却已经升级」这种自相矛盾。
-      const peak = Math.max(Number(summary.peakPoints) || 0, Number(summary.points) || 0)
 
       if (type === 'point') {
-        // 积分侧到此为止：不查流水，一次请求即可渲染完整页面
+        // 积分侧到此为止：只发一个请求（不查流水），一次渲染完整页面
+        const summary = (await app.callApi('pointsSummary', {})) || {}
+        // 判级依据是历史最高积分（积分只增不减，但异常调账/合并仍可能让它下降，
+        // 用当前值判会出现「掉级」，与规则冲突）。展示也用同一个数，
+        // 否则会出现「进度条差 50 分却已经升级」这种自相矛盾。
+        const peak = Math.max(Number(summary.peakPoints) || 0, Number(summary.points) || 0)
         const u = (app.globalData && app.globalData.user) || {}
         this.setData({
           view: Object.assign(level.levelOf(peak), { peak, steps: level.ladder(peak) }),
@@ -117,11 +117,17 @@ Page(Object.assign({
         return
       }
 
+      // 猫粮模式：余额(summary) 与流水(listPoints) 互不依赖，并行拉取提速，
+      // 同时避免「一进页面先显示 0、拉完才跳 30」的闪动 —— 加载期间由 WXML 骨架屏占位。
+      const [summary, rows] = await Promise.all([
+        app.callApi('pointsSummary', {}),
+        app.callApi('listPoints', { size: 50, currency: 'food' })
+      ])
       // currency 交给后端过滤：前端过滤只能筛「已拉到的 50 条」，
       // 遇到「今天全是积分、翻不到猫粮记录」时会误导成「没有记录」
-      const rows = await app.callApi('listPoints', { size: 50, currency: 'food' })
-      const today = summary.today || {}
-      const food = Number(summary.food) || 0
+      const sum = summary || {}
+      const today = sum.today || {}
+      const food = Number(sum.food) || 0
       this.setData({
         head: { num: food, label: MODES.food.label, sub: MODES.food.sub },
         wallet: {

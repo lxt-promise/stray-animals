@@ -224,7 +224,10 @@ Page(Object.assign({
   },
 
   goDetail(e) {
+    // 只认自定义事件（cat-card 的 'open'）或显式的 data-id；
+    // 拿不到合法 id 就什么都不做 —— 拼出 `?id=undefined` 会让详情页白屏 + 弹报错。
     const id = e.detail.id || e.currentTarget.dataset.id
+    if (!id || id === 'undefined' || id === 'null') return
     wx.navigateTo({ url: '/pages/cat-detail/cat-detail?id=' + id })
   },
 

@@ -1,0 +1,49 @@
+<view class="page">
+  <!-- 打卡次数总览（与「我的」页三格统计同源：user.sightingCount） -->
+  <view class="head">
+    <view class="h-num">{{count}}</view>
+    <view class="h-lbl">打卡次数</view>
+  </view>
+
+  <view class="card mt">
+    <view class="card-title">我的打卡记录</view>
+
+    <!-- 加载骨架：进入即占位，不再闪空 -->
+    <block wx:if="{{loading && !list.length}}">
+      <view class="sk-item" wx:for="{{[0,1,2]}}" wx:key="*this">
+        <view class="sk-line skeleton" style="width:40%"></view>
+        <view class="sk-line skeleton" style="width:80%"></view>
+        <view class="sk-thumbs">
+          <view class="sk-thumb skeleton" wx:for="{{[0,1,2]}}" wx:key="*this"></view>
+        </view>
+      </view>
+    </block>
+
+    <block wx:if="{{list.length}}" wx:for="{{list}}" wx:key="_id">
+      <view class="my-item">
+        <view class="flex-between">
+          <view class="flex" style="align-items:center;gap:12rpx">
+            <view class="bold" wx:if="{{item.catId}}" data-id="{{item.catId}}" bindtap="goCat" hover-class="pressed">{{item.cat.name || '未知'}}</view>
+            <text class="bold muted" wx:elif="{{!item.catId}}">{{item.catName}}</text>
+            <view class="tag ok small" wx:if="{{item.feedStatus === 'fed'}}">本人投喂</view>
+            <view class="tag info small" wx:if="{{item.feedStatus === 'fedByOther'}}">他人已喂</view>
+          </view>
+          <text class="small muted">{{item.timeText}}</text>
+        </view>
+        <!-- 结构化标签（合规改造：替代原自由文本 note） -->
+        <view class="small muted ellipsis" wx:if="{{item.tagText}}">{{item.tagText}}</view>
+        <view class="photo-row" wx:if="{{item.photosSmall.length}}">
+          <image wx:for="{{item.photosSmall}}" wx:for-item="p" wx:for-index="pi" wx:key="*this"
+            src="{{p}}" mode="aspectFill" lazy-load="{{true}}"
+            binderror="onPhotoErr" data-i="{{index}}" data-j="{{pi}}"
+            data-url="{{item.photosFull[pi]}}" data-urls="{{item.photosFull}}" bindtap="previewPhoto" />
+        </view>
+      </view>
+    </block>
+
+    <view class="empty" wx:if="{{!loading && !list.length}}">
+      <text class="emoji">🐾</text>
+      还没有打卡记录
+    </view>
+  </view>
+</view>

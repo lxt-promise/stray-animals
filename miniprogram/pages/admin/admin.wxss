@@ -4,6 +4,58 @@
   line-height: 1.7;
 }
 
+/* 首页九宫格入口：样式对齐「工作台 · 快捷入口」，一眼看出是同一套后台 */
+.adm-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+}
+.adm-entry {
+  width: calc((100% - 32rpx) / 3);
+  box-sizing: border-box;
+}
+.adm-entry-inner {
+  position: relative;
+  background: #FFF7ED;
+  border-radius: 18rpx;
+  padding: 28rpx 12rpx 24rpx;
+  text-align: center;
+  height: 100%;
+  box-sizing: border-box;
+}
+.adm-ico {
+  font-size: 44rpx;
+  line-height: 1.2;
+}
+.adm-txt {
+  font-size: 26rpx;
+  color: #7C2D12;
+  font-weight: 600;
+  margin-top: 10rpx;
+}
+.adm-desc {
+  font-size: 20rpx;
+  color: #9A8478;
+  margin-top: 4rpx;
+}
+/* 角标：只显示 >0 的数量，为 0 不显示 —— 满屏「0」会把真正要处理的数淹没 */
+.adm-badge {
+  position: absolute;
+  top: 12rpx;
+  right: 12rpx;
+  min-width: 32rpx;
+  height: 32rpx;
+  padding: 0 8rpx;
+  box-sizing: border-box;
+  border-radius: 16rpx;
+  background: #EA580C;
+  color: #FFFFFF;
+  font-size: 20rpx;
+  font-weight: 600;
+  line-height: 32rpx;
+  text-align: center;
+}
+
 /* 成员管理 */
 .member { align-items: center; justify-content: space-between; }
 .m-info { display: flex; align-items: center; }
@@ -163,6 +215,14 @@
   gap: 20rpx;
 }
 .school-main { flex: 1; min-width: 0; }
+/* 校区行右侧两枚按钮竖排（编辑 / 重建特征库），避免挤在一行被截断 */
+.school-actions-col {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14rpx;
+  align-items: stretch;
+}
 .school-main .small { line-height: 1.6; }
 /* 隐藏态文案：普通「未开放」和「对用户可见」都是灰的，得让它跳出来 */
 .school-main .small.warn { color: var(--warn); }
@@ -361,3 +421,113 @@
 .sm-bad { color: var(--warn); }
 .sm-ops { flex-shrink: 0; display: flex; align-items: center; gap: 10rpx; }
 .op.del { color: var(--warn); }
+
+/* 校区查重：两个操作并排（复用 .build-btn）+ 重复组列表 */
+.dup-row {
+  display: flex;
+  gap: 16rpx;
+  margin-bottom: 16rpx;
+}
+.dup-item {
+  margin-top: 12rpx;
+  padding: 14rpx 18rpx;
+  border-radius: var(--radius-sm);
+  background: rgba(180, 35, 24, .05);
+  line-height: 1.6;
+}
+
+/* 用户管理（全站）：搜索行 + 用户条目 + 角色筛选 tab */
+.ua-filter { display: flex; gap: 12rpx; margin-bottom: 4rpx; }
+.ua-input {
+  flex: 1;
+  height: 72rpx;
+  padding: 0 20rpx;
+  font-size: 26rpx;
+  background: rgba(255, 255, 255, .7);
+  border: 2rpx solid var(--card-line);
+  border-radius: 16rpx;
+}
+.ua-search {
+  flex-shrink: 0;
+  height: 72rpx;
+  line-height: 72rpx;
+  padding: 0 28rpx;
+  font-size: 26rpx;
+  color: var(--brand-dark);
+  background: var(--brand-light);
+  border: 2rpx solid rgba(249, 115, 22, .4);
+  border-radius: 16rpx;
+}
+.ua-item { padding: 18rpx 0; border-bottom: 2rpx solid var(--line); }
+.ua-item:last-child { border-bottom: none; }
+.ua-head { display: flex; align-items: center; }
+.ua-sub { margin: 8rpx 0 12rpx; }
+.ua-item .m-actions { justify-content: flex-end; }
+.op.busy { opacity: .5; }
+
+/* 角色筛选 tab：与账号设置页同款。它是 account.wxss 的页面级样式，
+   不是全局样式，admin 页要用就得自带一份（小程序样式不跨页面）。 */
+.mode-tabs { display: flex; gap: 12rpx; margin: 16rpx 0 12rpx; }
+.tab {
+  flex: 1;
+  height: 64rpx;
+  line-height: 64rpx;
+  text-align: center;
+  font-size: 24rpx;
+  color: var(--text-sub);
+  background: rgba(255, 255, 255, .6);
+  border: 2rpx solid var(--card-line);
+  border-radius: 16rpx;
+}
+.tab.on {
+  color: var(--brand-dark);
+  background: var(--brand-light);
+  border-color: rgba(249, 115, 22, .4);
+  font-weight: 600;
+}
+
+/* ===== 手风琴分板块（2026-10-30）=====
+   超管后台内容多，首屏只展开「校园管理」，其余收起：头部常显标题 + 计数，
+   收起也能一眼看到待办（如待审申请数）。点击头部切换展开/收起。 */
+.panel {
+  background: var(--card, #fff);
+  border-radius: var(--radius, 24rpx);
+  margin-bottom: 20rpx;
+  overflow: hidden;
+  box-shadow: 0 6rpx 20rpx rgba(124, 45, 18, 0.06);
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  padding: 28rpx 28rpx;
+}
+.panel-title {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--brand-dark, #7C2D12);
+}
+.panel-head-right {
+  display: flex;
+  align-items: center;
+  gap: 18rpx;
+  flex-shrink: 0;
+}
+.panel-chevron {
+  font-size: 36rpx;
+  color: var(--text-weak, #9A8478);
+  transition: transform .25s;
+  transform: rotate(0deg);
+}
+/* 展开态：箭头右转 90° 指向下方 + 点色，和菜单项的展开箭头同一套语言 */
+.panel.open .panel-chevron { transform: rotate(90deg); color: var(--brand); }
+.panel-body {
+  padding: 0 28rpx 28rpx;
+}
+/* 头部「刷新」链接：复用 .more 的观感，但必须用 catchtap 阻止冒泡到折叠（不会误收起板块） */
+.panel-head .more {
+  font-size: 24rpx;
+  color: var(--brand-dark, #7C2D12);
+  padding: 6rpx 0 6rpx 24rpx;
+}

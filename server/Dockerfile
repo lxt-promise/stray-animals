@@ -2,7 +2,7 @@
 #
 # 与本地 docker-compose 的差异：
 #   1) 监听平台注入的 PORT 环境变量（云托管必须；本地未注入时默认 8000，兼容 compose）
-#   2) 模型权重直接打包进镜像（/app/models/reid.onnx），不再依赖外部挂载卷
+#   2) 模型权重直接打包进镜像（/app/models/mega_descriptor_t.onnx + .data），不再依赖外部挂载卷
 #   3) 特征库固定落在 /data/catcampus，云托管把「持久卷」挂到这里即可跨重启保留
 FROM python:3.11-slim
 
@@ -28,14 +28,17 @@ COPY . .
 RUN mkdir -p /data/catcampus
 
 # ---- 容器内固定配置（不依赖外部注入，保证模型一定被加载）----
-# REID_SIZE 必须与 reid.onnx 的导出边长一致。镜像里这份是在 224 上导出的
-# （输出 token = 16²+1 = 257），写 518 会让首次推理报 "257 by 1370" 广播错。
-# engine._probe_input_size 会按 token 数反推并纠正，但那时已经打了一条 warning，
-# 不如这里就写对。
-# DETECT_ONNX 不写：DETECT_AUTO 默认开，会自动发现 /app/models/yolov8n.onnx；
-# 留空的好处是不会和云托管控制台的环境变量打架。
-ENV REID_ONNX=/app/models/reid.onnx \
+# ReID 骨干改为 MegaDescriptor-T-224（动物 ReID 专用，输出已池化 768 维向量，
+# 归一化 [0.5,0.5,0.5] 半归一化）。引擎按文件名含 mega 自动切 half 归一化，
+# 这里只需把 REID_ONNX 指到它；REID_SIZE=224 与导出边长一致，写错会让
+# _probe_input_size 报广播错，不如这里就写对。
+# DETECT_ONNX 不写：DETECT_AUTO 默认开，会自动发现 /app/models/yolov8n.onnx。
+# FEATURE_POOL_VERSION=4：骨干从 DINOv2(imagenet) 切到 MegaDescriptor(half)，
+# 两者向量**同维(768)不同义**，旧库向量必须清空重建。版本号 +1 让旧 v3 对象在
+# 读取时被跳过，避免与 v4 新向量混算（混算会让识别全面失准、且不报错）。
+ENV REID_ONNX=/app/models/mega_descriptor_t.onnx \
     REID_SIZE=224 \
+    FEATURE_POOL_VERSION=4 \
     INDEX_DB=/data/catcampus/index.sqlite3 \
     FETCH_TIMEOUT=20 \
     MAX_FRAMES=8

@@ -112,6 +112,19 @@ class TestCowGrayGuard(unittest.TestCase):
         self.assertGreater(config.ATTR_COW_MAX_GRAY, 0.2)
         self.assertLess(config.ATTR_COW_MAX_GRAY, 0.5)
 
+    def test_warm_reflection_cow_still_cow(self):
+        """暖色地板/灯光反光抬高 warm/warmish 时，真奶牛猫不能被判成狸花。
+
+        实测「奶牛猫.jpg」：warm 0.252、warmish 0.313（暖光下的木地板反光）、
+        gray 0.329、stripe 0.606 —— 旧的两道暖色闸（0.25/0.25）把它挡在奶牛
+        规则外，落到规则 7 判成狸花。2026-10-31 放宽到 0.30/0.34 后必须判奶牛。
+        """
+        ratio = {b: 0.0 for b in attrs._CAT_BUCKETS}
+        ratio.update({"white": 0.083, "black": 0.268, "gray": 0.329,
+                      "brown": 0.076, "cream": 0.176})
+        c, p = attrs._decide(ratio, stripe=0.606, dgray=0.096, warmish=0.313)
+        self.assertEqual((c, p), ("cow", "cow"))
+
 
 class TestStudioWhiteBg(unittest.TestCase):
     """棚拍白背景误判（2026-10-28，东南大学 18 张实拍图校准）。

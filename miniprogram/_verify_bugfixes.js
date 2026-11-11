@@ -200,17 +200,19 @@ function runMine() {
     !calls.some(c => c[0] === 'navigateTo' && c[1].indexOf('cats') >= 0))
   mineCfg.go.call(mp, { currentTarget: { dataset: { url: '/pages/fund/fund' } } })
   check('go(非 tabBar 页) 仍走 navigateTo', calls.some(c => c[0] === 'navigateTo' && c[1] === '/pages/fund/fund'))
-  mineCfg.goCatsSighting.call(mp)
-  check('goCatsSighting 写 globalData.catsTab 并 switchTab',
-    appMock.globalData.catsTab === 'sighting' && calls[calls.length - 1][0] === 'switchTab')
+  const mineWxml = fs.readFileSync(path.join(ROOT, 'pages/mine/mine.wxml'), 'utf8')
+  // 「我的」页：打卡次数/我的打卡 与 规则说明 改为跳转新页面（不再就地展开 / 不再 goCatsSighting）
+  check('mine.wxml 我的打卡菜单跳转 my-sightings', /data-url="\/pages\/my-sightings\/my-sightings"/.test(mineWxml))
+  check('mine.wxml 规则说明菜单跳转 rules', /data-url="\/pages\/rules\/rules"/.test(mineWxml))
+  check('mine.wxml 不再含 goCatsSighting 入口', !/bindtap="goCatsSighting"/.test(mineWxml))
+  check('mine.wxml 不再含就地展开的 myCheckinOpen', !/myCheckinOpen/.test(mineWxml))
+  check('mine.wxml 不再含就地展开的 rulesOpen', !/rulesOpen/.test(mineWxml))
 
   console.log('【修复点 E】WXML 静态断言')
   const catsWxml = fs.readFileSync(path.join(ROOT, 'pages/cats/cats.wxml'), 'utf8')
   check('cats.wxml 无动态 bindtap（三元表达式）', !/bindtap="\{\{/.test(catsWxml))
   check('cats.wxml FAB 用静态 onFabTap', /bindtap="onFabTap"/.test(catsWxml))
-  const mineWxml = fs.readFileSync(path.join(ROOT, 'pages/mine/mine.wxml'), 'utf8')
-  check('mine.wxml 无指向 cats 的 data-url（已改 goCatsSighting）', !/data-url="\/pages\/cats\/cats/.test(mineWxml))
-  check('mine.wxml 含 goCatsSighting 入口', /bindtap="goCatsSighting"/.test(mineWxml))
+  check('mine.wxml 无指向 cats 的 data-url（已改 my-sightings）', !/data-url="\/pages\/cats\/cats/.test(mineWxml))
   const pointsJs = fs.readFileSync(path.join(ROOT, 'pages/points/points.js'), 'utf8')
   check('points 明细 delta 支持负号（删除退回流水）', /r\.delta > 0 \? '\+' : ''/.test(pointsJs))
 

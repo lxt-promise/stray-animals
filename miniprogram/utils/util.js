@@ -84,6 +84,33 @@ function money(n) {
   return v.toFixed(2)
 }
 
+/** 账号脱敏展示：手机号中间 4 位打码；邮箱打码本地部分（保留域名便于辨认）。
+ *  WXML 不能调函数，统一在这里预算后下发（mine 页与新账号设置页共用）。 */
+function maskAccount(a) {
+  a = String(a || '')
+  if (!a) return ''
+  if (/^1\d{10}$/.test(a)) return a.slice(0, 3) + '****' + a.slice(7)
+  const at = a.indexOf('@')
+  if (at > 0) {
+    const local = a.slice(0, at)
+    const keep = local.length <= 2 ? local.slice(0, 1) : local.slice(0, 2)
+    return keep + '****' + a.slice(at)
+  }
+  if (a.length <= 4) return a
+  return a.slice(0, 2) + '****' + a.slice(-2)
+}
+
+/** 账号格式校验：账号**只支持手机号或邮箱**（与服务端 assertAccountFormat 同一套规则）。
+ *  自由用户名不可验证也不可找回，还容易和别人的账号撞车，所以两端都收紧。 */
+function isPhoneText(v) { return /^1\d{10}$/.test(String(v || '').trim()) }
+function isEmailText(v) {
+  return /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(String(v || '').trim())
+}
+function isValidAccount(v) {
+  const s = String(v || '').trim()
+  return isPhoneText(s) || isEmailText(s)
+}
+
 /** 毛色 → 稀有度（游戏化：三花/玳瑁/纯白更稀有） */
 function rarityOf(pattern) {
   const map = {
@@ -298,7 +325,8 @@ function sightTagText(s, sep) {
 
 module.exports = {
   C, labelOf, itemOf, toDate, formatTime, fromNow, shortDate,
-  distance, distanceText, money, rarityOf, initialOf, toast, toastErr, isTimeoutErr,
+  distance, distanceText, money, maskAccount, rarityOf, initialOf, toast, toastErr, isTimeoutErr,
+  isValidAccount, isPhoneText, isEmailText,
   requireMember, requireAdmin, requireRole, isAdminPlus,
   showBusy, hideBusy, shareBehavior,
   sightTags, sightTagText

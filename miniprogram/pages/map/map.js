@@ -23,8 +23,17 @@ const MARKER_H = 44
 const FEED_ALERT_HOURS = 12
 const FEED_ALERT_MS = FEED_ALERT_HOURS * 60 * 60 * 1000
 
-/** 哪些状态的猫不需要催投喂（寄养有家庭照顾，休学/毕业/失踪/离世都不在校园里） */
-const NO_FEED_STATUS = ['foster', 'suspend', 'adopted', 'missing', 'rainbow']
+/** 哪些状态的猫不需要催投喂（寄养有家庭照顾，看病中在医院，已领养/失踪/离世都不在校园里）。
+ *  suspend 是已下线状态（老数据），保留在名单里作为兜底。 */
+const NO_FEED_STATUS = ['foster', 'treating', 'suspend', 'adopted', 'missing', 'rainbow']
+
+/**
+ * 防虐猫（2026-11-07）：非成员「整体显示、放大隐藏」。
+ * 地图缩放 >= 这个级别（看细节了）时，非成员的单只猫点位整体隐藏，
+ * 缩小回整体视角后恢复。云端配合：非成员坐标本就是模糊化的（±120m），
+ * 这里再把「放大对准某个点」这条路关掉。成员不受影响。
+ */
+const DETAIL_HIDE_SCALE = 17
 
 /**
  * 算一只猫的投喂状态。
@@ -77,6 +86,8 @@ Page(Object.assign({
     feedAlertHours: FEED_ALERT_HOURS,
     /** 越界（不在本校范围内）的猫数量，用于给用户一个解释 */
     outsideCount: 0,
+    /** 非成员放大到细节级别后隐藏点位（true 时地图上没有猫 marker，显示提示） */
+    detailHidden: false,
     /** 猫咪信息弹窗（点 marker 头像弹出） */
     popupOpen: false,
     popupLoading: false,
@@ -84,7 +95,9 @@ Page(Object.assign({
     popupRecords: [],
     popupTotal: 0,
     popupLatLng: null,
-    popupError: ''
+    popupError: '',
+    // 完善资料弹窗（昵称 + 头像）：进入地图时若昵称为空或仍是默认值，引导设置一次
+    pg: { visible: false, nickName: '', avatarUrl: '' }
   },
 
   onLoad() {
@@ -133,6 +146,8 @@ Page(Object.assign({
     this.setData({ loading: true })
     try {
       await app.ensureReady()
+      // 进入地图：昵称还是默认值 / 空的，弹一次「完善资料」引导设置（区分用户用）
+      this.maybeProfileGate()
       let school = app.globalData.school
       // 学校信息（含 bounds/center/scale）可能在「我的」页被超管改过，
       // 这里按 id 拉一次最新，避免 globalData 里的缓存过期导致范围约束失效。
@@ -288,11 +303,19 @@ Page(Object.assign({
         ' · 猫共' + allCats.length + ' 只（打卡位置 ' + fromSight +
         ' · 档案位置 ' + (allCats.length - fromSight) + '）· 越界 ' + outside +
         ' · 云端总数 ' + (res.total || 0) + (res.warn ? ' · ⚠ ' + res.warn : ''))
+      // 防虐猫：非成员放大到细节级别（>= DETAIL_HIDE_SCALE）时不渲染猫点位。
+      // 完整 marker 列表存在 _allMarkers 上，缩小回去时由 applyDetailScale 恢复。
+      this._allMarkers = markers
+      const scopeNow = res.scope || 'public'
+      const hideDetail = scopeNow !== 'member' &&
+        (Number(patch.scale || this.data.scale) || 16) >= DETAIL_HIDE_SCALE
       this.setData(Object.assign({
-        markers, loading: false,
+        markers: hideDetail ? [] : markers,
+        detailHidden: hideDetail,
+        loading: false,
         clusters: clusters.length,
         outsideCount: outside,
-        scope: res.scope || 'public'
+        scope: scopeNow
       }, this.nearListFields(nearView)))
       this._markerMap = markerMap
       console.log('[map] 本校范围=', JSON.stringify(patch.bounds || this.data.bounds),
@@ -433,6 +456,32 @@ Page(Object.assign({
       this._userPanned = true
       this.cancelReassert()
     }
+    // 防虐猫：手势结束后读一次缩放级别，非成员「放大隐藏、缩小恢复」
+    if (e && e.type === 'end') {
+      if (!this._mapCtx) this._mapCtx = wx.createMapContext('catMap', this)
+      if (this._mapCtx && this._mapCtx.getScale) {
+        this._mapCtx.getScale({
+          success: r => this.applyDetailScale(r && r.scale)
+        })
+      }
+    }
+  },
+
+  /**
+   * 按当前缩放级别切换「细节隐藏」。
+   * 只在隐藏态发生变化时才 setData（regionchange 触发很频繁，别每帧都刷）。
+   */
+  applyDetailScale(scale) {
+    if (this.data.scope === 'member') {
+      if (this.data.detailHidden) this.setData({ detailHidden: false })
+      return
+    }
+    const hide = (Number(scale) || 0) >= DETAIL_HIDE_SCALE
+    if (hide === this.data.detailHidden) return
+    this.setData({
+      detailHidden: hide,
+      markers: hide ? [] : (this._allMarkers || [])
+    })
   },
 
   /** 是否运行在「微信开发者工具」中（真机返回 false） */
@@ -725,8 +774,11 @@ Page(Object.assign({
   /** 弹窗卡片本体拦截冒泡（点卡片不关闭，只有遮罩/把手关闭） */
   noop() {},
 
-  /** 弹窗内「导航到这儿」：拉起微信内置地图（无需任何接口权限） */
+  /** 弹窗内「导航到这儿」：拉起微信内置地图（无需任何接口权限）。
+   *  🔴 防虐猫：仅管理员/社团成员可用 —— 普通用户拿到的是模糊坐标，
+   *  导航会把人带到模糊点附近反而误导，且不该提供「精确到达」能力。 */
   goNavFromPopup() {
+    if (this.data.scope !== 'member') return
     const c = this.data.popupLatLng
     const cat = this.data.popupCat
     if (!c) {
@@ -747,12 +799,17 @@ Page(Object.assign({
   goDetailFromPopup() {
     const cat = this.data.popupCat
     if (!cat) return
+    // 兜底用 catId（档案已被删时 _id 可能为空）：两者都没有就不跳
+    const id = cat._id || cat.catId
+    if (!id || id === 'undefined' || id === 'null') return
     this.closePopup()
-    wx.navigateTo({ url: '/pages/cat-detail/cat-detail?id=' + cat._id })
+    wx.navigateTo({ url: '/pages/cat-detail/cat-detail?id=' + id })
   },
 
   goDetail(e) {
-    wx.navigateTo({ url: '/pages/cat-detail/cat-detail?id=' + e.currentTarget.dataset.id })
+    const id = e.currentTarget && e.currentTarget.dataset && e.currentTarget.dataset.id
+    if (!id || id === 'undefined' || id === 'null') return
+    wx.navigateTo({ url: '/pages/cat-detail/cat-detail?id=' + id })
   },
 
   /** 回到本校地图范围中心 */
@@ -829,6 +886,41 @@ Page(Object.assign({
 
   goSighting() {
     wx.navigateTo({ url: '/pages/sighting-post/sighting-post' })
+  },
+
+  /**
+   * 完善资料引导：昵称为空或仍是服务端默认值「爱猫同学」时弹出一次。
+   * 地图页不把 user 放 data，所以直接读 app.globalData.user。
+   * 用户管理里大量用户都叫「爱猫同学」、分不清谁是谁，根因就是注册时兜底了
+   * 默认昵称却从不引导修改 —— 这里在进地图时补一次引导。
+   */
+  maybeProfileGate() {
+    const u = app.globalData.user
+    if (!u) return
+    const nick = (u.nickName || '').trim()
+    if (!nick || nick === '爱猫同学') {
+      this.setData({
+        pg: { visible: true, nickName: nick, avatarUrl: u.avatarUrl || '' }
+      })
+    }
+  },
+
+  /** 完善资料弹窗完成：刷新全局用户并关弹窗 */
+  onProfileDone(e) {
+    const d = (e && e.detail) || {}
+    if (d.skipped) {
+      this.setData({ 'pg.visible': false })
+      return
+    }
+    const u = app.globalData.user || {}
+    if (d.nickName) u.nickName = d.nickName
+    if (d.avatarUrl) u.avatarUrl = d.avatarUrl
+    if (app.globalData.user) app.globalData.user = u
+    this.setData({
+      'pg.nickName': d.nickName || this.data.pg.nickName,
+      'pg.avatarUrl': d.avatarUrl || this.data.pg.avatarUrl,
+      'pg.visible': false
+    })
   }
 }, shareBehavior(function () {
   const s = app.globalData.school

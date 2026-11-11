@@ -5,14 +5,17 @@
  * 四次串行云调用，「我的」页要等 3~4 个 RTT 才出全。四件事其实互不依赖
  * （loadDex 只用同步可取的 user.catSeen），已改成 Promise.all 一次性并行。
  *
+ * 工作台概览（待建档 / 待抓捕 / 待认领 / 待审申请 / 资金结余）已剥离到独立的
+ * pages/workbench 页（管理员 + 超管可见），「我的」页只保留个人数据。
+ *
  * 断言重点（全部打在输出数据上，不匹配源码形状）：
  *  - 真并行：用「门控 Promise」挂起每个 callApi —— 若是串行，第一个不 resolve
  *    后面的请求永远不会发起，调用计数会停在 1；
  *  - getSchool 的新返回值落进 data.school / globalData.school；
  *  - 地图中心 / 地图范围只在超管后台维护，个人页不再出现任何坐标/缩放控件；
- *  - getSchool 失败被局部 catch 吞掉，不影响打卡/图鉴/工作台，且不弹 toast；
- *  - listSightings 失败仍走外层 catch 弹 toast（保留「不再静默吞错」的行为）；
- *  - 非管理员不发起工作台 4 个请求。
+ *  - getSchool 失败被局部 catch 吞掉，不影响打卡/图鉴，且不弹 toast；
+ *  - 「我的」页不再拉我的打卡列表（已迁到 pages/my-sightings，其失败兜底在该页测试）；
+ *  - 「我的」页不再发起工作台 4 个概览请求（已迁到工作台页）。
  *
  * 运行：node scripts/test_mine_parallel.js
  */
@@ -34,6 +37,7 @@ const assert = (name, cond, extra) => {
 /* ==================== 环境桩 ==================== */
 const env = {
   admin: true,
+  isSuper: false,
   gated: true,            // true=请求挂起等放行（证明并行用）；false=立即返回
   failActions: [],        // 这些 action 直接 reject
   replies: {},            // action -> 返回值或 fn(data)
@@ -60,7 +64,7 @@ const FAKE_APP = {
   },
   isMember: () => true,
   isAdmin: () => env.admin,
-  isSuper: () => false,
+  isSuper: () => env.isSuper,
   // 页面改用 app.setSchool() 写全局学校（换校要作废首页概览缓存）。
   // stub 必须实现同名方法：缺方法会被 job 的 catch 吞掉，表现为
   // 「globalData.school 没更新」这种看起来像业务 bug 的假失败。
@@ -107,10 +111,11 @@ Module._load = function (request, parent, isMain) {
 
 require(path.join(MP, 'pages/mine/mine.js'))
 assert('mine.js 成功注册 Page', !!pageOptions)
+const MINE_PAGE = pageOptions
 
 function freshPage() {
   // 每个用例一份独立 data，避免互相污染
-  return Object.assign({}, pageOptions, {
+  return Object.assign({}, MINE_PAGE, {
     data: JSON.parse(JSON.stringify(pageOptions.data)),
     // 真实 setData 支持 'a.b.c' 路径写法（mine.js 用它只更新 stats 的某个字段，
     // 避免整体覆盖 stats 与并发请求打架）。mock 必须同样支持，否则测试会假失败。
@@ -176,16 +181,20 @@ const p1 = freshPage()
 const done1 = p1.load()
 flush().then(async () => {
   // 此刻所有请求都挂起着 —— 串行实现只会发起第一个（getSchool），后面的永远等不到
-  assert('管理员路径 9 个请求全部已发起', env.calls.length === 9, env.calls)
+  // 5 = 学校信息 + 账户概览 + 图鉴摘要 + 我的申请 + 学校下拉
+  // （工作台概览已剥离到 pages/workbench；我的打卡列表已剥离到 pages/my-sightings）
+  assert('管理员路径 5 个请求全部已发起', env.calls.length === 5, env.calls)
+  assert('发起了 mySchoolApply（申请状态）', env.calls.indexOf('mySchoolApply') >= 0, env.calls)
   assert('发起了 getSchool', env.calls.indexOf('getSchool') >= 0)
-  assert('发起了 listSightings（我的打卡）', env.calls.indexOf('listSightings') >= 0)
+  assert('mine 不再拉 listSightings（已迁到我的打卡页 pages/my-sightings）', env.calls.indexOf('listSightings') < 0, env.calls)
   assert('发起了 listDex（图鉴摘要，本校口径）', env.calls.indexOf('listDex') >= 0)
   assert('不再调用 listCats 自己算图鉴（那是分页列表，没有 total）',
     env.calls.indexOf('listCats') < 0, env.calls)
   assert('发起了 listSchools（选校下拉的数据源）', env.calls.indexOf('listSchools') >= 0)
   assert('发起了 pointsSummary（双货币账户概览）', env.calls.indexOf('pointsSummary') >= 0)
-  assert('发起了 listTnr/listTasks/listFunds（工作台）',
-    env.calls.indexOf('listTnr') >= 0 && env.calls.indexOf('listTasks') >= 0 && env.calls.indexOf('listFunds') >= 0)
+  assert('「我的」页不再发起工作台概览请求（已迁到工作台页）',
+    env.calls.indexOf('listTnr') < 0 && env.calls.indexOf('listTasks') < 0 &&
+    env.calls.indexOf('listFunds') < 0 && env.calls.indexOf('listSchoolApplies') < 0, env.calls)
 
   // 放行全部挂起请求，等 load 收尾
   env.pending.splice(0).forEach(fn => fn())
@@ -197,8 +206,6 @@ flush().then(async () => {
   assert('个人页不再维护地图范围状态（不出现 scale 字段）',
     p1.data.scaleOptions === undefined && p1.data.schoolScale === undefined && p1.data.scaleIndex === undefined,
     Object.keys(p1.data).filter(k => /scale|center/i.test(k)))
-  assert('打卡列表带 timeText', p1.data.mySightings.length === 1 && !!p1.data.mySightings[0].timeText,
-    p1.data.mySightings)
   // 猫粮来自 pointsSummary（实时），打卡次数来自 user，图鉴数来自 listDex（本校口径）——
   // 三路并发写入，谁后到谁生效的写法会闪旧值。
   assert('统计来自 pointsSummary + user + listDex（68/7/2）',
@@ -215,9 +222,6 @@ flush().then(async () => {
     p1.data.schoolOptions)
   assert('下拉右侧文案由 JS 预拼（WXML 里字符串相加会被吃掉）',
     p1.data.schoolPickSide === '共 2 所', p1.data.schoolPickSide)
-  assert('工作台概览四指标正确',
-    p1.data.wb.pendingSighting === 2 && p1.data.wb.todoTnr === 1 &&
-    p1.data.wb.openTask === 1 && p1.data.wb.balance === '70.00', p1.data.wb)
   assert('loading 正常收尾', p1.data.loading === false)
 
   /* ==================== 2. getSchool 失败隔离 ==================== */
@@ -226,28 +230,28 @@ flush().then(async () => {
   const p2 = freshPage()
   await p2.load()
   assert('学校回落到缓存旧值', p2.data.school.name === '旧学校名', p2.data.school.name)
-  assert('换校副文案按「已绑定」处境给出', /换校后/.test(p2.data.schoolPickHint || ''), p2.data.schoolPickHint)
-  assert('打卡/图鉴摘要照常出', p2.data.mySightings.length === 1 && p2.data.dexSummary.text === '2 / 4',
-    p2.data.dexSummary)
+  // 内部规则不对普通用户展示（用户明确要求）：换校条不得出现
+  // 「无需审核」/「管理员可直接切换」/「换校需管理员审核通过后才生效」/「25km」等内部机制描述
+  assert('换校条不暴露内部规则',
+    !/无需审核/.test(p2.data.schoolPickHint || '') &&
+    !/管理员可直接切换/.test(p2.data.schoolPickHint || '') &&
+    !/换校需管理员审核通过后才生效/.test(p2.data.schoolPickHint || '') &&
+    !/25km/.test(p2.data.schoolPickHint || ''), p2.data.schoolPickHint)
+  assert('图鉴摘要照常出', p2.data.dexSummary.text === '2 / 4', p2.data.dexSummary)
   assert('不弹错误 toast（局部 catch 吞掉）', env.toasts.length === 0, env.toasts)
 
-  /* ==================== 3. listSightings 失败仍报错 ==================== */
-  console.log('\n--- 3. listSightings 失败走外层 catch ---')
-  reset({ admin: false, gated: false, failActions: ['listSightings'] })
-  const p3 = freshPage()
-  await p3.load()
-  assert('弹 toast 且带原因', env.toasts.length === 1 && /listSightings/.test(env.toasts[0]), env.toasts)
-  assert('loading 仍然收尾', p3.data.loading === false)
+  /* ==================== 3. 「我的」页不再拉我的打卡列表 ====================
+     原 listSightings 失败走外层 catch 的覆盖已迁到 pages/my-sightings 页测试。 */
 
-  /* ==================== 4. 非管理员不拉工作台 ==================== */
-  console.log('\n--- 4. 非管理员不发起工作台请求 ---')
+  /* ==================== 4. 「我的」页不拉工作台概览 ==================== */
+  console.log('\n--- 4. 「我的」页不再发起工作台概览请求 ---')
   reset({ admin: false, gated: false })
   const p4 = freshPage()
   await p4.load()
   assert('未发起 listTnr/listTasks/listFunds',
     env.calls.indexOf('listTnr') < 0 && env.calls.indexOf('listTasks') < 0 && env.calls.indexOf('listFunds') < 0,
     env.calls)
-  assert('普通用户数据完整', p4.data.mySightings.length === 1 && p4.data.dexSummary.seen === 2,
+  assert('普通用户数据完整', p4.data.dexSummary.seen === 2,
     p4.data.dexSummary)
 
   /* ==================== 5. 三格统计可点 ==================== */
@@ -255,7 +259,7 @@ flush().then(async () => {
   {
     const wxml = fs.readFileSync(path.join(MP, 'pages/mine/mine.wxml'), 'utf8')
     assert('猫粮值格绑定 goFoodDetail', /class="stat-card" bindtap="goFoodDetail"/.test(wxml))
-    assert('打卡次数格绑定 goCatsSighting', /class="stat-card" bindtap="goCatsSighting"/.test(wxml))
+    assert('打卡次数格跳转我的打卡页', /class="stat-card" data-url="\/pages\/my-sightings\/my-sightings" bindtap="go"/.test(wxml))
     assert('图鉴数格绑定 goDex', /class="stat-card" bindtap="goDex"/.test(wxml))
     assert('三格都有「可点」箭头提示', (wxml.match(/class="stat-go"/g) || []).length === 3,
       (wxml.match(/class="stat-go"/g) || []).length)
@@ -289,11 +293,8 @@ flush().then(async () => {
     assert('点猫粮值 → 猫粮明细（type=food）',
       env.navs[0] === '/pages/points/points?type=food', env.navs)
     env.navs = []
-    p5.goCatsSighting()
-    assert('点打卡次数 → 猫谱打卡记录 tab', env.navs[0] === '/pages/cats/cats', env.navs)
-    assert('切 tab 前写入 catsTab=sighting', FAKE_APP.globalData.catsTab === 'sighting',
-      FAKE_APP.globalData.catsTab)
-    FAKE_APP.globalData.catsTab = ''
+    p5.go({ currentTarget: { dataset: { url: '/pages/my-sightings/my-sightings' } } })
+    assert('点打卡次数 → 我的打卡页', env.navs[0] === '/pages/my-sightings/my-sightings', env.navs)
     env.navs = []
     p5.goDex()
     assert('点图鉴数 → 图鉴收集页', env.navs[0] === '/pages/dex/dex', env.navs)
@@ -336,6 +337,64 @@ flush().then(async () => {
     // 学校卡仍要能换校（去掉配置不等于去掉选校）
     assert('个人页保留换校入口',
       /bindchange="onPickSchool"/.test(mineWxml) && /schoolPickHint/.test(mineWxml))
+  }
+
+  /* ==================== 8. 工作台页：概览 + 入口权限 ==================== */
+  console.log('\n--- 8. 工作台页（独立页）加载概览与入口权限 ---')
+  {
+    require(path.join(MP, 'pages/workbench/workbench.js'))
+    const WB_PAGE = pageOptions
+    assert('workbench.js 成功注册 Page', !!WB_PAGE)
+    reset({ admin: true, gated: false })
+    env.isSuper = true
+    FAKE_APP.globalData.user = Object.assign({}, FAKE_APP.globalData.user, { isSuper: true })
+    // 让工作台概览拿到具体的待审/收支数据
+    env.replies.listSchoolApplies = () => ([{ _id: 'a1' }, { _id: 'a2' }])
+    env.replies.listNotices = () => ({
+      list: [{ type: 'school_apply', read: false }, { type: 'school_apply', read: false }], unread: 2
+    })
+    const wb = Object.assign({}, WB_PAGE, {
+      data: JSON.parse(JSON.stringify(WB_PAGE.data)),
+      setData(patch) {
+        Object.keys(patch).forEach(k => {
+          if (k.indexOf('.') < 0) { this.data[k] = patch[k]; return }
+          const parts = k.split('.')
+          let o = this.data
+          for (let i = 0; i < parts.length - 1; i++) {
+            if (!o[parts[i]] || typeof o[parts[i]] !== 'object') o[parts[i]] = {}
+            o = o[parts[i]]
+          }
+          o[parts[parts.length - 1]] = patch[k]
+        })
+      }
+    })
+    await wb.init()
+    assert('工作台发起 listSightings(pending)', env.calls.indexOf('listSightings') >= 0, env.calls)
+    assert('工作台发起 listTnr/listTasks/listFunds',
+      env.calls.indexOf('listTnr') >= 0 && env.calls.indexOf('listTasks') >= 0 && env.calls.indexOf('listFunds') >= 0,
+      env.calls)
+    assert('工作台发起 listSchoolApplies(pending)', env.calls.indexOf('listSchoolApplies') >= 0, env.calls)
+    assert('工作台发起 listNotices（超管）', env.calls.indexOf('listNotices') >= 0, env.calls)
+    assert('概览四指标正确（待建档2 / 待抓捕1 / 待认领1 / 收支70.00）',
+      wb.data.wb.pendingSighting === 2 && wb.data.wb.todoTnr === 1 &&
+      wb.data.wb.openTask === 1 && wb.data.wb.balance === '70.00', wb.data.wb)
+    assert('待审申请计数 = 2', wb.data.wb.pendingApply === 2, wb.data.wb)
+    assert('未读通知 = 2', wb.data.noticeUnread === 2, wb.data.noticeUnread)
+    // 入口权限：超管才有「超级管理员后台」
+    wb.data.isSuper = true
+    wb.buildEntries()
+    assert('超管有「超级管理员后台」入口',
+      wb.data.entries.some(e => e.super && e.url === '/pages/admin/admin'), wb.data.entries.map(e => e.txt))
+    wb.data.isSuper = false
+    wb.buildEntries()
+    assert('管理员没有「超级管理员后台」入口',
+      !wb.data.entries.some(e => e.super), wb.data.entries.map(e => e.txt))
+    // 「我的」页菜单项按权限区分
+    const mineWxml2 = fs.readFileSync(path.join(MP, 'pages/mine/mine.wxml'), 'utf8')
+    assert('我的页：工作台入口 isAdminPlus 可见',
+      /workbench\/workbench" bindtap="go" wx:if="\{\{isAdminPlus\}\}"/.test(mineWxml2))
+    assert('我的页：超级管理员后台入口 isSuper 可见',
+      /pages\/admin\/admin" bindtap="go" wx:if="\{\{isSuper\}\}"/.test(mineWxml2))
   }
 
   /* ==================== 结果 ==================== */

@@ -14,8 +14,16 @@
     "pages/fund/fund",
     "pages/member/member",
     "pages/admin/admin",
+    "pages/workbench/workbench",
     "pages/points/points",
-    "pages/dex/dex"
+    "pages/dex/dex",
+    "pages/campaign/campaign",
+    "pages/campaign-detail/campaign-detail",
+    "pages/campaign-edit/campaign-edit",
+    "pages/account/account",
+    "pages/cat-card/cat-card",
+    "pages/my-sightings/my-sightings",
+    "pages/rules/rules"
   ],
   "window": {
     "backgroundTextStyle": "dark",

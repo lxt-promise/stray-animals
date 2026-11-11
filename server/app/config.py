@@ -41,9 +41,18 @@ REID_ONNX = _s("REID_ONNX")
 # 换成别的骨干后即使这里没改也不会 500 —— engine._probe_input_size 会按模型
 # 输出的 token 数反推边长并用一次空推理校验。REID_SIZE 只是「首选值」。
 REID_SIZE = _i("REID_SIZE", 224)
-# 特征算法版本：池化策略等变更时递增。写进 COS 对象头（1 字节），
+# 特征算法版本：骨干 / 归一化 / 池化策略变更时递增。写进 COS 对象头（1 字节），
 # 读取时版本不符的对象直接跳过 —— 防止换算法后新旧向量（同维不同义）混算乱匹配。
-FEATURE_POOL_VERSION = _i("FEATURE_POOL_VERSION", 2)   # v1=mean-pool, v2=CLS
+#   v1 = mean-pool, v2 = DINOv2 CLS (ImageNet 归一化),
+#   v3 = 支持 MegaDescriptor（[0.5,0.5,0.5] 归一化）,
+#   v4 = 切换 MegaDescriptor 上线时的干净重建基线（2026-10-31）：
+#        过渡期若有节点在模型切换完成前以 v3 标签写过 DINOv2 语义的向量，
+#        也会被一并隔离。
+FEATURE_POOL_VERSION = _i("FEATURE_POOL_VERSION", 4)
+# ReID 骨干的归一化口径。MegaDescriptor 系列用 [0.5,0.5,0.5]（half），
+# DINOv2 等通用骨干用 ImageNet 均值方差。REID_ONNX 指向哪类模型就配哪种，
+# 配错会让向量全部偏到一个角落、同猫余弦只剩 0.3 以下。
+REID_NORM = _s("REID_NORM", "imagenet")
 REID_TORCH = _s("REID_TORCH", "timm/vit_large_patch14_dinov2.lvd142m")
 
 DETECT_ONNX = _s("DETECT_ONNX")
@@ -68,6 +77,29 @@ DETECT_PAD = _f("DETECT_PAD", 0.08)
 # 并接受「整图提特征」这条路径本身没有裁剪收益。
 DETECT_COLLAPSE_SQUARE = _b("DETECT_COLLAPSE_SQUARE", False)
 
+# ---------------- 前景抠图（u2netp）----------------
+#
+# 检测框里仍有墙/地板/床单，这些背景像素会把花色统计与个体特征一起带偏
+# （实测：白背景前的纯黑猫被判成奶牛猫；同一只猫换背景后余弦 0.54→0.72）。
+# 抠图后只留猫毛像素：色域统计只数猫毛，提特征用中性灰底。
+# 自动发现 models/u2netp.onnx；MATTING_ONNX=off 可整体关闭（关闭后行为与旧版一致）。
+MATTING_ONNX = _s("MATTING_ONNX")
+MATTING_AUTO = _b("MATTING_AUTO", True)
+# 掩膜阈值：> 它的像素算前景。0.5 是显著度归一化后的自然分界。
+MATTING_ALPHA_THR = _f("MATTING_ALPHA_THR", 0.5)
+# 合成背景灰度（提特征用）。128 = ImageNet 归一化后的 0，无信息背景。
+MATTING_BG = _i("MATTING_BG", 128)
+# 色域统计是否只用前景像素（关掉=退回旧的全框统计）
+MATTING_MASK_ATTR = _b("MATTING_MASK_ATTR", True)
+# 提特征前是否把背景换成灰底（关掉=退回旧的全框裁剪）
+MATTING_MASK_EMBED = _b("MATTING_MASK_EMBED", True)
+# 抠图覆盖率低于此值时，认为 u2netp 把猫体弄丢了（常见于：提亮后的白猫
+# 白毛与背景同色，掩膜覆盖率从 40% 跌到 5%）。此时**不**用灰底合成图提特征
+# —— 合成出来几乎是纯灰，特征向量会塌缩成噪声，与原图余弦降到 0.01。
+# 退回原始 crop 虽然带进背景，但至少保留了猫体像素，特征还能用。
+# 0.10 的依据：19 张实拍正常猫覆盖率 0.20~0.55；提亮后白猫跌到 0.046。
+MATTING_MIN_COVERAGE = _f("MATTING_MIN_COVERAGE", 0.10)
+
 USE_CLIP = _b("USE_CLIP")
 CLIP_MODEL = _s("CLIP_MODEL", "ViT-B-32")
 CLIP_PRETRAINED = _s("CLIP_PRETRAINED", "laion2b_s34b_b79k")
@@ -86,6 +118,20 @@ CLIP_PRETRAINED = _s("CLIP_PRETRAINED", "laion2b_s34b_b79k")
 # 对 9 个毛色 × 6 个花纹做 softmax，50% 以下基本等于"猜的"。
 ATTR_CONF_MIN = _f("ATTR_CONF_MIN", 0.5)
 
+# ---------------- 本地识别方法（2026-11-10）----------------
+#
+# CLIP 不可用 / 置信度不足时，本地用哪套算法：
+#   pattern → tools/pattern_recognize.py：6 色桶 + 分带布局 + 斑块度 +
+#             边缘肤色剔除（"看图说话"口径，默认；19 张实拍 19/19、
+#             16 张标准照 16/16）
+#   legacy  → app/attrs.py：8 色桶 + 条纹频率 + 曝光平移（18/19、15/16）
+#
+# 两套算法输出契约完全一致（color/pattern/breed/confidence/palette/
+# reason/refused），所以切换只影响判定口径，不影响 engine/search/前端。
+# pattern 加载失败时**自动回退 legacy**，不会让整条识别链失败。
+# 回退 legacy 只需改这一行重启：ATTR_ENGINE=legacy
+ATTR_ENGINE = (_s("ATTR_ENGINE", "pattern") or "pattern").lower()
+
 # 条纹显著度门槛（0~1）。低于它判 solid。
 # 0.60 是频率法实测标定的分界（8 张真实猫照）：
 #   真条纹（狸花）带数 11+ / 调制 0.63+ → 得分 0.9+；
@@ -96,6 +142,59 @@ ATTR_STRIPE_MIN = _f("ATTR_STRIPE_MIN", 0.60)
 # 有效"猫色"像素占画面的最低比例。低于它说明猫太小 / 背景太杂，
 # 此时**返回空而不是硬编一个颜色** —— 伪造属性比没有属性危害大。
 ATTR_MIN_COVERAGE = _f("ATTR_MIN_COVERAGE", 0.22)
+
+# ---------------- 照片可用性门控（2026-11-05）----------------
+#
+# 为什么单独设一层：色域阈值再准，也只能在「花色看得出来」的照片上生效。
+# 糊片、极小主体、几乎全黑的照片里，直方图统计本身就没有信息 —— 此时
+# 任何花色结论都是噪声，还会被前端当成确定结果展示。这一层的职责是
+# **先回答「这张照片能不能用来判断花色」**，不能就返回空 + 重拍提示，
+# 把「算法判错」和「素材不可用」分开。
+#
+# 阈值全部按**真实素材的保守下限**标定（34 张：18 张实拍 + 16 张标准照）：
+#   清晰度（512 长边、前景区域 Laplacian 方差）：34 张实测 13~2300，其中
+#       最低的「橘猫-遮挡0」是 13（小裁剪、毛面平滑，不是糊片）；人工模糊
+#       r=6 后全部掉到 1~3。两簇间隔极大，门槛取 10 —— 只拦「明显糊成一片」
+#       的图，不碰任何可用的实拍/标准照。
+#   前景占比（掩膜 0.5 以上像素 / 画面）：实测最低 2.2%（橘猫-遮挡0）与
+#       3.2%（白猫-黑天-猫小背景大），门槛取 0.5% 只拦「掩膜几乎全空 /
+#       猫被完全挡住」的极端情况。
+# 关掉整层：ATTR_QUALITY_GATE=0（排查误拦时用）。
+ATTR_QUALITY_GATE = _b("ATTR_QUALITY_GATE", True)
+ATTR_MIN_SHARP = _f("ATTR_MIN_SHARP", 10.0)
+ATTR_MIN_FG = _f("ATTR_MIN_FG", 0.005)
+# 清晰度计算的长边上限：全分辨率算 Laplacian 对大图太贵，512 已足够区分
+# 「有毛发的细节」和「糊成一片」（见上面 r=6 的实测数据）。
+ATTR_SHARP_SIZE = _i("ATTR_SHARP_SIZE", 512)
+
+# ---------------- L1 稳健统计（2026-11-05）----------------
+#
+# 全局色桶直方图不抗局部污染（手/衣袖/毯子被抠进掩膜就改写全局比例）。
+# 开 ATTR_ROBUST_STATS 后，掩膜模式会把分析网格切成 3×3 瓦片，
+# 剔除与「全体瓦片分量中位数」显著不一致的瓦片再汇总（attrs._robust_reweight）。
+# 阈值是相对量（MAD 倍率 + 绝对下限），不随素材走，不需要逐图调：
+#   ATTR_ROBUST_TILE     瓦片网格（每边块数），3 = 3×3
+#   ATTR_ROBUST_MIN_TILE 瓦片内猫体占比低于它则该瓦片不参与（样本太少不可靠）
+#   ATTR_ROBUST_DIST     L1 距离绝对下限（瓦片色板与整体差这么多才算离群）
+#   ATTR_ROBUST_MAD      距离中位数的倍率下限（猫有两种主色时两群都大，不会被误剔）
+ATTR_ROBUST_STATS = _b("ATTR_ROBUST_STATS", False)
+ATTR_ROBUST_TILE = _i("ATTR_ROBUST_TILE", 3)
+ATTR_ROBUST_MIN_TILE = _f("ATTR_ROBUST_MIN_TILE", 0.3)
+ATTR_ROBUST_DIST = _f("ATTR_ROBUST_DIST", 0.25)
+ATTR_ROBUST_MAD = _f("ATTR_ROBUST_MAD", 3.0)
+
+# ---------------- 口径一致性门控（2026-11-05）----------------
+#
+# 遮挡会同时破坏两件事：手被抠进掩膜（暖色暴涨）、过曝白毛被抠掉（白色暴跌），
+# 叠加后黑白猫会滑进橘猫分支（实测「奶牛猫-有人手干扰-裁剪.jpg」）。
+# 开这个开关后，analyze() 会再算一次「不套掩膜」的整幅统计：
+#   两口径**互斥**（hard_exclusive：物理上不可能同时成立）
+#   且 ATTR_MASK_EXTENT_MIN 判定抠图横向不完整
+#   → 弃权（返回空 + 重拍提示），而不是选一个。
+# 实测 35 张真实素材：只有用户反馈的那一张命中，其余 34 张结论不变。
+# 注意 extent 不能单独用：奶牛猫3 / 橘猫-遮挡0 只有 0.36 但结论是对的。
+ATTR_CONSISTENCY_GATE = _b("ATTR_CONSISTENCY_GATE", True)
+ATTR_MASK_EXTENT_MIN = _f("ATTR_MASK_EXTENT_MIN", 0.70)
 
 # 曝光自适应（2026-10-25）：色桶的亮度阈值整体平移，抵消拍摄曝光差异。
 #   REF  = 标准曝光下「V 的 98 分位」参考值（实测正常照片 200~220）
@@ -150,11 +249,14 @@ INDEX_PREFIX = _s("INDEX_PREFIX", "index/")
 # 但在界面上它照样是「匹配候选 Top1」，用户读到的结论是「这是小黑」。
 # 48.7% 属于「完全无关」（无关图 0.51~0.55），必须挡掉。
 #
-# 0.62 的依据：无关图上限 0.55，留 0.07 余量；而「同猫不同构图」的下沿约 0.74，
-# 中间这段全是边缘候选。老值 0.67 是配线性窗口定的 —— 现在分数由 logistic 给出，
-# 低分候选自己就会显示成个位数，「宁可多给一条候选让人看一眼」比
-# 「真猫被挡在门外」好：挡掉的是**可见的选项**，留下的只是一行低分。
-MIN_SIM = _f("MIN_SIM", 0.62)
+# ⚠️ 0.62 → **0.30**（2026-10-31，MegaDescriptor-T 换骨干后重标定）。
+# 旧 0.62 是 DINOv2 时代的阈值（同图变换 0.96、异猫 0.745）；MegaDescriptor 的
+# 余弦**整体下移**：实测 8 张东南大学实拍图里，正确档案（同猫不同照片）
+# 只有 0.364~0.667，而最高分候选往往正是真匹配 —— 0.62 会把 7/8 张真匹配
+# 直接挡在门外（现场表现为「特征识别对了，但没能匹配到已有档案」）。
+# 0.30 低于实测正确候选的下沿（0.364），保证真匹配一定进候选；
+# 误匹配由展示分（IDENTIFY_MIN）+ 属性硬过滤兜底，不靠这条粗筛。
+MIN_SIM = _f("MIN_SIM", 0.30)
 
 # ---------------- 余弦 → 展示分（校准曲线）----------------
 #
@@ -169,12 +271,17 @@ MIN_SIM = _f("MIN_SIM", 0.62)
 #
 # 换成 logistic：单调、无死区、边界软。
 #     score = 99 / (1 + exp(-(sim - SIM_MID) * SIM_SLOPE))
-# SIM_MID=0.755：同猫不同构图的下沿，也是异猫上沿的中间带；
-# SIM_SLOPE=30：在 0.70~0.85 给出接近线性的响应，两端饱和。
-# 参照点（可据此反推线上表现）：0.62→1 / 0.70→16 / 0.74→39 / 0.763→56 /
-#                              0.80→79 / 0.85→94 / 0.90→98
-SIM_MID = _f("SIM_MID", 0.755)
-SIM_SLOPE = _f("SIM_SLOPE", 30.0)
+#
+# ⚠️ 2026-10-31 随 MIN_SIM 一起重标定（MegaDescriptor 的余弦分布比 DINOv2 整体下移）：
+# SIM_MID=0.42：实测「同猫另一张照片」0.364~0.667 的中位附近，
+# SIM_SLOPE=25：在 0.30~0.60 给出接近线性的响应，两端饱和。
+# 参照点（8 张实拍查询的正确候选余弦 → 展示分）：
+#   0.364→20 / 0.408→42 / 0.431→56 / 0.488→84 / 0.506→89 / 0.556→96 /
+#   0.648→99 / 0.667→99
+# 配 IDENTIFY_MIN=45：余弦 ≥0.413 才判「认出来了」，0.364~0.408 仍显示候选但
+# 标注「没认出来」—— 宁可让用户自己确认，也不把 43 分硬说成确定的同一只猫。
+SIM_MID = _f("SIM_MID", 0.42)
+SIM_SLOPE = _f("SIM_SLOPE", 25.0)
 # 展示分上限。留 1 分不给满分：余弦 1.0 只可能是「同一张图」，
 # 那次识别没有信息量，不该显示成「100% 确定」。
 SCORE_CAP = _i("SCORE_CAP", 99)
@@ -233,6 +340,17 @@ ATTR_RERANK_MIN_CONF = _f("ATTR_RERANK_MIN_CONF", 0.5)
 # 置信门槛复用 ATTR_RERANK_MIN_CONF：识别判不出花色（conf 不足）时不过滤。
 ATTR_FILTER = _b("ATTR_FILTER", True)
 
+# 档案花色未知时的**展示分上限**（2026-10-31）。
+# 现场：上传三花猫，候选第一名是「胖橘」——它档案里的 pattern/color 都是空的，
+# 硬过滤只能放行；纯余弦 0.574 经 logistic（slope=25）折成 97%，用户看到的就是
+# 「很有把握地认错」。花色这一维没能校验时，展示分不该给出这种把握。
+#
+# 只降分不剔除：空值 ≠ 冲突，档案没填也可能就是同一只猫；封顶后仍高于
+# IDENTIFY_MIN(45)，真匹配照样判「认出来了」，只是不再出现 90+ 的假确定。
+# 0 = 关闭该上限。只在「查询判出了花色、档案花色为空」时生效 —— 两边都没信息
+# 时不存在「缺失证据」这回事，封顶会把整张低置信花色照片的候选全压平。
+ATTR_UNKNOWN_CAP = _i("ATTR_UNKNOWN_CAP", 60)
+
 # 判「奶牛猫」的必要条件：gray 桶必须低于它。
 # 奶牛猫的物理本质是两块不同色相的毛（V 分布双峰）；而单色猫在光线下的明暗
 # 变化会让同一团毛同时贡献 light 和 dark，两色调规则原封不动命中 ——
@@ -258,7 +376,10 @@ ATTR_TABBY_MIN_WARM = _f("ATTR_TABBY_MIN_WARM", 0.10)
 # 只有 0.003 → 判成三花。真三花必有可观鲜明橘块（严格规则门槛 0.08），宽松
 # 规则降到 0.05 兜底；低于它的 white+dark+warm 改走规则 5 判橘系 ——「橘白猫」
 # 远比「墙根下的橘猫被判三花」接近真相。
-ATTR_CALICO_MIN_ORANGE = _f("ATTR_CALICO_MIN_ORANGE", 0.05)
+# 2026-10-31 抠图后校准为 0.04：抠图把背景墙/阴影剔除后，三花猫2 的鲜明橘
+# 只剩 0.05（刚好等于旧门槛，抖动一下就会掉到 0.04x）。真三花必然有橘块，
+# 0.04 对橘猫/奶牛/狸花均无风险 —— 它们的 dark/warm/gray 条件各自挡得住。
+ATTR_CALICO_MIN_ORANGE = _f("ATTR_CALICO_MIN_ORANGE", 0.04)
 
 # 查询图质量门控：猫在画面里的最小占比。低于它 → 不出候选、花色也弃权。
 # 依据是 2026-10-26 的实拍复现（详见 engine._quality 的 docstring）：
@@ -302,6 +423,14 @@ DETECT_RETRY_CONF = _f("DETECT_RETRY_CONF", 0.2)
 # SIM_MID，而「查询 TTA + 库不 TTA」的不对称是 ReID 常规做法，分布影响可忽略。
 QUERY_TTA_FLIP = _b("QUERY_TTA_FLIP", True)
 
+# 单图查询的三视图特征平均（engine.analyze_frames，2026-10-31）：
+# 抠图灰底外扩框 + 抠图灰底核心框 + 原始裁剪，三条向量平均。
+# 依据是 8 张东南大学原图的实测：只提灰底外扩框时，俯拍/趴卧等与档案构图差异
+# 大的照片整体偏移，正确档案 0.364 被玳瑁档案 0.408 压过（Top1 错）；
+# 三视图平均后正确档案 0.490、8/8 Top1 全对，其余 7 张排序不变。
+# 只在 n==1 生效（视频多帧已有视角多样性，逐帧三视图会把推理次数乘 3）。
+QUERY_MULTI_VIEW = _b("QUERY_MULTI_VIEW", True)
+
 # 曝光锚点的眩光防护（attrs._exposure_shift）：V ≥ 此值且 S ≤ ATTR_GLARE_S 的
 # 像素视为点光源/强反光，从 p98 锚点统计中剔除（占比过半时放弃剔除）。
 # 夜间照片里一盏灯就能把 p98 顶到 240+，让严重欠曝画面误判「曝光正常」，
@@ -313,7 +442,17 @@ ATTR_GLARE_S = _f("ATTR_GLARE_S", 35.0)
 # 奶牛规则的暖色闸（V 免疫版）：「狸花/深猫 + 白背景棚拍」会让 white/black 同时
 # 够量、统计上与奶牛无法区分；真奶牛猫黑白毛都不含暖色（warmish 实测 0.01~0.09），
 # 狸花底毛是暖黄褐（0.37）。超过此值不许判奶牛。None（没证据）时闸门不生效。
-ATTR_COW_MAX_WARM = _f("ATTR_COW_MAX_WARM", 0.25)
+# ⚠️ 0.25 → **0.34**（2026-10-31 实测「奶牛猫.jpg」warmish=0.313 被挡成狸花）：
+# 该图是黑白奶牛猫在暖色木地板/暖光下拍摄，暖色像素来自环境反射而非猫毛。
+# 真狸花底毛实测 0.37~0.60，0.34 仍留 0.03 余量挡得住；玳瑁在更早的规则 2 命中。
+ATTR_COW_MAX_WARM = _f("ATTR_COW_MAX_WARM", 0.34)
+# 奶牛规则的「棕色上限」（2026-10-31 新增，配合上面暖色闸放宽）：
+# 暖色闸从 0.25 放宽到 0.30/0.34 后，**米黄/棕色纯色猫**（乳橘猫趴在白墙旁，
+# 实测 brown 0.279、cream 0.014、warm 0.296、light 0.37/dark 0.31）会整条命中
+# 奶牛规则（老用例 test_buff_cat_against_wall_is_not_calico 当场变 cow）。
+# 区分依据是暖色的**构成**：真奶牛猫的暖色只来自暖光下的白毛（cream 少量，
+# brown 实测 0.003~0.076），棕色毛本身（brown）不存在；纯色黄褐猫 brown ≥ 0.25。
+ATTR_COW_MAX_BROWN = _f("ATTR_COW_MAX_BROWN", 0.15)
 # 三花·白背景稀释救援：白占一半以上时鲜明橘被稀释到 0.02~0.05，正常门槛（0.08/
 # 0.05）够不着。降到 0.02 必须同时要求 dark ≥ 0.05（真三花必有黑块），
 # 挡住「乳橘猫+白墙+阴影」（orange 0.003、dark 全靠阴影）—— 见 _decide 规则 2b。
@@ -330,6 +469,45 @@ ATTR_TABBY_WEAK_WARM = _f("ATTR_TABBY_WEAK_WARM", 0.25)
 # ⚠️ 用 black 桶而非 dark（black+dgray）：buff/乳橘猫的 dgray 可高达 0.23
 # （全是阴影），但 black 只有 0.08 —— 用 dark 会误伤真橘白（2026-10-29）。
 ATTR_ORANGE_WHITE_MAX_BLACK = _f("ATTR_ORANGE_WHITE_MAX_BLACK", 0.12)
+
+# 玳瑁 vs 狸花（2026-10-31 抠图后校准）：两者在色域上都是「暗色 + 大量暖色」，
+# 旧规则只能靠「有没有规则条纹」区分，但玳瑁的红黑不规则斑块本身也会产生
+# 周期性梯度（实测 stripe 0.69），狸花猫1 反而只有 0.56 —— 条纹在两者间不可靠。
+# 真正稳定的差异是**暖色的构成**：玳瑁的红棕/奶油块（orange+cream）占暖色总量
+# 的比例很高（实测 0.25/0.21），狸花的底毛是棕黄褐（brown 为主，0.07/0.07）。
+# 超过此值且暗色够量、几乎无白 → 判玳瑁（见 attrs._decide 规则 2）。
+ATTR_TORTOISE_RED_SHARE = _f("ATTR_TORTOISE_RED_SHARE", 0.18)
+# 上界：整身暖色**全是**红/奶油（warm_red 接近 1）说明这是米黄/橘的纯色猫，
+# 不是「红黑交替」的玳瑁（玳瑁必然还有大量深棕/黑毛，warm_red 实测 0.21~0.25，
+# 合成奶油/黑条纹测试图是 1.0）。超过此值判玳瑁的规则不生效。
+ATTR_TORTOISE_RED_SHARE_MAX = _f("ATTR_TORTOISE_RED_SHARE_MAX", 0.60)
+
+# 「亮毛像素」的定义（matting.fg_stats / attrs 的 bright 统计）：
+# V ≥ ATTR_BRIGHT_V 且 S ≤ ATTR_BRIGHT_S。白猫即便在夜里也满足（实测白猫
+# 0.94~0.98、夜间白猫 0.11）；玄猫 0.001~0.002、玳瑁 0.027~0.031、
+# 狸花 0.056~0.074 —— 差一个数量级，是夜里唯一可靠的「白毛」证据。
+ATTR_BRIGHT_V = _f("ATTR_BRIGHT_V", 170.0)
+ATTR_BRIGHT_S = _f("ATTR_BRIGHT_S", 60.0)
+
+# 夜间白猫救援（attrs._decide 规则 8b）：抠图只留猫毛后，夜里欠曝的白毛会
+# 整桶掉进 gray/black（white 桶只剩 0.10），但「亮毛占比」仍然显著高于
+# 其它花色。bright ≥ 此值且平均饱和度 ≤ ATTR_WHITE_NIGHT_SAT → 判纯白。
+# 白猫夜里饱和度很低（实测 27~30）；玄猫的 JPG 彩色噪点反而偏高（68~90）。
+ATTR_WHITE_NIGHT_BRIGHT = _f("ATTR_WHITE_NIGHT_BRIGHT", 0.08)
+ATTR_WHITE_NIGHT_SAT = _f("ATTR_WHITE_NIGHT_SAT", 45.0)
+# 夜间白猫救援的最后一闸：black 桶上限。奶牛猫的**白色大胸+白脸**同样会
+# 满足上面的 bright/sat（实测奶牛猫1 bright 0.17、sat 38.6），但它的黑毛
+# 占比很高（black 0.70），而夜间白猫几乎全白（实测 0.24~0.25）。
+ATTR_WHITE_NIGHT_MAX_BLACK = _f("ATTR_WHITE_NIGHT_MAX_BLACK", 0.40)
+
+# 质量门控的「抠图救援」（engine._quality）：面积/亮度不达标时，若抠图确认
+# 猫体本身足够大且前景亮度足够，就不再拦。
+# 面积救援：紧绷框最小边 ≥ 此像素（猫在画面里占比小，但原图分辨率够，
+# 抠图后主体像素仍然充足）；并要求掩膜覆盖率在 [0.2, 0.9]（太低=没抠到主体，
+# 太高=掩膜糊成一片，两种情况都不可信）。
+QG_RESCUE_MIN_SIDE = _i("QG_RESCUE_MIN_SIDE", 160)
+QG_RESCUE_COVERAGE_MIN = _f("QG_RESCUE_COVERAGE_MIN", 0.20)
+QG_RESCUE_COVERAGE_MAX = _f("QG_RESCUE_COVERAGE_MAX", 0.90)
 
 # 多张照片合成「代表向量」时保留的比例。
 # 档案里 6 张照片，其中 1 张糊了 / 拍的是另一只猫 / 背景占九成，
@@ -400,6 +578,52 @@ RECO_CACHE_MAX = _i("RECO_CACHE_MAX", 64)
 # 部署到公网且确认素材都在公网可达地址时，设为 true。
 # 云元数据地址（169.254.0.0/16）无论此项都拒绝。
 BLOCK_PRIVATE_URLS = _b("BLOCK_PRIVATE_URLS", False)
+
+# ---------------- 猫咪标准照生成（AIGC 文生图）----------------
+#
+# POST /v1/photo/standard：上传一张猫照 → 自动识别花色 → 生成两组提示词
+# → 调用图片生成服务 → 返回两张标准照（xx1 全身站姿 / xx2 正面标准）。
+# 实现见 app/standard.py。
+#
+# 两种后端（IMAGE_GEN_URL 优先，未配置则用 agnes 图片模型）：
+#   · agnes（默认，带参考图 i2i）—— 上传的原图会作为参考图发给 agnes，
+#     生成结果保持「同一只猫」的毛色/花纹/眼色/脸型/体型，而不是同品种的陌生猫。
+#     需要 AGNES_API_KEY（见文件末尾 agnes 段）与 IMAGE_GEN_MODEL。
+#   · IMAGE_GEN_URL 是**请求模板**，只能传提示词（无参考图），用于接其它服务商：
+#   IMAGE_GEN_URL=https://api.example.com/v1/images/generate?prompt={prompt}&size={image_size}
+# 不含占位符时自动追加 ?prompt=...&image_size=...（方便接简单的 GET 接口）。
+# 两种都没配置 = 未配置：接口返回 503，**不会**用本地拼图伪装成 AI 生成结果。
+IMAGE_GEN_URL = _s("IMAGE_GEN_URL")
+# 可选 Bearer Token（仅 IMAGE_GEN_URL 模板用）。也可以把 key 直接写进 URL 模板。
+IMAGE_GEN_TOKEN = _s("IMAGE_GEN_TOKEN")
+# agnes 图片模型：agnes-image-2.1-flash 在 /images/generations 里带 image 字段
+# （原图 data URI）时走 i2i 队列，实测生成的猫与参考图一致。
+IMAGE_GEN_MODEL = _s("IMAGE_GEN_MODEL", "agnes-image-2.1-flash")
+# 单张生成超时（秒）。文生图常 10~60s，一次请求要生成两张。
+IMAGE_GEN_TIMEOUT = _i("IMAGE_GEN_TIMEOUT", 120)
+# 生图服务返回图片 URL 时的下载上限（字节）。
+IMAGE_GEN_MAX_BYTES = _i("IMAGE_GEN_MAX_BYTES", 20 * 1024 * 1024)
+# 两张图的画幅。只接受 "1K/2K/3K/4K" 或 "WIDTHxHEIGHT"；landscape_4_3 / square_hd
+# 这类命名会被 agnes 400 拒绝（实测）。
+IMAGE_GEN_SIZE_FULL = _s("IMAGE_GEN_SIZE_FULL", "2048x1536")
+IMAGE_GEN_SIZE_FRONT = _s("IMAGE_GEN_SIZE_FRONT", "2048x2048")
+# 可选：结果落盘目录。留空只返回 base64；请求里 save=true 时需要配置它。
+IMAGE_GEN_DIR = _s("IMAGE_GEN_DIR")
+
+# ---------------- agnes 大模型（兼容 OpenAI Chat Completions 格式）----------------
+#
+# 一个外部对话大模型，端点兼容 OpenAI 的 /chat/completions 协议：
+#   完整 URL = AGNES_API_BASE + "/chat/completions"
+# 「OpenAI Chat Completions 格式」意味着它吃标准 messages（role/content），
+# 支持多模态（content 为 image_url + text 的 parts 数组）。
+# 详见 app/agnes.py 的封装与 main.py 的 /v1/agnes/chat 路由。
+#
+# ⚠️ AGNES_API_KEY 留空 = 接口不可用（每次调用会返回明确的「未配置」错误，
+#    不会把空 key 发给远端）。由部署方在环境变量 / .env 里填写。
+AGNES_API_BASE = _s("AGNES_API_BASE", "https://api.agnes-ai.cn/v1")
+AGNES_API_KEY = _s("AGNES_API_KEY","sk-EkNdiBbtix9A9Wim2pOxsold9rAaoDX208U73Bn9mb8jT62O")
+AGNES_MODEL = _s("AGNES_MODEL", "agnes-2.5-flash")
+AGNES_TIMEOUT = _i("AGNES_TIMEOUT", 30)
 
 # ImageNet 归一化常量（DINOv2 / CLIP 都用这一组）
 IMAGENET_MEAN = (0.485, 0.456, 0.406)

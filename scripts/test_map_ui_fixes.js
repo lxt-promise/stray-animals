@@ -126,5 +126,21 @@ assert('locateMe 复位 _userPanned', /this\._userPanned = false/.test(segLocate
 const segTap = mapSrc.slice(mapSrc.indexOf('onMarkerTap(e)'), mapSrc.indexOf('cluster 内猫'))
 assert('点 marker 复位 _userPanned', /this\._userPanned = false/.test(segTap))
 
+/* ---------- 8. 防虐猫：非成员「整体显示、放大隐藏」+ 导航仅成员可见 ---------- */
+const navSeg = mapWxml.slice(mapWxml.indexOf('goNavFromPopup') - 200, mapWxml.indexOf('goNavFromPopup') + 40)
+assert('导航按钮仅成员可见（scope === member）', /wx:if="\{\{scope === 'member'\}\}"[^>]*bindtap="goNavFromPopup"/.test(mapWxml))
+assert('goNavFromPopup 有非成员守卫（不能只靠前端藏按钮）',
+  /goNavFromPopup\(\)\s*\{[^}]*scope !== 'member'/.test(mapSrc.replace(/\n/g, ' ')))
+assert('放大隐藏提示存在于 wxml', /detailHidden/.test(mapWxml) && /缩小地图可查看整体分布/.test(mapWxml))
+assert('map.js 定义 DETAIL_HIDE_SCALE 阈值', /DETAIL_HIDE_SCALE = 17/.test(mapSrc))
+assert('map.js 有 applyDetailScale 缩放联动', /applyDetailScale\(/.test(mapSrc))
+assert('onRegionChange 读 getScale 联动隐藏', /getScale\(\{/.test(mapSrc))
+assert('load() 缓存 _allMarkers 供恢复', /this\._allMarkers = markers/.test(mapSrc))
+assert('图例注明「放大地图后将隐藏点位」', /放大地图后将隐藏点位/.test(mapWxml))
+// 云端：非成员一律模糊（不再只模糊幼猫/病猫）
+const cloudMap = fs.readFileSync(path.join(ROOT, 'cloudfunctions/catcampus/lib/map.js'), 'utf8')
+assert('云端 mapPoints 非成员一律 blurLocation',
+  /const loc = member \? x\.picked\.loc : blurLocation\(x\.picked\.loc\)/.test(cloudMap))
+
 console.log('\nPASS ' + pass + ' / FAIL ' + fail)
 process.exit(fail ? 1 : 0)

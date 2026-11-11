@@ -190,7 +190,10 @@ Page(Object.assign({
   },
 
   goCat(e) {
-    wx.navigateTo({ url: '/pages/cat-detail/cat-detail?id=' + e.currentTarget.dataset.id })
+    // 没拿到合法 id 就别跳：拼出 `?id=undefined` 只会得到一张白屏 + 报错
+    const id = e.currentTarget && e.currentTarget.dataset && e.currentTarget.dataset.id
+    if (!id || id === 'undefined' || id === 'null') return
+    wx.navigateTo({ url: '/pages/cat-detail/cat-detail?id=' + id })
   },
 
   // 注意：cats / mine 都是 tabBar 页面，必须用 switchTab；
@@ -202,6 +205,7 @@ Page(Object.assign({
     wx.switchTab({ url: '/pages/cats/cats' })
   },
 
+  /** 咪咪筹：校园猫医疗 / 绝育筹款（列表页不是 tab 页，走 navigateTo） */
   goCreateSchool() {
     wx.switchTab({ url: '/pages/mine/mine' })
   },

@@ -25,6 +25,7 @@ from PIL import Image
 
 from . import config
 from . import attrs as attr_heuristic
+from . import matting
 
 log = logging.getLogger("catcampus.engine")
 
@@ -200,6 +201,47 @@ def _resolve_detect_model() -> str:
         return ""
     cand = os.path.join(_SERVER_DIR, "models", "yolov8n.onnx")
     return cand if os.path.exists(cand) else ""
+
+
+def _resolve_reid_model() -> Tuple[str, str]:
+    """决定用哪个 ReID 骨干，返回 (路径, 归一化口径)。
+
+    归一化口径：MegaDescriptor 系列用 half（[0.5,0.5,0.5]），DINOv2 等通用骨干
+    用 imagenet。配错会让向量塌缩、同猫余弦掉到 0.3 以下，所以必须跟模型走。
+
+    规则（按优先级）：
+      1. `REID_ONNX=off / none / 0 / false` —— 显式关闭，回退 torch/hash。
+      2. `REID_ONNX` 指向具体文件 —— 用它（文件名含 mega 自动半归一化）。
+      3. `REID_ONNX` 为空 —— 自动发现：优先 models/mega_descriptor_t.onnx
+         （动物 ReID 专用、1.3MB、CPU 59ms、类内-类间间隔 0.68 远超 DINOv2 的 0.30），
+         找不到再退回 models/reid.onnx（DINOv2 ViT-Base，86.8MB）。
+
+    为什么把 MegaDescriptor 设为首选（2026-10-31）：19 张实拍猫图上，它的
+    「同图不同裁剪」余弦均值 0.887 与 DINOv2 的 0.922 接近，但**不同猫均值
+    0.209 vs 0.618、最大 0.732 vs 0.851** —— 类间分离度是 DINOv2 的 2.2 倍，
+    误匹配风险大幅降低，且模型小 67 倍、快 2 倍。
+    """
+    raw = (config.REID_ONNX or "").strip()
+    if raw.lower() in ("0", "off", "none", "false", "no"):
+        return "", "imagenet"
+    if raw:
+        return raw, _norm_for(raw)
+    # 自动发现：MegaDescriptor 优先，退回 DINOv2
+    mega = os.path.join(_SERVER_DIR, "models", "mega_descriptor_t.onnx")
+    if os.path.exists(mega):
+        return mega, "half"
+    dino = os.path.join(_SERVER_DIR, "models", "reid.onnx")
+    if os.path.exists(dino):
+        return dino, "imagenet"
+    return "", "imagenet"
+
+
+def _norm_for(path: str) -> str:
+    """根据模型文件名猜归一化口径：含 mega/descriptor → half，否则 imagenet。"""
+    low = os.path.basename(path).lower()
+    if "mega" in low or "descriptor" in low:
+        return "half"
+    return "imagenet"
 
 
 def _iou(a: List[int], b: List[int]) -> float:
@@ -386,6 +428,14 @@ def _probe_input_size(sess, input_name, prefer=None):
     return int(prefer or 224)
 
 
+def _norm_mean_std(norm: str):
+    """按归一化口径返回 (mean, std)。imagenet = ImageNet 均值方差；
+    half / mega = [0.5,0.5,0.5]（MegaDescriptor 系列）。"""
+    if (norm or "imagenet").lower() in ("half", "0.5", "mega"):
+        return (0.5, 0.5, 0.5), (0.5, 0.5, 0.5)
+    return config.IMAGENET_MEAN, config.IMAGENET_STD
+
+
 def _to_nchw(im: Image.Image, size: int, mean, std) -> np.ndarray:
     im2 = _letterbox(im.convert("RGB"), size)
     a = np.asarray(im2, dtype=np.float32) / 255.0
@@ -407,11 +457,15 @@ class _Embedder:
         self.backend = "hash"
         self.dim = 128
         self.size = int(config.REID_SIZE)   # 实际输入边长（ONNX 分支会按模型校准）
+        self.mean, self.std = config.IMAGENET_MEAN, config.IMAGENET_STD
+        self.norm = "imagenet"      # 归一化口径（half/imagenet），/health 上报
+        self.model_file = ""        # 实际加载的权重文件名，/health 上报
         self._load()
 
     # ---------- 加载 ----------
     def _load(self):
-        if config.REID_ONNX:
+        onnx_path, norm = _resolve_reid_model()
+        if onnx_path:
             try:
                 import onnxruntime as ort  # type: ignore
 
@@ -419,15 +473,18 @@ class _Embedder:
                 if config.DEVICE in ("auto", "cuda"):
                     if "CUDAExecutionProvider" in ort.get_available_providers():
                         providers.insert(0, "CUDAExecutionProvider")
-                self.sess = ort.InferenceSession(config.REID_ONNX, providers=providers)
+                self.sess = ort.InferenceSession(onnx_path, providers=providers)
                 self.input_name = self.sess.get_inputs()[0].name
                 outs = self.sess.get_outputs()
                 self.dim = _dim_of(outs[0].shape)
                 # 输入边长由「模型说了算」并跑一次空推理确认，不盲信配置
                 self.size = _probe_input_size(self.sess, self.input_name, config.REID_SIZE)
+                self.mean, self.std = _norm_mean_std(norm)
+                self.norm = norm
+                self.model_file = os.path.basename(onnx_path)
                 self.backend = "onnx"
-                log.info("ReID 引擎就绪：ONNX (%s) dim=%s size=%d",
-                         providers[0], self.dim, self.size)
+                log.info("ReID 引擎就绪：ONNX (%s) %s dim=%s size=%d norm=%s",
+                         providers[0], os.path.basename(onnx_path), self.dim, self.size, norm)
                 return
             except Exception as e:  # noqa: BLE001
                 log.warning("ONNX 加载失败，回退 PyTorch：%s", e)
@@ -444,6 +501,9 @@ class _Embedder:
             self.dev = torch.device(dev)
             self.model.to(self.dev)
             self.dim = getattr(self.model, "num_features", 1024)
+            self.mean, self.std = _norm_mean_std(_norm_for(config.REID_TORCH))
+            self.norm = _norm_for(config.REID_TORCH)
+            self.model_file = str(config.REID_TORCH)
             self.backend = "torch"
             log.info("ReID 引擎就绪：torch %s dim=%d", dev, self.dim)
             return
@@ -453,7 +513,7 @@ class _Embedder:
     # ---------- 推理 ----------
     def __call__(self, im: Image.Image) -> np.ndarray:
         if self.backend == "onnx":
-            x = _to_nchw(im, self.size, config.IMAGENET_MEAN, config.IMAGENET_STD)
+            x = _to_nchw(im, self.size, self.mean, self.std)
             outs = self.sess.run(None, {self.input_name: x})
             return l2(_pool(outs))
 
@@ -464,7 +524,7 @@ class _Embedder:
                 T.Resize(config.REID_SIZE),
                 T.CenterCrop(config.REID_SIZE),
                 T.ToTensor(),
-                T.Normalize(config.IMAGENET_MEAN, config.IMAGENET_STD),
+                T.Normalize(self.mean, self.std),
             ])
             with self.torch.no_grad():
                 v = self.model(tf(im.convert("RGB")).unsqueeze(0).to(self.dev))
@@ -668,20 +728,31 @@ class Engine:
 
     @property
     def attr_source(self) -> str:
-        """当前属性识别的首选路径：clip（语义更准）/ api（远程）/ heuristic（色域）。"""
+        """当前属性识别的首选路径：clip（语义更准）/ api（远程）/ pattern / heuristic（色域）。
+
+        pattern = `ATTR_ENGINE=pattern`（tools/pattern_recognize.py 的看色板+
+        布局口径），heuristic = `app/attrs.py` 的色域统计。两者输出契约相同，
+        只在管理端「识别引擎」卡片上区分，便于线上 A/B 时确认跑的是哪套。
+        """
         if self.clf.ok:
             return "clip"
         if getattr(config, "ATTR_API_URL", ""):
             return "api"
+        if str(getattr(config, "ATTR_ENGINE", "pattern") or "").strip().lower() != "legacy":
+            return "pattern"
         return "heuristic"
 
-    def attrs(self, im: Image.Image, cropped: bool = False) -> dict:
+    def attrs(self, im: Image.Image, cropped: bool = False,
+              mask: Optional[np.ndarray] = None) -> dict:
         """属性识别：CLIP 优先，置信度不足或不可用时落到色域启发式。
 
         为什么是「CLIP 先、启发式后」而不是反过来：
           CLIP 在有条件装的环境下确实更准（能区分重点色、银渐层这类微妙花色），
           但它对 9×6 个候选做 softmax，置信度低于 0.5 基本等于瞎猜 ——
           这时启发式的「数像素」反而更可靠（橘猫就是橘色占多数，不需要语义理解）。
+
+        mask（可选）是猫体前景掩膜（见 app/matting.py），只对启发式生效：
+        抠图后色域统计只数猫毛，背景墙/床单不再把黑猫染成奶牛、把白猫染成灰。
 
         返回结构见 app/attrs.py：color/pattern/breed/confidence/source/palette/reason。
         这个 dict 会原样进 /v1/recognize 的 features 和 meta，**不给前端假数据**：
@@ -721,8 +792,11 @@ class Engine:
         if clip and not clip["reason"]:
             return clip
 
-        got = attr_heuristic.detect(im, cropped=cropped)
-        if got.get("color"):
+        got = attr_heuristic.detect(im, cropped=cropped, mask=mask)
+        # refused=True 是「素材不可用」（糊片 / 猫体几乎不存在），不是算法判不出。
+        # 这种结果**必须优先于低置信 CLIP**：CLIP 再怎么说也只是在没有信息时
+        # 猜一个标签，展示给用户就是误判。让用户重拍才是正确出口。
+        if got.get("color") or got.get("refused"):
             return got
         # 启发式也判不出来 → 退回 CLIP 的低置信结果（有就带上说明）
         return clip or got
@@ -745,12 +819,49 @@ class Engine:
                 f"（骨干导出方式变了？请检查 engine._pool 与 REID_ONNX）")
         return emb
 
+    @staticmethod
+    def _mask_sub(mask: np.ndarray, box, sub) -> Optional[np.ndarray]:
+        """从 box 区域掩膜里裁出 sub 区域（两者都是**原图坐标**）。
+
+        analyze_frames 的掩膜是一次性在检测帧的外扩框上算的，而花色统计
+        用的是紧绷框（外扩框的子区域）—— 这里按坐标偏移直接切片，
+        不重新推理（u2netp 单次 0.3~0.5s，多跑一次纯属浪费）。
+        """
+        if mask is None or not box or not sub:
+            return None
+        x1 = max(0, int(sub[0]) - int(box[0]))
+        y1 = max(0, int(sub[1]) - int(box[1]))
+        x2 = min(mask.shape[1], int(sub[2]) - int(box[0]))
+        y2 = min(mask.shape[0], int(sub[3]) - int(box[1]))
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return mask[y1:y2, x1:x2]
+
+    def _foreground(self, im: Image.Image) -> dict:
+        """在 crop 上跑抠图；关闭/失败时返回 ok=False（调用方退回旧行为）。
+
+        抠图是加分项，绝不能成为识别链路的单点故障 —— 与 detect/embed 的
+        降级纪律一致：失败就按「没抠图」继续。
+        """
+        if not matting.enabled():
+            return {"ok": False}
+        try:
+            return matting.foreground(im)
+        except Exception as e:  # noqa: BLE001
+            log.warning("抠图异常，按未抠图继续：%s: %s", type(e).__name__, e)
+            return {"ok": False}
+
     def features_ex(self, im: Image.Image, box=_AUTO_BOX) -> Tuple[np.ndarray, bool, dict]:
         """返回 (embedding, 是否检测到猫体, 属性 dict)。
 
         `box` 可传入外部已算好的框（多帧复用时用），默认自己检测。
         与 features() 的差别只是把属性从 3 个标量升级成完整 dict（含品种、
         来源、色板占比、失败原因），/v1/recognize 需要这些诊断信息。
+
+        抠图（2026-10-31）：外扩框 crop 上跑一次 u2netp，得到猫体掩膜。
+          - 花色统计（紧绷框）只数掩膜内的猫毛；
+          - 提特征用「中性灰底 + 猫体」的合成图，背景不再进 embeddings。
+        任一项失败都退回旧的全框流程（见 _foreground）。
         """
         if box is _AUTO_BOX:
             det = _run_detect(self.detector, im)
@@ -761,9 +872,26 @@ class Engine:
         crop = im.crop(box) if box else im
         # 花色用紧绷框（理由见 analyze_frames），提特征用外扩框
         attr_im = im.crop(core) if core else im
+        mask = attr_mask = None
+        fg = self._foreground(crop) if box else {"ok": False}
+        if fg.get("ok"):
+            mask = fg.get("mask")
+            attr_mask = self._mask_sub(mask, box, core) if core else mask
+        emb_im = crop
+        # 抠图覆盖率太低 → u2netp 把猫体弄丢了（提亮后的白毛最常见）。
+        # 此时强行灰底合成会得到几乎纯灰的图，特征向量退化成噪声。
+        # 退回原始 crop：带进背景，但猫体像素还在，特征仍可用。
+        emb_mask = mask
+        if mask is not None and float(fg.get("coverage") or 0.0) < float(getattr(config, "MATTING_MIN_COVERAGE", 0.10)):
+            emb_mask = None
+        if emb_mask is not None and bool(getattr(config, "MATTING_MASK_EMBED", True)):
+            emb_im = matting.compose(crop, emb_mask)
+        if not bool(getattr(config, "MATTING_MASK_ATTR", True)):
+            attr_mask = None
         # cropped=True 告诉属性分析「这已是紧贴猫体的裁剪图」，
         # 别再套中央椭圆（会削掉耳朵和尾巴）。
-        return self._embed(crop), box is not None, self.attrs(attr_im, cropped=box is not None)
+        return self._embed(emb_im), box is not None, \
+            self.attrs(attr_im, cropped=box is not None, mask=attr_mask)
 
     def analyze_frames(self, frames: List[Image.Image]) -> dict:
         """识别主流程：检测一次 → 所有帧复用同一个框 → 提特征 → 选最清楚的一帧判花色。
@@ -798,15 +926,48 @@ class Engine:
         detect_ms = int((time.time() - t_det) * 1000)
 
         box = det["box"]
-        # 猫体区域平均亮度（低光门控用，见 _quality）：必须在**喂给嵌入模型的
-        # 同一个框**（外扩框 crop）上算 —— 嵌入不可信的根源就是这些像素。
-        # 只算检测帧一次：一段视频/一张图光照恒定，逐帧算是白花 CPU。
-        light = self._box_light(frames[det_i], box)
         # 花色用**紧绷框**、提特征用**外扩框**：两者诉求相反。
         # 外扩能补回被切掉的耳尖/尾巴（个体特征更完整），但每扩一圈都会带进
         # 背景和杂物 —— 实测 8% 外扩把绿墙和木桌算进色域，白猫从「纯白」变成
         # 「颜色不集中」判不出来。所以色彩统计坚持用没外扩的那个框。
         core = det.get("core") or box
+
+        # 抠图（2026-10-31）：**只跑一次**，在检测帧的外扩框上算。
+        # 掩膜坐标是外扩框内的，花色用的紧绷框是它的子区域（_mask_sub 切片）。
+        # 多帧几乎重合，复用一个掩膜既省一次 0.3~0.5s 推理，也保证各帧属性
+        # 统计口径一致（多帧聚合才有意义）。
+        mask = attr_mask = None
+        fg_stats = None
+        crop0 = frames[det_i].crop(box) if box else None
+        fg = self._foreground(crop0) if crop0 is not None else {"ok": False}
+        if fg.get("ok"):
+            mask = fg.get("mask")
+            attr_mask = self._mask_sub(mask, box, core) if core else mask
+            if mask is not None:
+                fg_stats = matting.fg_stats(crop0, mask)
+        if not bool(getattr(config, "MATTING_MASK_ATTR", True)):
+            attr_mask = None
+
+        # 猫体区域平均亮度（低光门控用，见 _quality）：必须在**喂给嵌入模型的
+        # 同一个框**（外扩框 crop）上算 —— 嵌入不可信的根源就是这些像素。
+        # 只算检测帧一次：一段视频/一张图光照恒定，逐帧算是白花 CPU。
+        #
+        # ⚠️ 这里用**整框平均**而不是「前景平均」（2026-10-31 实测）：
+        # 黑猫的毛本来就是暗的，前景平均无法区分「黑毛」和「欠曝」——
+        # 实测 19 张白天实拍（含玄猫/玳瑁/狸花）整框平均 143~187，而夜间白猫
+        # 只有 102。前景平均会把玄猫（25）玳瑁（80）全部误拦成「光线太暗」。
+        # 夜间**白猫**的救援不靠这里：抠图后的 bright/sat 在 _quality 里单独判。
+        light = self._box_light(frames[det_i], box)
+        rescue = None
+        if fg.get("ok"):
+            rescue = {
+                "minSide": min(core[2] - core[0], core[3] - core[1]) if core else 0,
+                "coverage": float(fg.get("coverage") or 0.0),
+                "tight": float(fg.get("tight") or 0.0),
+                "bright": (fg_stats or {}).get("bright"),
+                "sat": (fg_stats or {}).get("sat"),
+            }
+
         embs, frame_attrs = [], []
         t_emb = time.time()
         # 查询端翻转 TTA（config.QUERY_TTA_FLIP）：单/双帧时把 crop 镜像再提一次，
@@ -814,15 +975,48 @@ class Engine:
         # 正好落在 IDENTIFY_MIN 门槛附近。帧数 ≥3 时多帧平均已提供同等方差缩减，
         # 不再加倍耗时（视频 8 帧开 TTA 会把推理时间翻倍到十几秒）。
         tta = bool(getattr(config, "QUERY_TTA_FLIP", True)) and n <= 2
+        # 抠图覆盖率太低 → u2netp 把猫体弄丢了，退回原始 crop（见 features_ex 同逻辑）。
+        emb_mask = mask
+        if mask is not None and float(fg.get("coverage") or 0.0) < float(getattr(config, "MATTING_MIN_COVERAGE", 0.10)):
+            emb_mask = None
+        # 单图查询的**三视图平均**（2026-10-31，config.QUERY_MULTI_VIEW）：
+        # 抠图灰底外扩框 + 抠图灰底核心框 + 原始裁剪，三条向量平均后归一化。
+        # 为什么需要（实测 8 张东南大学原图）：只提「灰底外扩框」时，俯拍/趴卧这类
+        # 与档案构图差异极大的照片会整体偏移 —— 实测「狸花猫.jpg」（俯拍趴卧）
+        # 与真档案 0.364，却被玳瑁档案 0.408 压过（差 0.044，Top1 错）。
+        # 加两个视图后真档案升到 0.490（次名玳瑁 0.431），且其余 7 张 Top1 全部不变：
+        #   三花 .540 / 奶牛 .492 / 奶牛2 .634 / 奶牛3 .535 / 小奶牛 .425 /
+        #   橘猫 .662 / 狸花 .490 / 狸花2 .556（正确档案，全部 ≥ SIM_MID）
+        # 机理：灰底抠图抹掉了真实皮毛在环境光下的色偏与轮廓细节，原始裁剪补回来；
+        # 核心框（紧绷、不含外扩背景）提供尺度不变的第二视角。索引侧仍是单视图
+        # 「灰底外扩框」，与视图之一口径一致，不是两套分布。
+        # ⚠️ 只对**单帧**生效：多帧（视频）本身已提供视角多样性，逐帧三视图会把
+        # 推理次数乘 3（8 帧 → 24 次），得不偿失。
+        multi_view = (bool(getattr(config, "QUERY_MULTI_VIEW", True)) and
+                      n == 1 and box is not None)
         for im in frames:
             crop = im.crop(box) if box else im
-            if tta:
-                e1 = self._embed(crop)
-                e2 = self._embed(crop.transpose(_FLIP_LR))
-                embs.append(l2((e1 + e2) * 0.5))
+            if multi_view:
+                cmask = self._mask_sub(emb_mask, box, core) if core else None
+                core_crop = im.crop(core) if core else crop
+                # 抠图不可用时第一个视图退回原始裁剪，第三个视图退回核心裁剪 ——
+                # 仍然是三视图平均（不因抠图失败就换一套口径），只是少了两层灰底合成。
+                views = [matting.compose(crop, emb_mask) if emb_mask is not None else crop,
+                         crop,
+                         matting.compose(core_crop, cmask) if cmask is not None else core_crop]
+                emb = np.mean(np.stack([self._embed(v) for v in views]), axis=0)
+                embs.append(l2(emb))
             else:
-                embs.append(self._embed(crop))
-            frame_attrs.append(self.attrs(im.crop(core) if core else im, cropped=bool(box)))
+                if emb_mask is not None and bool(getattr(config, "MATTING_MASK_EMBED", True)):
+                    crop = matting.compose(crop, emb_mask)
+                if tta:
+                    e1 = self._embed(crop)
+                    e2 = self._embed(crop.transpose(_FLIP_LR))
+                    embs.append(l2((e1 + e2) * 0.5))
+                else:
+                    embs.append(self._embed(crop))
+            frame_attrs.append(self.attrs(im.crop(core) if core else im,
+                                          cropped=bool(box), mask=attr_mask))
         embed_ms = int((time.time() - t_emb) * 1000)
 
         # 属性结论：优先多帧聚合（含单帧 —— 单帧时聚合器等价于原样返回），
@@ -844,7 +1038,8 @@ class Engine:
             "detectReason": det.get("reason") or "",
             "detectRetried": bool(det.get("retried")),   # 低光提亮重试命中
             "attr": attr,
-            "quality": self._quality(box, frames[0].size if frames else None, light=light),
+            "quality": self._quality(box, frames[0].size if frames else None,
+                                     light=light, rescue=rescue),
             "timing": {"detect": detect_ms, "embed": embed_ms},
         }
 
@@ -864,7 +1059,7 @@ class Engine:
             return None
 
     @staticmethod
-    def _quality(box, frame_size, light=None) -> dict:
+    def _quality(box, frame_size, light=None, rescue=None) -> dict:
         """查询图可信度：**猫占多大** + **光线够不够**。任一不过 → 放弃结论。
 
         为什么需要（2026-10-26 实测，不是理论）
@@ -892,6 +1087,16 @@ class Engine:
         门控口径：任一维度不过 → **不返回候选匹配、花色也弃权**：硬给结论比
         说"看不清"更糟 —— 用户会照着错误结果去点「就是这只猫」，把错样本
         写进特征库。
+
+        抠图救援（2026-10-31）：两个门控都是「整框」口径，抠图后有了猫体掩膜，
+        可以把普通误拦救回来 —— 前提是掩膜确认主体像素充足 / 是亮毛细的白猫：
+          · 面积救援：占比不足，但紧绷框最小边 ≥ QG_RESCUE_MIN_SIDE（原图分辨率
+            够，抠图后主体仍是几百像素），且掩膜覆盖率在合理区间；
+          · 低光救援：**整框**平均亮度不足（口径见 analyze_frames 的注释，不用
+            前景平均 —— 黑猫的毛本身就暗），但抠图后猫毛的亮毛占比
+            ≥ ATTR_WHITE_NIGHT_BRIGHT（实测白天暗背景的奶牛猫/黑猫/狸花
+            都有 14%~56%，而真正欠曝的夜间画面 ≈0）。
+        rescue=None（没抠图 / 抠图失败）时行为与旧版完全一致。
         """
         if not box or not frame_size:
             return {"ok": False, "areaRatio": 0.0,
@@ -900,18 +1105,45 @@ class Engine:
         if fw <= 0 or fh <= 0:
             return {"ok": False, "areaRatio": 0.0, "reason": "画面尺寸异常"}
         ratio = (box[2] - box[0]) * (box[3] - box[1]) / float(fw * fh)
+        rescued = False
         if ratio < float(config.QG_MIN_AREA_RATIO):
-            return {"ok": False, "areaRatio": round(ratio, 4),
-                    "reason": "猫在画面里只占 %.0f%%，距离太远，特征不足以可靠比对"
-                              % (100.0 * ratio)}
+            r = rescue or {}
+            min_side = float(r.get("minSide") or 0.0)
+            cov = float(r.get("coverage") or 0.0)
+            if not (min_side >= float(config.QG_RESCUE_MIN_SIDE) and
+                    float(config.QG_RESCUE_COVERAGE_MIN) <= cov <=
+                    float(config.QG_RESCUE_COVERAGE_MAX)):
+                return {"ok": False, "areaRatio": round(ratio, 4),
+                        "reason": "猫在画面里只占 %.0f%%，距离太远，特征不足以可靠比对"
+                                  % (100.0 * ratio)}
+            # 占比小但猫体像素足够（抠图确认）：放行，并标出是救援放行的
+            rescued = True
         # 低光门控：⚠️ 必须显式 None 判断（None = 没算出来，门控不生效），
         # 不能写 `if not light` —— V=0.0 是合法的（全黑图）会被 or 链吞掉。
+        #
+        # 2026-10-31 修「图片分明很亮却提示光线太暗」（现场截图 2）：
+        # 整框平均 V 真正反映的是**背景暗不暗**，不是猫亮不亮。白天背光/树荫/
+        # 夜景环境里整框均值会掉到 100~115，而猫身本身完全清晰 ——
+        # 实测三张被误拦的查询图：奶牛猫2（整框 111.6 / 亮毛占比 56%）、
+        # 小奶牛（104.7 / 14%）、狸花猫2（111.6 / 16%）。
+        # 救援判据只留「亮毛占比」：bright 是抠图后**猫毛自身**的统计，
+        # 有 8% 以上亮毛像素就说明猫被照到了，无论它黑、它花、背景多暗。
+        # 之前还要求 sat ≤45（为夜间白猫设的），但饱和度是**毛色**属性 ——
+        # 黑猫的 JPG 色噪 sat 90、狸花底毛 sat 54~78，全被这条误伤。
+        # 真正欠曝的图（夜间黑猫/全黑画面）bright ≈0，仍然拦得住。
         if light is not None and light < float(config.QG_MIN_LIGHT_MEAN_V):
-            return {"ok": False, "areaRatio": round(ratio, 4),
-                    "lightMeanV": round(light, 1),
-                    "reason": "光线太暗，拍到的细节不足以可靠比对，请靠近光源重拍"}
+            r = rescue or {}
+            bright = r.get("bright")
+            if not (bright is not None and
+                    float(bright) >= float(config.ATTR_WHITE_NIGHT_BRIGHT)):
+                return {"ok": False, "areaRatio": round(ratio, 4),
+                        "lightMeanV": round(light, 1),
+                        "foregroundBright": None if bright is None else round(float(bright), 3),
+                        "reason": "光线太暗，拍到的细节不足以可靠比对，请靠近光源重拍"}
+            rescued = True
         return {"ok": True, "areaRatio": round(ratio, 4),
                 "lightMeanV": None if light is None else round(light, 1),
+                "rescued": rescued,
                 "reason": ""}
 
     def features(self, im: Image.Image) -> Tuple[np.ndarray, str, str, float, bool]:

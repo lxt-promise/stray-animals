@@ -1,0 +1,167 @@
+.wb-page {
+  min-height: 100vh;
+  padding: 24rpx 24rpx 60rpx;
+  box-sizing: border-box;
+  background: #FFF7ED;
+}
+
+/* 顶部标题 */
+.wb-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12rpx 8rpx 24rpx;
+}
+.wb-h-title {
+  font-size: 44rpx;
+  font-weight: 700;
+  color: #7C2D12;
+}
+.wb-h-sub {
+  font-size: 24rpx;
+  color: #9A8478;
+  margin-top: 4rpx;
+}
+.wb-h-role {
+  font-size: 24rpx;
+  color: #B45309;
+  background: #FED7AA;
+  padding: 8rpx 20rpx;
+  border-radius: 999rpx;
+  font-weight: 600;
+}
+.wb-h-role.super {
+  color: #FFFFFF;
+  background: #EA580C;
+}
+
+/* 板块：卡片 + 板块头 */
+.sec {
+  background: #FFFFFF;
+  border-radius: 24rpx;
+  margin-bottom: 24rpx;
+  overflow: hidden;
+  box-shadow: 0 6rpx 20rpx rgba(124, 45, 18, 0.06);
+}
+.sec-head {
+  padding: 28rpx 28rpx;
+  display: flex;
+  align-items: center;
+}
+.sec-title {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: #7C2D12;
+}
+.sec-body {
+  padding: 0 28rpx 28rpx;
+}
+
+/* 概览统计 */
+.stat-row {
+  display: flex;
+  gap: 16rpx;
+}
+.stat {
+  flex: 1;
+  background: #FFF7ED;
+  border-radius: 18rpx;
+  padding: 24rpx 0;
+  text-align: center;
+}
+.stat .num {
+  font-size: 40rpx;
+  font-weight: 700;
+  color: #EA580C;
+}
+.stat .lbl {
+  font-size: 22rpx;
+  color: #9A8478;
+  margin-top: 6rpx;
+}
+.balance {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: #15803D;
+}
+.apply-row {
+  margin-top: 24rpx;
+  background: #FFF7ED;
+  border-radius: 18rpx;
+  padding: 24rpx;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.apply-num {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: #9A8478;
+  min-width: 56rpx;
+  text-align: center;
+}
+.apply-num.hl {
+  color: #EA580C;
+}
+.notify-link {
+  margin-top: 18rpx;
+  color: #C2854F;
+}
+
+/* 快捷入口网格 */
+.entry-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+}
+.entry {
+  width: calc((100% - 32rpx) / 3);
+  box-sizing: border-box;
+}
+.entry-inner {
+  background: #FFF7ED;
+  border-radius: 18rpx;
+  padding: 26rpx 12rpx;
+  text-align: center;
+  height: 100%;
+  box-sizing: border-box;
+}
+.entry .ico {
+  font-size: 44rpx;
+}
+.entry .txt {
+  font-size: 26rpx;
+  color: #7C2D12;
+  font-weight: 600;
+  margin-top: 10rpx;
+}
+.entry .desc {
+  font-size: 20rpx;
+  color: #9A8478;
+  margin-top: 4rpx;
+}
+
+.tip {
+  text-align: center;
+  margin-top: 12rpx;
+  padding: 0 20rpx;
+}
+
+/* 通用小按钮 */
+.btn {
+  display: inline-block;
+  font-size: 26rpx;
+  border-radius: 14rpx;
+  padding: 0 28rpx;
+  height: 64rpx;
+  line-height: 64rpx;
+}
+.btn-ghost {
+  color: #C2410C;
+  background: #FFFFFF;
+  border: 2rpx solid #FCD9B6;
+}
+.btn-sm { height: 60rpx; line-height: 60rpx; font-size: 24rpx; }
+.flex-between { display: flex; align-items: center; justify-content: space-between; }
+.small { font-size: 22rpx; }
+.muted { color: #9A8478; }

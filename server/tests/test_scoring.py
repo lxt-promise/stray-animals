@@ -35,12 +35,17 @@ class TestToGrade(unittest.TestCase):
     """展示分校准。"""
 
     def test_anchors(self):
-        """锚点：现场那组真实数字必须落在「能认出来」的区间。"""
-        self.assertEqual(main.to_grade(0.763), 55)      # 用户现场：同一只猫
-        self.assertGreaterEqual(main.to_grade(0.763), config.IDENTIFY_MIN)
-        self.assertEqual(main.to_grade(0.698), 15)      # 现场次名（另一只猫）
-        # 无关图（0.51~0.55）必须几乎归零，否则界面上会冒出「0.5 相似但 40 分」
-        self.assertLessEqual(main.to_grade(0.55), 3)
+        """锚点：MegaDescriptor 换骨干后实测的真实数字（2026-10-31，8 张东南大学原图）。
+
+        与 DINOv2 时代不同，MegaDescriptor 的余弦整体下移，锚点必须按新分布重标定：
+        同猫不同照片 0.49~0.56，异猫 0.34~0.44，无关图 0.20~0.25。
+        """
+        self.assertEqual(main.to_grade(0.490), 84)      # 狸花猫.jpg → 真档案（同猫）
+        self.assertGreaterEqual(main.to_grade(0.490), config.IDENTIFY_MIN)
+        self.assertEqual(main.to_grade(0.556), 96)      # 狸花猫2.jpg → 真档案（同猫）
+        self.assertEqual(main.to_grade(0.343), 13)      # 奶牛猫.jpg 的次名（异猫）
+        # 无关图（0.20~0.25）必须几乎归零，否则界面上会冒出低相似度的高分
+        self.assertLessEqual(main.to_grade(0.25), 3)
 
     def test_monotone(self):
         """单调性是硬约束：更像的绝不能排在后面。"""
@@ -64,15 +69,16 @@ class TestToGrade(unittest.TestCase):
 
     def test_identify_min_matches_curve(self):
         """IDENTIFY_MIN 与曲线必须配套：它对应一个「同猫下沿」附近的余弦。"""
-        # 反推：使 to_grade 恰好等于 IDENTIFY_MIN 的余弦
-        lo, hi = 0.5, 1.0
+        # 反推：使 to_grade 恰好等于 IDENTIFY_MIN 的余弦（SIM_MID=0.42 → ≈0.413）
+        lo, hi = 0.2, 0.8
         for _ in range(40):
             mid = (lo + hi) / 2
             if main.to_grade(mid) < config.IDENTIFY_MIN:
                 lo = mid
             else:
                 hi = mid
-        self.assertTrue(0.72 <= hi <= 0.78, "识别门槛落在 %.3f，不在同猫下沿" % hi)
+        self.assertTrue(0.40 <= hi <= 0.43,
+                        "识别门槛落在 %.3f，不在 MegaDescriptor 同猫下沿" % hi)
 
 
 class TestAttrCompatible(unittest.TestCase):
@@ -278,8 +284,8 @@ class TestSearch(unittest.TestCase):
     def test_min_sim_filters_on_raw(self):
         """阈值看原始余弦：0.03 的花色奖励不能把低于门槛的猫拉进候选。"""
         q = _unit(1, 0, 0)
-        # 余弦 0.615（< MIN_SIM 0.62），花色一致也不该进列表
-        vec = q * 0.615 + _unit(0, 1, 0) * math.sqrt(1 - 0.615 ** 2)
+        # 余弦 0.25（< MIN_SIM 0.30），花色一致也不该进列表
+        vec = q * 0.25 + _unit(0, 1, 0) * math.sqrt(1 - 0.25 ** 2)
         bank = {"borderline": engine.l2(vec)}
         self._bank(bank)
         out, _ = main.search(q, self._cats(("borderline", "orange")),
@@ -374,6 +380,89 @@ class TestAttrFilter(unittest.TestCase):
         self.assertIn("milk_cat", got)
         self.assertEqual(info.get("attrDropped"), 2)
 
+    def test_normalize_color_aliases(self):
+        """档案/前端可能存中文或花纹标签，必须归一成枚举才能参与过滤。"""
+        self.assertEqual(attrs.normalize_color("三花"), "calico")
+        self.assertEqual(attrs.normalize_color("三花猫"), "calico")
+        self.assertEqual(attrs.normalize_color("黑白双色"), "cow")
+        self.assertEqual(attrs.normalize_color("橘猫"), "orange")
+        self.assertEqual(attrs.normalize_color(" cow "), "cow")
+        self.assertEqual(attrs.normalize_color("solid"), "")   # 纹理值无花色语义
+        self.assertEqual(attrs.normalize_color("乱填的值"), "")
+
+    def test_chinese_archive_value_filtered(self):
+        """现场复刻：档案花色存中文（「橘猫」「三花」）时硬过滤也必须生效。"""
+        q = _unit(1, 0, 0)
+        self.bank = {"pange": _unit(1, 0.05, 0), "sanhua": _unit(1, 0.1, 0)}
+        cats = [main.CatRef(id="pange", name="胖橘", pattern="橘猫", photos=["p"]),
+                main.CatRef(id="sanhua", name="三花", pattern="三花", photos=["p"])]
+        out, info = main.search(q, cats, "", attrs={"color": "cow", "confidence": 0.8})
+        self.assertEqual(out, [])
+        self.assertEqual(info.get("attrDropped"), 2)
+
+        out2, _ = main.search(q, cats, "", attrs={"color": "calico", "confidence": 0.8})
+        self.assertNotIn("pange", [c["catId"] for c in out2])
+
+    def test_calico_query_excludes_orange_archive(self):
+        """三花查询（三色块必然含黑/白）不应匹配纯橘档案。"""
+        q = _unit(1, 0, 0)
+        self.bank = {"pange": _unit(1, 0.02, 0), "sanhua_real": _unit(1, 0.08, 0)}
+        cats = self._cats(("pange", "orange"), ("sanhua_real", "calico"))
+        out, info = main.search(q, cats, "", attrs={"color": "calico", "confidence": 0.8})
+        self.assertEqual([c["catId"] for c in out], ["sanhua_real"])
+        self.assertEqual(info.get("attrDropped"), 1)
+
+    def test_unknown_archive_kept_but_flagged(self):
+        """档案花色为空时必须放行（可能是同一只猫），但要标记出来。"""
+        q = _unit(1, 0, 0)
+        self.bank = {"pange": _unit(1, 0.02, 0)}
+        cats = self._cats(("pange", ""))
+        out, info = main.search(q, cats, "", attrs={"color": "calico", "confidence": 0.8})
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].get("attrUnknown"))
+        self.assertEqual(info.get("attrUnknown"), 1)
+
+    def test_unknown_archive_score_capped(self):
+        """档案花色未知 → 候选保留，但展示分封顶（2026-10-31 三花→胖橘 97%）。"""
+        q = _unit(1, 0, 0)
+        self.bank = {"pange": _unit(1, 0.10, 0)}          # 余弦 ≈0.995，未封顶是 99
+        out, _ = main.search(q, self._cats(("pange", "")), "",
+                             attrs={"color": "calico", "confidence": 0.8})
+        self.assertEqual(out[0]["score"], config.ATTR_UNKNOWN_CAP)
+        self.assertGreater(out[0]["rawSim"], 0.9)          # 原始余弦不能被改写
+        self.assertTrue(out[0].get("scoreCapped"))
+        self.assertTrue(out[0].get("attrUnknown"))
+        # 封顶不等于「认不出来」：仍要高于 IDENTIFY_MIN，真匹配照样能判出身份
+        self.assertGreaterEqual(config.ATTR_UNKNOWN_CAP, config.IDENTIFY_MIN)
+
+    def test_known_archive_not_capped(self):
+        """档案花色已知（同花色匹配）不受上限影响，照常拿高分。"""
+        q = _unit(1, 0, 0)
+        self.bank = {"sanhua": _unit(1, 0.10, 0)}
+        out, _ = main.search(q, self._cats(("sanhua", "calico")), "",
+                             attrs={"color": "calico", "confidence": 0.8})
+        self.assertEqual(out[0]["score"], 99)
+        self.assertNotIn("scoreCapped", out[0])
+
+    def test_cap_only_when_query_color_known(self):
+        """查询花色也没判出来时不存在「缺失证据」，不封顶。"""
+        q = _unit(1, 0, 0)
+        self.bank = {"pange": _unit(1, 0.10, 0)}
+        out, _ = main.search(q, self._cats(("pange", "")), "",
+                             attrs={"color": "calico", "confidence": 0.2})
+        self.assertEqual(out[0]["score"], 99)
+        self.assertNotIn("scoreCapped", out[0])
+
+    def test_cap_can_be_disabled(self):
+        """ATTR_UNKNOWN_CAP=0 关闭封顶（逃生口）。"""
+        q = _unit(1, 0, 0)
+        self.bank = {"pange": _unit(1, 0.10, 0)}
+        with mock.patch.object(config, "ATTR_UNKNOWN_CAP", 0):
+            out, _ = main.search(q, self._cats(("pange", "")), "",
+                                 attrs={"color": "calico", "confidence": 0.8})
+        self.assertEqual(out[0]["score"], 99)
+        self.assertNotIn("scoreCapped", out[0])
+
     def test_low_confidence_no_filter(self):
         """识别判不出花色（conf 不足）时绝不过滤 —— 没信息不等于判死。"""
         q = _unit(1, 0, 0)
@@ -397,7 +486,7 @@ class TestAttrFilter(unittest.TestCase):
     def test_filter_respects_min_sim_and_topn(self):
         """硬过滤叠加在 MIN_SIM 之上，且同样受 top_n 约束。"""
         q = _unit(1, 0, 0)
-        below = q * 0.60 + _unit(0, 1, 0) * math.sqrt(1 - 0.60 ** 2)   # < MIN_SIM
+        below = q * 0.25 + _unit(0, 1, 0) * math.sqrt(1 - 0.25 ** 2)   # < MIN_SIM
         self.bank = {
             "below": engine.l2(below),        # 低于阈值：花色相容也不该进
             "orange_hi": _unit(1, 0.05, 0),   # 高分但硬互斥：剔除

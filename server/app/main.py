@@ -17,8 +17,9 @@ import time
 from typing import List, Optional
 
 import numpy as np
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from . import config, index_store, media, recocache
 from . import attrs as attr_labels
@@ -130,6 +131,108 @@ class RecognizeReq(BaseModel):
 class EmbedReq(BaseModel):
     url: str
     detect: bool = True
+
+
+# ---------------- 创意图像接口（抠图 / 大头照 / 相册）----------------
+#
+# 与 /v1/recognize 共用检测 + 抠图底座，但**刻意不复用识别链路的质量门控**：
+# 创意场景用户要的是「给我一张图」，哪怕抠得不完美也比 4xx 强；
+# 诊断信息（matted / coverage / lowCoverage）放在响应里，前端自行决定要不要提示换图。
+# 统一返回 { ok, image(base64 PNG), mime, ...meta }，云函数可直接落云存储。
+
+class MattingReq(BaseModel):
+    url: str = ""
+    imageBase64: str = ""
+    # 背景：transparent（默认，RGBA 透明底）/ gray / #RRGGBB
+    bg: str = "transparent"
+
+
+class PortraitReq(BaseModel):
+    url: str = ""
+    imageBase64: str = ""
+    size: int = 0                    # 0 = 默认 512
+    bg: str = ""                     # #RRGGBB，空 = 默认浅蓝
+
+
+class AlbumItem(BaseModel):
+    url: str = ""
+    imageBase64: str = ""
+    name: str = ""                   # 格子底部名字条，空 = 不画
+
+
+class AlbumReq(BaseModel):
+    items: List[AlbumItem] = Field(default_factory=list)
+    cols: int = 0                    # 0 = 自动（≤4 张 2 列，否则 3 列）
+
+
+class StandardPhotoReq(BaseModel):
+    """生成猫咪标准照的入参。
+
+    取图支持两种：JSON 里的 url / imageBase64，或直接把图片字节作为请求体
+    （Content-Type: image/*，参数放 query string）。后者就是字面意义的「上传一张照片」，
+    也不需要引入 python-multipart 依赖。
+    """
+    url: str = ""
+    imageBase64: str = ""
+    animal: str = ""      # 猫名/花色（三花猫、玄猫、奶牛猫…）；空 = 自动识别
+    style: str = ""       # 画面风格，默认「写实高清摄影」
+    extra: str = ""       # 额外要求（背景/光影/画质等）
+    name: str = ""        # 输出文件名前缀：<name>1.png 全身 / <name>2.png 正面
+    save: bool = False    # 是否落盘到 IMAGE_GEN_DIR
+
+
+def _form_bool(value) -> bool:
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _standard_req(request: Request) -> StandardPhotoReq:
+    """解析标准照请求：JSON 或「原始图片请求体」两种都支持。"""
+    ctype = (request.headers.get("content-type") or "").lower()
+    if ctype.startswith("image/"):
+        import base64
+        raw = await request.body()
+        if not raw:
+            raise HTTPException(status_code=400, detail="请求体为空")
+        if len(raw) > config.MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413,
+                                detail="图片超过大小上限（MAX_IMAGE_BYTES）")
+        q = request.query_params
+        return StandardPhotoReq(
+            imageBase64=base64.b64encode(raw).decode("ascii"),
+            animal=q.get("animal", ""),
+            style=q.get("style", ""),
+            extra=q.get("extra", ""),
+            name=q.get("name", ""),
+            save=_form_bool(q.get("save", "")),
+        )
+
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001 —— 交给下面统一报 400
+        payload = None
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="请求体必须是 JSON，或直接把图片作为请求体（Content-Type: image/*）")
+    try:
+        return StandardPhotoReq(**payload)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="参数错误：%s" % e)
+
+
+def _load_input_image(url: str, b64: str):
+    """统一取输入图：优先内联 base64，其次 URL 下载。都失败返回 None。"""
+    from . import creative  # noqa: F401  -- 仅为让调用方拿到同一模块
+    if b64:
+        try:
+            im = media.decode_base64_image(b64)
+            if im is not None:
+                return im
+        except Exception as e:  # noqa: BLE001
+            log.warning("创意接口内联图片解码失败，回退 URL：%s", e)
+    if url:
+        return media.fetch_image(url)
+    return None
 
 
 # ---------------- 工具 ----------------
@@ -328,7 +431,13 @@ def search(query: np.ndarray, cats: List[CatRef], school_id: str,
 
     name_by_id = {c.id: c.name for c in cats}
     photo_by_id = {c.id: (c.photos[0] if c.photos else "") for c in cats}
-    pattern_by_id = {c.id: c.pattern for c in cats}
+    # 档案花色归一到枚举（中文/花纹标签 → value），认不出为空。
+    # 没有这一步，档案里存「三花」「黑白双色」时 hard_exclusive 的字符串比较永远
+    # 是 False，属性硬过滤形同虚设（现场：三花猫、奶牛猫3 都匹配到同一只猫）。
+    pattern_by_id = {}
+    for c in cats:
+        pattern_by_id[c.id] = (attr_labels.normalize_color(c.pattern)
+                               or attr_labels.normalize_color(c.color))
 
     # 查询花色：conf 达门槛才算「判出来了」，否则当没信息（不过滤、不破平）。
     qcolor = ""
@@ -385,6 +494,7 @@ def search(query: np.ndarray, cats: List[CatRef], school_id: str,
     lead = 0.0
     if len(order) > 1:
         lead = float(raw[order[0]] - raw[order[1]])
+    attr_unknown = 0
     for rank, i in enumerate(order):
         cid = ids[i]
         s_raw = float(raw[i])
@@ -401,6 +511,16 @@ def search(query: np.ndarray, cats: List[CatRef], school_id: str,
                                            + (1.0 - config.GAP_FLOOR)
                                            * max(0.0, gap) / GAP_CLEAR)))
 
+        # 档案花色未知 → 色彩这一维没法校验，展示分封顶（见 config.ATTR_UNKNOWN_CAP）。
+        # 现场 2026-10-31：三花查询命中「胖橘」（档案花色为空），余弦 0.574 被
+        # logistic 放大成 97%，用户以为是确定匹配。只封 `score`，`rawSim` 不动。
+        capped = False
+        if qcolor and not pattern_by_id.get(cid, ""):
+            cap = int(config.ATTR_UNKNOWN_CAP)
+            if cap > 0 and score > cap:
+                score = cap
+                capped = True
+
         item = {
             "catId": cid,
             "name": name_by_id.get(cid, ""),
@@ -409,6 +529,8 @@ def search(query: np.ndarray, cats: List[CatRef], school_id: str,
             "rawSim": round(s_raw, 4),
             "reason": f"特征相似度 {s_raw * 100:.1f}%",
         }
+        if capped:
+            item["scoreCapped"] = True
         # Top1 带一个「领先次名多少」：用户看到 56% 会怀疑，但配上
         # 「原始相似度 76.3% · 领先次名 6.5%」就能看懂——分数低是因为
         # 模型本身只敢给这么高，而排序是清楚的。
@@ -416,8 +538,16 @@ def search(query: np.ndarray, cats: List[CatRef], school_id: str,
             item["lead"] = round(lead, 4)
         # 花色是否一致，仅作诊断（前端暂不展示，排查「为什么 A 排在 B 前面」时看）
         if qcolor:
-            item["attrMatch"] = _attr_agree(qcolor, pattern_by_id.get(cid, ""))
+            known = pattern_by_id.get(cid, "")
+            item["attrMatch"] = _attr_agree(qcolor, known)
+            # 档案没有可用的花色 → 硬过滤只能放行。单独标出来，排查时能一眼看出
+            # 「它没被剔除是因为档案花色为空」，而不是规则漏了。
+            if not known:
+                item["attrUnknown"] = True
+                attr_unknown += 1
         out.append(item)
+    if attr_unknown:
+        info["attrUnknown"] = attr_unknown
     return out, info
 
 
@@ -426,18 +556,29 @@ def search(query: np.ndarray, cats: List[CatRef], school_id: str,
 def health(schoolId: str = ""):
     """健康检查 / 部署自查。
 
-    除了「服务活着」，这里要能回答现场最常问的三个问题：
-      ① 特征库里到底有几只猫（indexed）—— 库里只有 1 只时，识别必然永远返回那 1 只；
-      ② 猫体检测有没有启用（detector）—— 没启用就是整图提特征，背景会污染向量；
-      ③ 毛色/花纹属性走的是哪条路（attrSource）—— clip 最准、heuristic 是本地
-         色域分析的兜底。attrs 为 false 只代表「CLIP 没开」，**花色照样有**，
-         因为启用了启发式（2026-10-17 起）。
-    这四个字段直接对应「识别不准」的几大成因，排查时不用翻代码。
+    响应按**排查维度分组**（2026-10-31 重构）：原来 20 多个字段平铺在一个对象里，
+    现场排查「识别不准」时要在一堆数字里找对应项。现在每组对应一类成因，
+    看哪一组不对就去查哪一块：
 
-    schoolId：传了则 `indexed` 只统计该校（管理后台的口径），
-    同时给 `indexedTotal`（全库）。两者不同是正常的：特征库按校隔离，
-    全库还会包含其它学校 + 已删档案的残留向量 —— 但**两个数字混着一个口径**
-    会让管理员以为「档案 6 只怎么库里有 11 只」出了灵异事件（2026-10-25 现场）。
+      model  —— ReID 骨干：后端 / 权重文件名 / 维度 / 输入边长 / 归一化口径 / 特征版本
+      detect —— 猫体检测：是否启用 / 权重 / 输入边长 / 置信阈值 / 外扩比例
+      attr   —— 毛色花纹：实际来源（clip/api/heuristic）与是否参与重排
+      match  —— 匹配打分：最低相似度、判定门槛、校准中点与斜率
+      media  —— 输入处理：ffmpeg 是否可用、视频抽帧上限
+      cache  —— 识别缓存：缓存条数、正在计算的条数
+      index  —— 特征库：本校/全库条数、后端、异常原因
+
+    现场最常问的三个问题仍能一眼答上：
+      ① 特征库里到底有几只猫（index.count）—— 库里只有 1 只时识别必然永远返回那 1 只；
+      ② 猫体检测有没有启用（detect.enabled）—— 没启用就是整图提特征，背景会污染向量；
+      ③ 毛色/花纹走的是哪条路（attr.source）—— clip 最准、heuristic 是本地色域分析的
+         兜底。attr.enabled 为 false 只代表「CLIP 没开」，**花色照样有**，
+         因为启用了启发式（2026-10-17 起）。
+
+    schoolId：传了则 `index.count` 只统计该校（管理后台的口径），
+    `index.total` 恒为全库。两者不同是正常的：特征库按校隔离，全库还会包含
+    其它学校 + 已删档案的残留向量 —— 但两个数字混着一个口径会让管理员以为
+    「档案 6 只怎么库里有 11 只」出了灵异事件（2026-10-25 现场）。
     """
     eng = get_engine()
     det = getattr(eng.detector, "path", "") or ""
@@ -445,37 +586,50 @@ def health(schoolId: str = ""):
     total = index_health()
     return {
         "ok": True,
-        "provider": eng.provider,
-        "dim": eng.dim,
-        "size": eng.embedder.size,          # 模型实际接受的输入边长（可能与配置不同）
-        "detector": bool(eng.detector.sess),
-        # 检测模型用的是哪个文件（自动发现还是显式配置）、阈值、外扩比例。
-        # 「detector=true 但框得不准」时，先确认这里指向的是不是预期的那份权重。
-        "detectModel": os.path.basename(det) if det else "",
-        "detectSize": getattr(eng.detector, "size", 0),
-        "detectConf": config.DETECT_CONF,
-        "detectPad": config.DETECT_PAD,
-        "attrs": bool(eng.clf.ok),
-        "attrSource": eng.attr_source,      # clip / api / heuristic —— 属性实际来源
-        "minSim": config.MIN_SIM,
-        "identifyMin": config.IDENTIFY_MIN,
-        # 校准曲线参数：现场「为什么同一只猫只有 56%」时，先看这两个数是不是
-        # 被环境变量改过（SIM_MID 越大越严格 / SIM_SLOPE 越大越陡）。
-        "simMid": config.SIM_MID,
-        "simSlope": config.SIM_SLOPE,
-        "attrRerank": bool(config.ATTR_RERANK),
-        "framesMax": config.MAX_FRAMES,
-        "ffmpeg": media.ffmpeg_ok(),
-        # 识别结果缓存：`cached` 是当前缓存条数，`computing` 是正在计算的条数。
-        # 排查「同一个素材被反复识别」时先看它 —— 缓存为 0 而识别很慢，
+        "model": {
+            "backend": eng.provider,
+            "file": eng.embedder.model_file,
+            "dim": eng.dim,
+            "inputSize": eng.embedder.size,   # 模型实际接受的边长（可能与配置不同）
+            "norm": eng.embedder.norm,        # half / imagenet
+            "poolVersion": config.FEATURE_POOL_VERSION,
+        },
+        "detect": {
+            "enabled": bool(eng.detector.sess),
+            # 「enabled=true 但框得不准」时，先确认指向的是不是预期的那份权重。
+            "file": os.path.basename(det) if det else "",
+            "inputSize": getattr(eng.detector, "size", 0),
+            "conf": config.DETECT_CONF,
+            "pad": config.DETECT_PAD,
+        },
+        "attr": {
+            "enabled": bool(eng.clf.ok),      # 仅表示 CLIP 是否开启
+            "source": eng.attr_source,        # clip / api / heuristic
+            "rerank": bool(config.ATTR_RERANK),
+        },
+        "match": {
+            "minSim": config.MIN_SIM,
+            "identifyMin": config.IDENTIFY_MIN,
+            # 校准曲线：现场「为什么同一只猫只有 56%」时，先看这两个数是不是
+            # 被环境变量改过（SIM_MID 越大越严格 / SIM_SLOPE 越大越陡）。
+            "simMid": config.SIM_MID,
+            "simSlope": config.SIM_SLOPE,
+        },
+        "media": {
+            "framesMax": config.MAX_FRAMES,
+            "ffmpeg": media.ffmpeg_ok(),
+        },
+        # 排查「同一个素材被反复识别」时先看这一组 —— 缓存为 0 而识别很慢，
         # 说明要么 TTL=0 关掉了，要么多实例部署导致各缓存一份。
-        **recocache.stats(),
-        # indexed：带 schoolId 时按校计（管理后台口径）；indexedTotal 恒为全库。
-        # 后台「特征库 N 只」与「花色比对卡本校 N 条」以前各说各话，
-        # 就是这里没分口径 —— 现在两个数一起下发，差值一眼可解释。
-        **scoped,                                            # indexed / indexBackend
-        "indexedTotal": total.get("indexed", -1),            # 全库（含其它学校/残留）
-        "indexedScoped": bool(schoolId),                     # indexed 是否按校过滤
+        "cache": recocache.stats(),
+        # count：带 schoolId 时按校计（管理后台口径）；total 恒为全库。
+        "index": {
+            "count": scoped.get("indexed", -1),
+            "total": total.get("indexed", -1),
+            "scoped": bool(schoolId),     # count 是否按校过滤
+            "backend": scoped.get("indexBackend", ""),
+            "error": scoped.get("indexError") or total.get("indexError") or "",
+        },
     }
 
 
@@ -905,3 +1059,135 @@ def clear_index(schoolId: str = "", catId: str = "", _=Depends(authorize)):
     removed = index_store.clear(schoolId)
     return {"ok": True, "scope": "school", "removed": removed,
             "remaining": index_store.count(schoolId)}
+
+
+# ---------------- 创意图像接口 ----------------
+
+@app.post("/v1/matting")
+def matting_api(req: MattingReq, _=Depends(authorize)):
+    """一键抠图：输入一张图，输出抠好主体的 PNG（默认透明底）。
+
+    小程序典型用法：用户上传猫照 → 云函数转发到这里 → 拿到透明底 PNG 存云存储，
+    后续做表情包/海报素材。bg=gray 时输出与识别链路同口径的灰底图。
+    """
+    from . import creative
+    im = _load_input_image(req.url, req.imageBase64)
+    if im is None:
+        raise HTTPException(status_code=502, detail="素材下载失败")
+    t0 = time.time()
+    try:
+        png, meta = creative.cutout(im, bg=req.bg or "transparent")
+    except Exception as e:  # noqa: BLE001
+        log.error("抠图失败: %s: %s", type(e).__name__, e)
+        raise HTTPException(status_code=500, detail="抠图失败：" + str(e))
+    import base64
+    log.info("/v1/matting %dms matted=%s coverage=%s",
+             int((time.time() - t0) * 1000), meta.get("matted"), meta.get("coverage"))
+    return {"ok": True, "mime": "image/png",
+            "image": base64.b64encode(png).decode("ascii"), **meta}
+
+
+@app.post("/v1/portrait")
+def portrait_api(req: PortraitReq, _=Depends(authorize)):
+    """大头照：检测猫头区域 → 抠图 → 贴到圆形徽章底，输出方形 PNG。
+
+    用于「给猫生成头像」。检测不到猫时退化为整图上半部居中裁剪，
+    detected=false 写进响应，前端可提示「没找到猫，帮你整图截了一张」。
+    """
+    from . import creative
+    im = _load_input_image(req.url, req.imageBase64)
+    if im is None:
+        raise HTTPException(status_code=502, detail="素材下载失败")
+    size = int(req.size) if req.size and req.size > 0 else creative.PORTRAIT_SIZE
+    size = max(128, min(1024, size))   # 防止小程序传 8192 把内存打爆
+    t0 = time.time()
+    try:
+        png, meta = creative.portrait(im, size=size, bg=req.bg or "")
+    except Exception as e:  # noqa: BLE001
+        log.error("大头照失败: %s: %s", type(e).__name__, e)
+        raise HTTPException(status_code=500, detail="大头照生成失败：" + str(e))
+    import base64
+    log.info("/v1/portrait %dms detected=%s matted=%s",
+             int((time.time() - t0) * 1000), meta.get("detected"), meta.get("matted"))
+    return {"ok": True, "mime": "image/png",
+            "image": base64.b64encode(png).decode("ascii"), **meta}
+
+
+@app.post("/v1/album")
+def album_api(req: AlbumReq, _=Depends(authorize)):
+    """相册拼图：多张猫照抠图后拼成马卡龙底网格图（底部带名字条）。
+
+    最多 9 张（3×3）：再多的网格在手机上每个格子只剩 100 多像素，看不清脸。
+    单张抠图失败不缺席 —— 退化为原图贴入（相册是纪念场景，完整性 > 精致度）。
+    """
+    from . import creative
+    if not req.items:
+        raise HTTPException(status_code=400, detail="items 不能为空")
+    if len(req.items) > 9:
+        raise HTTPException(status_code=400, detail="相册最多 9 张")
+    t0 = time.time()
+    loaded = []
+    for it in req.items:
+        im = _load_input_image(it.url, it.imageBase64)
+        if im is None:
+            log.warning("相册素材下载失败，跳过：%s", (it.url or "")[:60])
+            continue
+        loaded.append((im, it.name))
+    if not loaded:
+        raise HTTPException(status_code=502, detail="所有素材都下载失败")
+    try:
+        png, meta = creative.album(loaded, cols=int(req.cols or 0))
+    except Exception as e:  # noqa: BLE001
+        log.error("相册生成失败: %s: %s", type(e).__name__, e)
+        raise HTTPException(status_code=500, detail="相册生成失败：" + str(e))
+    import base64
+    log.info("/v1/album %dms count=%d matted=%d",
+             int((time.time() - t0) * 1000), meta["count"], meta["matted"])
+    return {"ok": True, "mime": "image/png",
+            "image": base64.b64encode(png).decode("ascii"), **meta}
+
+
+@app.post("/v1/photo/standard")
+async def photo_standard(request: Request, _=Depends(authorize)):
+    """生成猫咪标准照：一张输入 → 两张输出（xx1 全身站姿 / xx2 正面标准）。
+
+    链路：取图 → 属性分析（animal 为空时）→ 两组提示词 → 图片生成
+    生成两张 → 返回 base64 PNG。生成是外部慢请求，放线程池里跑，别堵事件循环。
+
+    生成后端默认走 agnes 图片模型并把**原图作为参考图**发过去（i2i），
+    保证生成的是照片里这只猫而不是同品种的陌生猫；显式配置 IMAGE_GEN_URL
+    时走该模板（仅提示词）。两种都未配置返回 **503**，不会用本地抠图/拼图伪造
+    （原因写在 app/standard.py 的模块注释）。远端失败返回 502，并把原因带出去。
+    """
+    from . import standard
+    import base64
+
+    req = await _standard_req(request)
+    im = _load_input_image(req.url, req.imageBase64)
+    if im is None:
+        raise HTTPException(status_code=502, detail="素材下载失败")
+    im = im.convert("RGB")
+
+    t0 = time.time()
+    try:
+        result = await run_in_threadpool(
+            standard.generate_standard, im,
+            animal=req.animal, style=req.style, extra=req.extra,
+            name=req.name, save=req.save)
+    except standard.ProviderNotConfigured as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except standard.GenerationError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        log.error("标准照生成失败: %s: %s", type(e).__name__, e)
+        raise HTTPException(status_code=500, detail="标准照生成失败：" + str(e))
+
+    for item in result["images"]:
+        item["image"] = base64.b64encode(item.pop("png")).decode("ascii")
+        item["mime"] = "image/png"
+
+    latency = int((time.time() - t0) * 1000)
+    log.info("/v1/photo/standard %dms animal=%s(%s) images=%s",
+             latency, result["animal"], result["animalSource"],
+             [i["filename"] for i in result["images"]])
+    return {"ok": True, **result, "latency": latency}

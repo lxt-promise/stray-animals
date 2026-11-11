@@ -15,11 +15,13 @@ Page(Object.assign({
     ],
     categories: C.FUND_CATEGORY,
     categoryIndex: 6,
-    form: { type: 'income', category: 'other', amount: '', title: '', date: '' }
+    form: { type: 'income', category: 'other', amount: '', title: '', date: '' },
+    isAdmin: false
   },
 
   onLoad() {
     if (!requireMember(app)) return
+    this.setData({ isAdmin: app.isAdmin() || app.isSuper() })
     this.load()
   },
 
@@ -84,6 +86,13 @@ Page(Object.assign({
       hideBusy()
       toast(e.message)
     }
+  },
+
+  goCampaigns() {
+    wx.navigateTo({ url: '/pages/campaign/campaign' })
+  },
+  goCreateCampaign() {
+    wx.navigateTo({ url: '/pages/campaign-edit/campaign-edit' })
   }
 // ↓ 资金公示是**公开透明**的核心证明，分享传播价值高（让捐赠人看到钱花在哪）。
 //   落地页直接回到资金页 —— 这一页本来就需要给外部看，无需登录态拦截。

@@ -1,0 +1,21 @@
+<view class="pg-mask" wx:if="{{visible}}" catchtap="noop">
+  <view class="pg-sheet" catchtap="noop">
+    <view class="pg-title">完善你的资料</view>
+    <view class="pg-sub">设置昵称和头像，方便管理员与伙伴认出你</view>
+
+    <view class="pg-avatar">
+      <button class="pg-avatar-btn" open-type="chooseAvatar" bindchooseavatar="onChooseAvatar">
+        <image wx:if="{{avatarView}}" src="{{avatarView}}" class="pg-avatar-img" mode="aspectFill" />
+        <view wx:else class="pg-avatar-ph">点击选头像</view>
+      </button>
+    </view>
+
+    <input class="pg-input" type="nickname" placeholder="请输入昵称" value="{{nick}}"
+           bindnicknamereview="onNickReview" bindinput="onNickInput" confirm-type="done" />
+
+    <view class="pg-actions">
+      <view class="pg-skip" bindtap="onSkip">稍后再说</view>
+      <view class="pg-ok {{saving ? 'busy' : ''}}" bindtap="onConfirm">确定</view>
+    </view>
+  </view>
+</view>

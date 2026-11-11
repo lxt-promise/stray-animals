@@ -1,0 +1,29 @@
+/* 打卡次数总览卡（复用全局卡片风格，居中大数字） */
+.head {
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFFBF6 100%);
+  border: 2rpx solid var(--card-line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 36rpx;
+  margin-bottom: 24rpx;
+  text-align: center;
+}
+.h-num { font-size: 64rpx; font-weight: 800; line-height: 1.1; color: var(--brand-dark); }
+.h-lbl { font-size: 24rpx; color: var(--text-sub); margin-top: 8rpx; }
+
+/* 单条打卡记录 */
+.my-item { padding: 22rpx 0; border-bottom: 2rpx solid var(--line); }
+.my-item:last-child { border-bottom: none; }
+
+.photo-row { display: flex; flex-wrap: wrap; gap: 12rpx; margin-top: 16rpx; }
+.photo-row image {
+  width: 180rpx; height: 180rpx;
+  border-radius: 16rpx;
+  background: var(--brand-light);
+}
+
+/* 加载骨架 */
+.sk-item { padding: 22rpx 0; border-bottom: 2rpx solid var(--line); }
+.sk-line { height: 28rpx; border-radius: 8rpx; margin-bottom: 16rpx; }
+.sk-thumbs { display: flex; gap: 12rpx; }
+.sk-thumb { width: 180rpx; height: 180rpx; border-radius: 16rpx; }

@@ -1,0 +1,15 @@
+.rule-block { margin-bottom: 28rpx; }
+.rule-block:last-of-type { margin-bottom: 8rpx; }
+.rule-title {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--brand-dark);
+  margin-bottom: 12rpx;
+}
+.rule-line {
+  font-size: 27rpx;
+  color: var(--text-sub);
+  line-height: 1.7;
+  margin-bottom: 8rpx;
+}
+.note { margin-top: 12rpx; }

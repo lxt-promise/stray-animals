@@ -31,9 +31,14 @@
     </view>
   </view>
 
+  <!-- 防虐猫：非成员放大到细节级别后，点位整体隐藏并提示 -->
+  <view class="map-hint" wx:if="{{detailHidden}}">
+    <text>为保护猫咪安全，已隐藏具体位置；缩小地图可查看整体分布</text>
+  </view>
+
   <!-- 越界提示：有猫越界时就显示（不再只在「一个点位都没有」时才出现）。
        这些点位已被服务端回退到档案常驻位置或按真实打卡位置显示，不会消失。 -->
-  <view class="map-hint" wx:if="{{outsideCount && !loading}}">
+  <view class="map-hint" wx:if="{{outsideCount && !loading && !detailHidden}}">
     <text>有 {{outsideCount}} 只猫的最近打点在校园范围外，已按档案位置显示</text>
   </view>
   <view class="map-hint" wx:elif="{{!cats.length && !loading}}">
@@ -82,7 +87,7 @@
       <view class="lg-txt"><text class="bold">点击头像</text>：查看档案、最近投喂与巡护记录</view>
     </view>
     <view class="lg-note small muted">
-      注：幼猫 / 病猫坐标对非成员模糊处理，保护猫咪安全；寄养 / 休学 / 毕业 / 失踪的猫不参与投喂提醒。
+      注：猫咪具体位置仅管理员与社团成员可见，普通用户显示模糊化的大致位置，放大地图后将隐藏点位。寄养 / 看病中 / 已领养 / 失踪的猫不参与投喂提醒。
     </view>
   </view>
 
@@ -206,11 +211,16 @@
         <view class="more-link" bindtap="goDetailFromPopup">查看完整档案与全部记录 ›</view>
       </view>
 
-      <!-- 底部操作 -->
+      <!-- 底部操作：导航仅管理员/社团成员可见（普通用户拿的是模糊坐标，
+           导航既误导也会把人精确带到猫常驻点附近） -->
       <view class="popup-actions">
-        <view class="popup-btn plain" bindtap="goNavFromPopup">📍 导航到这儿</view>
+        <view class="popup-btn plain" wx:if="{{scope === 'member'}}" bindtap="goNavFromPopup">📍 导航到这儿</view>
         <view class="popup-btn primary" bindtap="goDetailFromPopup">查看档案</view>
       </view>
     </block>
   </view>
+
+  <!-- 完善资料弹窗：首次进入且昵称还是默认值/空时引导设置昵称+头像 -->
+  <profile-gate visible="{{pg.visible}}" nickName="{{pg.nickName}}" avatarUrl="{{pg.avatarUrl}}" bind:complete="onProfileDone" />
+
 </view>

@@ -37,3 +37,17 @@
   font-weight: 600;
   box-shadow: 0 10rpx 30rpx rgba(249, 115, 22, .4);
 }
+
+.camp-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ce-left { flex: 1; min-width: 0; }
+.ce-go { flex: none; color: var(--brand-dark); font-size: 28rpx; }
+.admin-only {
+  text-align: center;
+  color: var(--brand-dark);
+  font-size: 27rpx;
+  padding: 18rpx 0 8rpx;
+}

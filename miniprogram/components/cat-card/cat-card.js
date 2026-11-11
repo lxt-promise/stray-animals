@@ -40,8 +40,13 @@ Component({
     }
   },
   methods: {
+    /** ⚠️ 事件名不能叫 'tap'：根节点自身 bindtap="onTap" 的原生 tap 会**冒泡**到父节点，
+     *  父节点 `bind:tap` 会因此被触发两次 —— 一次是这里的自定义事件（带 id），
+     *  一次是裸的原生 tap（detail 只有 x/y，拿不到 id）。
+     *  现象就是「点一只猫，跳了两次：一次 ?id=undefined 报错、一次正常」，
+     *  云函数日志里会出现 `action=getCat | id=undefined`。改名 'open' 彻底解耦。 */
     onTap() {
-      this.triggerEvent('tap', { id: this.data.cat._id })
+      this.triggerEvent('open', { id: this.data.cat && this.data.cat._id })
     },
     /** 头像加载失败的两级兜底（绝不触发任何重载，避免「失败→重载→再失败」死循环）：
      *  1. 带缩略参数的图挂了 → 去掉 imageMogr2 参数用原图重试一次（参数不被支持时自救）；

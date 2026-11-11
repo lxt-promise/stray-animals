@@ -24,27 +24,21 @@ const tnr = require('./lib/tnr')
 const vision = require('./lib/vision')
 const maplib = require('./lib/map')
 const vpay = require('./lib/vpay')
+const donation = require('./lib/donation')
+const notify = require('./lib/notify')
+const crypto = require('crypto')
 
 const {
   cloud, db, _, COL, AppError,
   isMember, isAdmin, requireRole, isSuper, requireSuper,
   resolveSchoolId, assertSchool,
-  sanitizeCat, sanitizeSighting, escapeReg, pageOf, dayKey,
-  ensureCollection, ensureAllCollections
+  sanitizeCat, sanitizeSighting, normalizeEnum, escapeReg, pageOf, dayKey,
+  ensureCollection, ensureAllCollections, isCollectionMissing
 } = core
 
-/**
- * 判断错误是不是「集合还没建」（`-502005 database collection not exists`）。
- *
- * 为什么要有它：`school_applies` 是后来加的第 15 个集合，没跑过
- * `initCollections` 的环境里，每次进「我的」页都会读到它 —— 于是
- * 每个用户每次进页面都在控制台刷一条 -502005，而真相只是「还没有任何申请」。
- * 集合缺失 = 数据为空，不是故障，必须和真正的读失败区分开。
- */
-function isCollectionMissing(e) {
-  const msg = String((e && (e.errMsg || e.message)) || '')
-  return /-502005|collection not exists|Db or Table not exist/i.test(msg)
-}
+// 募捐模块：把虚拟支付「发货意图」接到捐助自动入账（支付成功即记 funds + 累加已筹）。
+// fire-and-forget，失败只记日志，不影响微信推送 ack。
+vpay.setDeliverHook(donation.applyDelivery)
 
 /* ==================== action 注册表 ====================
  * role: public | user | member | admin
@@ -52,6 +46,8 @@ function isCollectionMissing(e) {
 const ACTIONS = {
   /* 用户 & 学校 */
   'login':          { role: 'public', handler: login },
+  'registerAccount':{ role: 'user',   handler: registerAccount },
+  'loginWithPassword':{ role: 'public', handler: loginWithPassword },
   // 预热：不做任何业务，只为了让云函数实例提前起来。
   // 背景（2026-10-24）：第一次点「保存档案」必报 -504003、点第二遍才成功 ——
   // 典型的冷启动（1~1.5s）叠加业务耗时顶破客户端 3s 预算。
@@ -67,10 +63,24 @@ const ACTIONS = {
   'updateSchool':   { role: 'admin',  handler: updateSchool },
   'listSchools':    { role: 'public', handler: listSchools },
   'getSchool':      { role: 'public', handler: getSchool },
-  // 选校 / 新建学校申请：无论是加入已有学校还是新建，都落一条待审申请（含理由），
-  // 由管理员审核通过后才会建校 / 绑定。不再提供任何「选中即绑定」的直绑路径。
+  // 选校 / 新建学校。**是否需要审核由服务端环境变量 `SCHOOL_REVIEW` 决定**（见 applySchool）：
+  //  - 推广期（默认 off）：普通用户选中即绑定、填完校名即建校，零摩擦；
+  //  - 推广期后（on）：走待审申请，超管通过后才建校 / 绑定。
+  // 两种模式下 reason 的必填校验都在服务端，前端只是按 policy 决定弹不弹理由框。
   'applySchool':    { role: 'user',   handler: applySchool },
   'mySchoolApply':  { role: 'user',   handler: mySchoolApply },
+  // 撤回自己的待审申请：待审期间入口是锁死的，没有撤回通道就成了死局
+  'withdrawSchoolApply': { role: 'user', handler: withdrawSchoolApply },
+  // 管理员自助绑校 / 换校（免审）：role 由服务端校验，普通用户调不通
+  'bindSchoolSelf': { role: 'admin',  handler: bindSchoolSelf },
+  // 学校去重键维护（超管）：给历史学校补 schoolKey / 列出已建重的学校
+  'backfillSchoolKeys':   { role: 'admin', handler: backfillSchoolKeys },
+  'findDuplicateSchools': { role: 'admin', handler: findDuplicateSchools },
+  /* 通知：申请提交后推给超管的站内通知（订阅消息是可配增强，见 lib/notify.js） */
+  'listNotices':      { role: 'user',   handler: (u, e) => notify.listNotices(u, e) },
+  'markNoticesRead':  { role: 'user',   handler: (u, e) => notify.markNoticesRead(u, e) },
+  // 通知能力配置：模板没配时不该让管理员点「开启通知」（点了也收不到）
+  'notifyConfig':     { role: 'public', handler: () => notify.notifyConfig() },
   'listSchoolApplies':  { role: 'admin', handler: listSchoolApplies },
   'handleSchoolApply':  { role: 'admin', handler: handleSchoolApply },
   // 校园管理（超管）：列表带档案数/成员数，便于判断哪所校区是空壳、哪所可以直接改
@@ -96,6 +106,8 @@ const ACTIONS = {
   'recognize':          { role: 'user',   handler: (u, e, ctx) => vision.runSync(u, e, ctx) },
   'recognizeStart':     { role: 'user',   handler: (u, e, ctx) => vision.start(u, e, ctx) },
   'recognizePoll':      { role: 'user',   handler: (u, e, ctx) => vision.poll(u, e, ctx) },
+  // 历史识别记录回看：按 taskId 取回当初上传的素材（只读，仅本人可读）
+  'recognizeTaskPhoto': { role: 'user',   handler: (u, e) => vision.taskPhoto(u, e) },
   'confirmRecognize':   { role: 'user',   handler: (u, e) => vision.confirm(u, e) },
   'buildAiIndex':       { role: 'member', handler: (u, e) => vision.buildIndex(u, e) },
   // 建档 / 改档后自动入库（只建这一只，永不抛错，失败由 A/B 兜底）
@@ -104,6 +116,14 @@ const ACTIONS = {
   'buildAiIndexAll':    { role: 'admin',  handler: (u, e) => vision.buildIndexAll(e || {}) },
   // 特征库体检：档案总数 / 已录入 / 未录入清单（查识别服务的真实 id 列表，不信 aiIndexAt 记账）
   'indexStatus':        { role: 'admin',  handler: (u, e) => vision.indexStatus(u, e) },
+  // 校园管理板块用：一次性拉回每所学校的特征库数量（total/indexed/missing/bankTotal）。
+  // role=admin：跨校区统计，且每只学校都要查识别服务，权限收紧到超管。
+  'indexStatusBySchool':{ role: 'admin',  handler: (u, e) => vision.indexStatusBySchool(e || {}) },
+  // 单校重建：把指定学校的全部档案照重新提交识别服务算特征（force=true，无视记账）。
+  // 与「全部重建」的区别：只动这一所，用于某校区单独补库 / 排查，不波及其它校区。
+  // role=admin：跨校区动作，且会跑满建库预算，权限收紧。
+  // 回包带 finishedAt（云端真正返回时的时刻）—— 管理端靠它显示「最近重建」时间。
+  'indexRebuildSchool': { role: 'admin',  handler: (u, e) => vision.buildIndexSchool(u, e || {}) },
   // 手动录入单只：force 重算 + 8s 超时（用户点「录入」就是要确保它进库）
   'indexOneCat':        { role: 'admin',  handler: (u, e) => vision.indexOneCat(u, e) },
   // 识别引擎体检（检测模型是否生效 / 花色链路 / 特征库只数）。
@@ -141,7 +161,18 @@ const ACTIONS = {
   /* 成员 & 申请 */
   'listMembers':    { role: 'member', handler: listMembers },
   'setRole':        { role: 'admin',  handler: setRole },
+  // 全站用户管理（超管）：跨校区列用户 + 配角色。与 listMembers / setRole（本校区成员）
+  // 刻意分开 —— 一个是「管本社团的人」，一个是「管全站权限」，
+  // 复用同一个接口会把 schoolId 一起改掉（等于把人的数据搬了家）。
+  'listUsersAdmin': { role: 'admin',  handler: listUsersAdmin },
+  'setUserRole':    { role: 'admin',  handler: setUserRole },
+  // 测试账号（仅超管，内部还有 requireSuper 兜一层）：
+  // 配 3 个槽位（管理员 / 社团成员 / 普通用户），切过去后服务端以该账号解析身份。
+  // 配 置写在超管自己的 user 文档 testAccounts 字段，不新建集合。
+  'testAccounts':   { role: 'admin',  handler: getTestAccounts },
+  'setTestAccounts':{ role: 'admin',  handler: setTestAccounts },
   'applyJoin':      { role: 'user',   handler: applyJoin },
+  'myApply':        { role: 'user',   handler: myApply },
   'listApplies':    { role: 'admin',  handler: listApplies },
   'handleApply':    { role: 'admin',  handler: handleApply },
 
@@ -170,7 +201,22 @@ const ACTIONS = {
   'vpayListOrders':      { role: 'user',   handler: (u, e) => vpay.listOrders(u, e) },
   'vpayListDeliveries':  { role: 'admin',  handler: (u, e) => vpay.listDeliveries(u, e) },
   'vpayCompleteDelivery':{ role: 'admin',  handler: (u, e) => vpay.completeDelivery(u, e) },
-  'vpayNotify':          { role: 'public', handler: (u, e) => vpay.handleNotify(u, e) }
+  'vpayNotify':          { role: 'public', handler: (u, e) => vpay.handleNotify(u, e) },
+
+  /* 咪咪筹（参考水滴筹；真实收款走个人虚拟支付 vpay）
+   * 发起对所有人开放（role:'user'），普通用户提交后进待审；管理员发起直接通过。
+   * 审核/支出仍锁管理员；进展由发起人或管理员发。 */
+  'createCampaign':      { role: 'user',   handler: (u, e) => donation.createCampaign(u, e) },
+  'listCampaigns':       { role: 'public', handler: (u, e) => donation.listCampaigns(u, e) },
+  'getCampaign':         { role: 'public', handler: (u, e) => donation.getCampaign(u, e) },
+  'donateToCampaign':    { role: 'user',   handler: (u, e) => donation.donateToCampaign(u, e) },
+  'reviewCampaign':      { role: 'admin',  handler: (u, e) => donation.reviewCampaign(u, e) },
+  'closeCampaign':       { role: 'user',   handler: (u, e) => donation.closeCampaign(u, e) },
+  'reportCampaign':      { role: 'user',   handler: (u, e) => donation.reportCampaign(u, e) },
+  'addCampaignUpdate':   { role: 'user',   handler: (u, e) => donation.addCampaignUpdate(u, e) },
+  'addCampaignExpense':  { role: 'admin',  handler: (u, e) => donation.addCampaignExpense(u, e) },
+  'listCampaignDonations':{ role: 'user',  handler: (u, e) => donation.listCampaignDonations(u, e) },
+  'listMyDonations':     { role: 'user',   handler: (u, e) => donation.listMyDonations(u, e) }
 }
 
 /** 单次 action 处理超时保护（云函数上限 20s，AI 可放宽到 60s） */
@@ -230,19 +276,57 @@ exports.main = async (event, context) => {
   if (!def) return fail('未知的 action: ' + action, 404)
 
   try {
-    const me = await getMe(openid)
+    let me = await getMe(openid)
     // 身份主键统一为自建的普通字段 openid（改名/重名都不影响）；
     // 旧文档缺 openid 时即时用微信上下文里的真实 openid 兜底，保证 requireSuper 等判断准确。
     if (me && !me.openid) me.openid = openid
+    // 测试身份（仅超管）：event.actAs 指定「以谁的身份浏览」。解析失败直接 403/404，
+    // 前端收到就清掉本地缓存、回到真实身份 —— 绝不在身份不明时放行业务逻辑。
+    const realMe = me
+    const actAsId = String((event && event.actAs) || '').trim()
+    let acting = false
+    if (actAsId) {
+      me = await resolveActingUser(realMe, actAsId)
+      acting = true
+      if (ACTING_BLOCKED.indexOf(action) >= 0) {
+        throw new AppError('测试身份下不能修改账号信息，请先退出切换', 403)
+      }
+      // 改密码 / 换绑账号也一并挡掉：updateProfile 里这几个字段等于改凭据
+      if (action === 'updateProfile' && (event.password || event.account)) {
+        throw new AppError('测试身份下不能修改账号或密码，请先退出切换', 403)
+      }
+      // 登录两条路在测试身份下走**只读**分支：不许合并真实档案、不许发礼包
+      if (action === 'login') {
+        return ok(sanitizeUser(Object.assign({}, me, { isSuper: false })))
+      }
+      if (action === 'homeInit') {
+        return ok(await homeInitAsActing(me, event))
+      }
+    }
     requireRole(me, def.role)
-    const ctx = { openid, wxCtx, action, startedAt }
+    const ctx = { openid, wxCtx, action, startedAt, acting, realUser: realMe }
     // 统一签名：handler(me, event, ctx)
     const data = await withTimeout(Promise.resolve(def.handler(me, event || {}, ctx)), TIMEOUT_MS)
     return ok(data)
   } catch (e) {
-    console.error('[catcampus]', action, e && (e.message || e))
+    const raw = (e && e.message) || String(e || '')
+    // 基础设施级报错（数据库/网络/超时）不把原始串吐给用户：
+    // 像 `document.get:fail document with _id undefined does not exist` 这类原始 DB 报错
+    // 会被前端直接 showToast 弹给用户，既吓人又暴露实现细节，统一换中性文案。
+    // 同时把 action + 关键入参打到日志里，方便定位到底是哪一处拿到了 undefined。
+    const infra = /:fail|database|_id|timeout|ETIMEDOUT|ECONNRESET|ESOCKETTIMEDOUT/i.test(raw)
+    console.error(
+      '[catcampus] action=' + action,
+      '| err:', raw,
+      '| id=' + (event && event.id),
+      'catId=' + (event && event.catId),
+      'sightingId=' + (event && event.sightingId),
+      'schoolId=' + (event && event.schoolId),
+      'taskId=' + (event && event.taskId)
+    )
     if (e instanceof AppError) return fail(e.message, e.code)
-    return fail(e && e.message ? e.message : '服务异常', 500)
+    if (infra) return fail('数据读取失败，请稍后重试', 500)
+    return fail(raw || '服务异常', 500)
   }
 }
 
@@ -322,11 +406,268 @@ async function initCollections() {
 
 async function getMe(openid) {
   if (!openid) return null
-  // 优先用自建 openid 字段；兼容历史文档（曾用系统 _openid）做兜底
+  // 优先用自建 openid 字段；兼容历史文档（曾用系统 _openid）做兜底；
+  // 也按 linkedOpenids 命中「账号密码登录」绑定的多设备 openid —— 换设备自动登录仍是同一人。
   const res = await db.collection(COL.user)
-    .where(_.or([{ openid: openid }, { _openid: openid }]))
+    .where(_.or([{ openid: openid }, { _openid: openid }, { linkedOpenids: openid }]))
     .limit(1).get()
   return res.data[0] || null
+}
+
+/* ==================== 测试身份（仅超管，用于自测其他角色的界面） ====================
+ * 问题：超管只有一个微信身份，看不到「普通用户 / 社团成员」眼里的界面和数据
+ * （位置脱敏、权限按钮、建档入口、工作台入口全都不一样）。让别人帮忙点一遍既不现实，
+ * 也没法复现「某个按钮点了会怎样」。
+ *
+ * 做法是**服务端代理解析身份**（view-as），不是去改库里的 role：
+ *   1) 客户端每次调用带 `actAs=<用户 _id>`（存在本机缓存，退出即清）；
+ *   2) 服务端先按**真实 openid** 找到调用者，只认 openid 白名单里的超管；
+ *   3) actAs 必须命中该超管自己配置的 3 个测试账号之一，且目标不是超管、不是自己；
+ *   4) 之后所有 handler 拿到的 me 就是那个账号 —— 权限校验、数据脱敏、积分记账
+ *      全部按被切换账号生效，和真的用那个微信登录进来几乎一致。
+ *
+ * 三条硬边界：
+ *   - 只有超管能配、能切；配置写在超管自己的 user 文档 `testAccounts` 字段里（不新建集合）；
+ *   - 测试身份下禁止改账号/密码，也不许「登录其他账号」—— 那会把别人的 openid
+ *     并进目标账号，一次测试就把凭据搞乱；
+ *   - **不动真实超管档案**：login / homeInit 在测试身份下走只读分支，不再合并重复档案、
+ *     不再发礼包/超管礼遇，避免「切换一下把自己积分搞乱」。
+ */
+const TEST_SLOTS = [
+  { key: 'admin', label: '管理员测试账号' },
+  { key: 'member', label: '社团成员测试账号' },
+  { key: 'normal', label: '普通用户测试账号' }
+]
+const TEST_SLOT_KEYS = TEST_SLOTS.map(s => s.key)
+// 测试身份下直接拒绝的 action：都会改「账号凭据」本身
+const ACTING_BLOCKED = ['loginWithPassword', 'registerAccount']
+
+const TEST_ROLE_TEXT = { admin: '管理员', member: '社团成员', visitor: '普通用户' }
+/** 角色文案：老数据的 role:'user' 等同访客 */
+function testRoleText(role) {
+  const k = role === 'user' ? 'visitor' : (role || 'visitor')
+  return TEST_ROLE_TEXT[k] || TEST_ROLE_TEXT.visitor
+}
+
+/**
+ * 解析「正在以谁的身份浏览」。
+ * 任何一步不满足都直接抛 403/404 —— 前端据此清掉本地 actAs 并回到真实身份。
+ */
+async function resolveActingUser(realMe, userId) {
+  if (!realMe || !isSuper(realMe)) throw new AppError('仅超级管理员可切换测试账号', 403)
+  // 先判「切自己」：否则会被下面的白名单判成「不在测试账号列表中」，看不出真正原因
+  if (userId === realMe._id) throw new AppError('不能切换到自己', 400)
+  const cfg = realMe.testAccounts || {}
+  const allowed = TEST_SLOT_KEYS.map(k => cfg[k]).filter(Boolean)
+  if (allowed.indexOf(userId) < 0) throw new AppError('该账号不在测试账号列表中', 403)
+  const res = await db.collection(COL.user).doc(userId).get().catch(() => null)
+  const u = res && res.data
+  if (!u) throw new AppError('测试账号不存在或已被删除', 404)
+  const openid = u.openid || u._openid || ''
+  // 缺 openid 的历史脏数据不能当测试账号：切过去后 me.openid 为空，
+  // 打卡/积分等写入会挂在一个空身份上，比切不过去更糟。
+  if (!openid) throw new AppError('该账号缺少身份标识，无法切换', 400)
+  // 再挡一次：绝不允许「以另一个超管身份」浏览（等于把超管权限借出去）
+  if (isSuper({ openid })) throw new AppError('不能切换到超级管理员账号', 403)
+  return Object.assign({}, u, { openid })
+}
+
+/** 测试身份下的 homeInit：只读，不合并档案、不发礼包，避免污染任何真实档案 */
+async function homeInitAsActing(user, event) {
+  const withOpenid = Object.assign({}, user)
+  const schoolId = withOpenid.schoolId || ''
+  const [school, overview] = await Promise.all([
+    schoolId
+      ? getSchool({ schoolId }).catch(e => {
+          console.warn('[homeInit:acting] 学校拉取失败', e && e.message)
+          return null
+        })
+      : Promise.resolve(null),
+    getOverview(withOpenid, Object.assign({}, event, { schoolId, actAs: '' })).catch(e => {
+      console.warn('[homeInit:acting] 概览拉取失败', e && e.message)
+      return null
+    })
+  ])
+  if (overview) {
+    overview.me = {
+      role: withOpenid.role,
+      points: withOpenid.points || 0,
+      peakPoints: Math.max(Number(withOpenid.peakPoints) || 0, Number(withOpenid.points) || 0),
+      level: Number(withOpenid.level) || level.levelOf(Number(withOpenid.points) || 0).lv,
+      food: withOpenid.food || 0,
+      sightingCount: withOpenid.sightingCount || 0,
+      nickName: withOpenid.nickName
+    }
+  }
+  return {
+    user: sanitizeUser(Object.assign({}, withOpenid, { isSuper: false })),
+    school,
+    overview,
+    // 前端据此显示「正在以某某身份浏览」的横幅
+    acting: true
+  }
+}
+
+/** 读取三个测试账号槽位（仅超管） */
+async function getTestAccounts(me) {
+  requireSuper(me)
+  const cfg = me.testAccounts || {}
+  const ids = TEST_SLOT_KEYS.map(k => cfg[k]).filter(Boolean)
+  let map = {}
+  if (ids.length) {
+    const res = await db.collection(COL.user).where({ _id: _.in(ids) }).limit(10).get()
+      .catch(() => null)
+    ;((res && res.data) || []).forEach(u => { map[u._id] = u })
+  }
+  const slots = TEST_SLOTS.map(s => {
+    const u = map[cfg[s.key]]
+    return {
+      key: s.key,
+      label: s.label,
+      user: u ? {
+        _id: u._id,
+        nickName: u.nickName || '未命名',
+        roleLabel: testRoleText(u.role),
+        accountMask: u.account ? maskContact(u.account) : '',
+        isSuper: isSuper({ openid: u.openid || u._openid })
+      } : null
+    }
+  })
+  return { slots }
+}
+
+/** 绑定 / 解绑某个槽位的测试账号（仅超管）。userId 传空串表示解绑 */
+async function setTestAccounts(me, event) {
+  requireSuper(me)
+  const slot = String((event && event.slot) || '')
+  const userId = String((event && event.userId) || '')
+  if (TEST_SLOT_KEYS.indexOf(slot) < 0) throw new AppError('未知的测试角色', 400)
+  const next = Object.assign({}, me.testAccounts || {})
+  if (!userId) {
+    delete next[slot]
+  } else {
+    if (userId === me._id) throw new AppError('不能把超管自己设为测试账号', 400)
+    const res = await db.collection(COL.user).doc(userId).get().catch(() => null)
+    const u = res && res.data
+    if (!u) throw new AppError('该用户不存在（可能还没登录过小程序）', 404)
+    if (isSuper({ openid: u.openid || u._openid })) {
+      throw new AppError('不能使用超级管理员账号做测试账号', 403)
+    }
+    if (!(u.openid || u._openid)) throw new AppError('该用户缺少身份标识，换一个账号试试', 400)
+    next[slot] = userId
+  }
+  await db.collection(COL.user).doc(me._id).update({ data: { testAccounts: next } })
+  return getTestAccounts(Object.assign({}, me, { testAccounts: next }))
+}
+
+/* ==================== 账号密码（个人主体下可用的真·身份，替代官方 getPhoneNumber） ==================== */
+
+// 密码加盐哈希：scrypt(密码, 随机盐) → "salt:hash"，绝不存明文。
+function hashPassword(pw) {
+  const salt = crypto.randomBytes(16).toString('hex')
+  const hash = crypto.scryptSync(String(pw), salt, 32).toString('hex')
+  return salt + ':' + hash
+}
+function verifyPassword(pw, stored) {
+  if (!stored || stored.indexOf(':') < 0) return false
+  const idx = stored.indexOf(':')
+  const salt = stored.slice(0, idx)
+  const hash = stored.slice(idx + 1)
+  const calc = crypto.scryptSync(String(pw), salt, 32).toString('hex')
+  return calc === hash
+}
+const isPhoneLike = s => /^1\d{10}$/.test(s)
+// 邮箱只做「像邮箱」的形状校验（本地@域名.后缀），不追求 RFC 全覆盖 ——
+// 账号只是登录标识，太严会误伤正常邮箱，太松会放过 "a@b"。
+const isEmailLike = s => /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(s)
+
+/**
+ * 账号格式白名单：**只允许手机号或邮箱**（2026-10-30 收紧）。
+ *
+ * 原来允许自由「用户名」，问题是：用户名不可验证也不可找回，用户拿「张三」当账号，
+ * 换设备登录时既想不起来当初填的什么，也和别人的账号撞车（昵称本来就允许重名）。
+ * 手机号 / 邮箱是**唯一且可验证**的标识，账号体系才有意义；
+ * 顺带手机号账号会自动同步到 `phone`，绑校前的软引导就不必再问一遍。
+ */
+function assertAccountFormat(account) {
+  const v = String(account || '').trim()
+  if (!isPhoneLike(v) && !isEmailLike(v)) {
+    throw new AppError('账号需为 11 位手机号或邮箱', 400)
+  }
+  return v
+}
+
+// 返回给客户端前脱敏：绝不下发密码哈希（含 salt）。
+function sanitizeUser(u) {
+  if (!u) return u
+  const { password, ...rest } = u
+  return rest
+}
+
+/** 后台列表用的脱敏：中段打码，不下发完整手机号 / 邮箱（后台也不需要看到） */
+function maskContact(v) {
+  const s = String(v || '')
+  if (!s) return ''
+  if (isPhoneLike(s)) return s.slice(0, 3) + '****' + s.slice(7)
+  const at = s.indexOf('@')
+  if (at > 0) {
+    const local = s.slice(0, at)
+    const keep = local.length <= 2 ? local.slice(0, 1) : local.slice(0, 2)
+    return keep + '****' + s.slice(at)
+  }
+  return s.length <= 4 ? s : s.slice(0, 2) + '****' + s.slice(-2)
+}
+
+/**
+ * 首次设置「账号 + 密码」。账号**只能是手机号或邮箱**（唯一）。
+ * 已 openid 登录（role:user）才能调；设置后该 openid 进入 linkedOpenids，
+ * 后续用账号密码登录即可在多设备间复用同一份档案。
+ */
+async function registerAccount(me, event) {
+  if (!me) throw new AppError('请先登录', 401)
+  if (me.account) throw new AppError('已设置账号，如需修改请在「账号安全」中操作', 409)
+  const account = assertAccountFormat(event && event.account)
+  const password = String((event && event.password) || '')
+  if (password.length < 6) throw new AppError('密码至少 6 位')
+  const dup = await db.collection(COL.user).where({ account }).limit(1).get()
+  if (dup.data && dup.data.length) throw new AppError('该账号已被使用', 409)
+  const patch = {
+    account,
+    password: hashPassword(password),
+    linkedOpenids: ((me.linkedOpenids || []).concat(me.openid || [])).filter((v, i, a) => a.indexOf(v) === i),
+    updatedAt: new Date()
+  }
+  if (isPhoneLike(account)) patch.phone = account  // 账号即手机号时同步补全 phone
+  await db.collection(COL.user).doc(me._id).update({ data: patch })
+  return sanitizeUser(Object.assign({}, me, patch))
+}
+
+/**
+ * 账号密码登录（public）。校验通过后把「当前设备 openid」并入该账号的 linkedOpenids，
+ * 实现「一个用户可在多设备登录同一账号」——换设备后自动登录(openid)仍解析到同一档案。
+ */
+async function loginWithPassword(me, event, ctx) {
+  const account = String((event && event.account) || '').trim()
+  const password = String((event && event.password) || '')
+  if (!account || !password) throw new AppError('请输入账号和密码', 400)
+  // 账号只允许手机号 / 邮箱，格式不对就不必查库。
+  // ⚠️ 这里报「账号或密码错误」而不是「格式不对」：透露格式规则等于帮撞库者缩小范围。
+  if (!isPhoneLike(account) && !isEmailLike(account)) throw new AppError('账号或密码错误', 401)
+  const res = await db.collection(COL.user).where({ account }).limit(1).get()
+  const user = res.data && res.data[0]
+  if (!user || !verifyPassword(password, user.password)) {
+    throw new AppError('账号或密码错误', 401)
+  }
+  const openid = (ctx && ctx.openid) || ''
+  if (openid) {
+    const cur = user.linkedOpenids || []
+    if (cur.indexOf(openid) < 0) {
+      await db.collection(COL.user).doc(user._id).update({
+        data: { linkedOpenids: cur.concat(openid), updatedAt: new Date() }
+      }).catch(e => console.warn('[loginWithPassword] 合并 openid 失败，已忽略', e && e.message))
+    }
+  }
+  return sanitizeUser(user)
 }
 
 /* ==================== 用户 & 学校 ==================== */
@@ -391,7 +732,12 @@ async function repairSightingCount(user) {
   return real
 }
 
-async function login(me, event, ctx) {
+/**
+ * 登录第一段：确定「这个人是谁」——回填 openid / 合并重复档 / 从打卡重建 / 新建档案。
+ * 只产出带 openid 的原始档案，**不发权益**。homeInit 拿到它就能开工查学校与概览，
+ * 把第二段的礼包/礼遇挪到与概览并行 —— 首页统计不再等那几次 DB 往返。
+ */
+async function loginResolve(me, event, ctx) {
   const openid = ctx && ctx.openid
   if (!openid) throw new AppError('无法获取用户身份', 401)
   const now = new Date()
@@ -413,26 +759,8 @@ async function login(me, event, ctx) {
         return null
       })
     const cur = merged || me
-    // 新手礼包 + 超管礼遇（见 bootAccount）。两者都是「一次性」：
-    // claimGift 用 giftAt、礼遇用 adminGrantAt 做条件更新抢占，并发登录不会重复发。
     // 显式带上 openid：老档案缺这个字段时，isSuper 判不出来会导致超管礼遇延后一次登录才发。
-    const withOpenid = Object.assign({}, cur, { openid })
-    const acc = await bootAccount(withOpenid)
-    // 打卡次数是派生值，历史上被误减成过负数（见 repairSightingCount）。
-    // 只在负数时重算，正常用户不多付一次 count。
-    const sightingCount = await repairSightingCount(withOpenid)
-    return Object.assign({}, cur, {
-      openid,
-      isSuper: isSuper({ openid }),
-      points: acc.points,
-      // 老文档没有这些字段，补上算好的值，避免前端直接读 undefined
-      peakPoints: acc.peakPoints,
-      level: acc.level,
-      food: acc.food,
-      sightingCount,
-      giftGained: acc.giftGained,
-      pointsToday: cur.pointsDay === dayKey() ? (cur.pointsToday || 0) : 0
-    })
+    return { kind: 'existing', user: Object.assign({}, cur, { openid }) }
   }
   // 没找到档案：先尝试从历史打卡记录重建（防误清档案导致“数据全丢”假象）
   const rebuilt = await rebuildUserFromRecords(openid, now)
@@ -440,17 +768,7 @@ async function login(me, event, ctx) {
       console.warn('[login] 从打卡记录重建失败，已忽略', e && e.message)
       return null
     })
-  if (rebuilt) {
-    const acc = await bootAccount(rebuilt)
-    return Object.assign({}, rebuilt, {
-      points: acc.points,
-      peakPoints: acc.peakPoints,
-      level: acc.level,
-      food: acc.food,
-      giftGained: acc.giftGained,
-      pointsToday: rebuilt.pointsDay === dayKey() ? (rebuilt.pointsToday || 0) : 0
-    })
-  }
+  if (rebuilt) return { kind: 'rebuilt', user: rebuilt }
   // 首个用户或超级管理员自动成为 admin，便于冷启动与超管权限
   const total = await db.collection(COL.user).count()
   const isFirst = total.total === 0
@@ -484,14 +802,54 @@ async function login(me, event, ctx) {
   }
   const add = await db.collection(COL.user).add({ data: doc })
   const created = Object.assign({}, doc, { _id: add._id, openid, isSuper: superHere })
-  const acc = await bootAccount(created)
-  return Object.assign({}, created, {
+  return { kind: 'created', user: created }
+}
+
+/**
+ * 登录第二段：发权益（新手礼包 + 超管礼遇，见 bootAccount）+ 计数自愈 + 组装返回。
+ * 礼包/礼遇见都是「一次性」：claimGift 用 giftAt、礼遇用 adminGrantAt 做条件更新抢占，
+ * 并发登录不会重复发。三条分支的返回字段保持重构前的口径，逐条对应原 login 的返回值。
+ */
+async function loginFinalize(r) {
+  const cur = r.user
+  const acc = await bootAccount(cur)
+  if (r.kind === 'existing') {
+    // 打卡次数是派生值，历史上被误减成过负数（见 repairSightingCount）。
+    // 只在负数时重算，正常用户不多付一次 count。
+    const sightingCount = await repairSightingCount(cur)
+    return sanitizeUser(Object.assign({}, cur, {
+      isSuper: isSuper({ openid: cur.openid }),
+      points: acc.points,
+      // 老文档没有这些字段，补上算好的值，避免前端直接读 undefined
+      peakPoints: acc.peakPoints,
+      level: acc.level,
+      food: acc.food,
+      sightingCount,
+      giftGained: acc.giftGained,
+      pointsToday: cur.pointsDay === dayKey() ? (cur.pointsToday || 0) : 0
+    }))
+  }
+  if (r.kind === 'rebuilt') {
+    return sanitizeUser(Object.assign({}, cur, {
+      points: acc.points,
+      peakPoints: acc.peakPoints,
+      level: acc.level,
+      food: acc.food,
+      giftGained: acc.giftGained,
+      pointsToday: cur.pointsDay === dayKey() ? (cur.pointsToday || 0) : 0
+    }))
+  }
+  return sanitizeUser(Object.assign({}, cur, {
     points: acc.points,
     peakPoints: acc.peakPoints,
     level: acc.level,
     food: acc.food,
     giftGained: acc.giftGained
-  })
+  }))
+}
+
+async function login(me, event, ctx) {
+  return loginFinalize(await loginResolve(me, event, ctx))
 }
 
 const ROLE_RANK = { visitor: 0, member: 1, admin: 2 }
@@ -618,9 +976,227 @@ async function updateProfile(me, event) {
     if (!okImg) throw new AppError('头像未通过安全检测', 400)
     patch.avatarUrl = event.avatarUrl
   }
+  // 手机号软补全（不强制）：用于识别/打卡/绑校前的软引导，仅作联系与防刷用途
+  if (event.phone !== undefined && event.phone !== null) {
+    const phone = String(event.phone).trim()
+    if (phone && !isPhoneLike(phone)) throw new AppError('手机号格式不正确', 400)
+    patch.phone = phone
+  }
+  /**
+   * 修改账号（手机号 / 邮箱）。
+   *
+   * 账号是「多设备登录同一份档案」的唯一凭据，改它必须：
+   *  1. **验当前密码** —— 谁能改账号谁就能接管这份档案（改完用新账号登录，
+   *     linkedOpenids 一合并，两份档案就并到一起了）。不验密码等于把账号
+   *     暴露成「任何人拿到会话都能改」；
+   *  2. **查重** —— 撞到别人的账号，两个人下次登录会被并成同一份档案。
+   * 账号填手机号时顺手同步 `phone`：手机号账号本身就是联系方式，
+   * 让用户再单独补一遍手机号没有意义（页面上的手机号卡片就是为此去掉的）。
+   */
+  if (event.account !== undefined && event.account !== null) {
+    const account = assertAccountFormat(event.account)
+    if (me.account && account === me.account) throw new AppError('新账号与当前账号相同', 400)
+    if (me.password && !verifyPassword(String(event.oldPassword || ''), me.password)) {
+      throw new AppError('当前密码不正确', 401)
+    }
+    const dup = await db.collection(COL.user).where({ account }).limit(1).get()
+    if (dup.data && dup.data.length) throw new AppError('该账号已被使用', 409)
+    patch.account = account
+    if (isPhoneLike(account)) patch.phone = account
+  }
+  // 修改密码（需先已设置密码 + 原密码校验）
+  if (event.password) {
+    if (!me.password) throw new AppError('尚未设置密码，请先设置账号密码', 400)
+    if (!verifyPassword(event.oldPassword || '', me.password)) throw new AppError('原密码错误', 401)
+    if (String(event.password).length < 6) throw new AppError('密码至少 6 位', 400)
+    patch.password = hashPassword(event.password)
+  }
   patch.updatedAt = new Date()
   await db.collection(COL.user).doc(me._id).update({ data: patch })
-  return Object.assign({}, me, patch)
+  return sanitizeUser(Object.assign({}, me, patch))
+}
+
+/* ==================== 学校：去重键 + 推广期免审开关 ==================== */
+
+/**
+ * 学校「绑定 / 建校」是否需要管理员审核（**推广期开关**）。
+ *
+ * 推广期要的是零摩擦：用户选到自己的学校就该立刻能进，
+ * 等管理员审核等于把新用户挡在门口（审核延迟 / 管理员不在线 → 直接流失）。
+ *
+ * 配云函数环境变量 `SCHOOL_REVIEW`（不配 = `off`）：
+ *  - `off`    ：绑定和建校都**立即生效**（推广期默认）
+ *  - `on`     ：两者都走管理员审核（推广期结束后改回这个，**不用改代码**）
+ *  - `bind`   ：只放开「绑定已有学校」，新建学校仍需审核
+ *  - `create` ：只放开「新建学校」，绑定已有学校仍需审核
+ *
+ * ⚠️ 开关只在服务端读，前端传什么都不算数；前端通过 `mySchoolApply.policy`
+ * 拿到结果，只用来决定界面（要不要弹理由框），真正的判定全在服务端。
+ *
+ * ⚠️ 显式判空而不是 `process.env.X || 'off'`：空字符串（`''`）也是「配了」，
+ * 用 `||` 兜底会把配错的值悄悄吞成默认值 —— 项目里「改了不生效」的头号元凶。
+ */
+const SCHOOL_REVIEW_ENV = process.env.SCHOOL_REVIEW
+const SCHOOL_REVIEW_MODE = (SCHOOL_REVIEW_ENV !== undefined && SCHOOL_REVIEW_ENV !== null &&
+  String(SCHOOL_REVIEW_ENV).trim() !== '')
+  ? String(SCHOOL_REVIEW_ENV).trim().toLowerCase()
+  : 'off'
+
+/** @param {'bind'|'create'} kind true = 需要管理员审核 */
+function schoolReviewRequired(kind) {
+  return !(SCHOOL_REVIEW_MODE === 'off' || SCHOOL_REVIEW_MODE === kind)
+}
+
+/**
+ * 是否允许**新建学校** —— 只有管理员（超管 / 社团管理员）。
+ *
+ * 推广期免审放开的是「绑定已有学校」（换拉新零摩擦），**建校不能跟着放开**：
+ *  - 人人能建校 → 列表被「测试」「asdf」「xx大学」刷满，用户在下拉里选不到
+ *    自己的学校，只能自己再建一份，于是同一所学校被切成十几摊；
+ *  - 学校是数据隔离的支点（猫档案 / 打卡 / 统计全按 schoolId 切），
+ *    每建一所就等于开一个新的数据域，垃圾校区会一直占着统计和地图范围；
+ *  - 建校内容会展示给全校，本来就该有人把关。
+ *
+ * 所以现在的规则是：**绑定 = 人人可选、选中即生效；建校 = 管理员专属**，
+ * 管理员自己建校也立刻生效（不必审自己）。
+ *
+ * ⚠️ 判定必须在服务端：前端隐藏入口只是 UI，接口不挡的话改个参数就能建。
+ */
+function canCreateSchool(me) {
+  return isSuper(me) || isAdmin(me)
+}
+
+/**
+ * 学校去重键：`校名 | 校区`。
+ *
+ * 「东南大学 · 九龙湖校区」和「东南大学 · 四牌楼校区」是**两所独立档案**：
+ * 各自有自己的 `_id`、自己的猫档案 / 打卡 / 地图范围（两个校区隔着几十公里，
+ * 猫群和志愿者根本不是同一批，合成一条的话地图和统计都没法看）。
+ *
+ * 所以去重键必须把 `campus` 算进去 —— 只按校名判重的话，
+ * 第二个校区会被误判成「重复」而建不出来。
+ * 反过来，校名+校区都相同才算重复：空格 / 大小写 / 标点 / 末尾的「校区」后缀
+ * 全部吃掉，避免「九龙湖校区」和「九龙湖」被当成两所学校建两份。
+ */
+function schoolKeyOf(name, campus) {
+  const norm = s => String(s || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\-—_·．.、,，;；:：\/\\()（）【】\[\]"'’”]/g, '')
+    .replace(/(校区|校园|校院|campus)$/g, '')
+  return norm(name) + '|' + norm(campus)
+}
+
+/**
+ * 查「同名同校区」的学校。
+ * - 快路径：新落库的学校都带 `schoolKey`，一次 where 命中；
+ * - 兜底：`schoolKey` 是这次才加的字段，**历史学校没有它**，where 查不到，
+ *   只能全量比对（学校是几十所的量级，一次 limit(200) 扫描比维护索引划算）。
+ */
+async function findSameSchool(name, campus) {
+  const key = schoolKeyOf(name, campus)
+  if (!key || key === '|') return null
+  let hit = []
+  try {
+    const r = await db.collection(COL.school).where({ schoolKey: key }).limit(1).get()
+    hit = r.data || []
+  } catch (e) { hit = [] }
+  if (hit.length) return hit[0]
+  let all = []
+  try {
+    const r = await db.collection(COL.school).limit(200).get()
+    all = r.data || []
+  } catch (e) { all = [] }
+  return all.find(s => (s.schoolKey || schoolKeyOf(s.name, s.campus)) === key) || null
+}
+
+/**
+ * 撤掉本人待审申请（**尽力而为**）。
+ * 已经换好学校的人，超管的待审列表里不该还挂着一条申请 —— 审完又把他绑回去。
+ */
+async function withdrawOwnPending(me, handler) {
+  try {
+    await db.collection(COL.schoolApply)
+      .where({ openid: me.openid, status: 'pending' })
+      .update({ data: { status: 'withdrawn', handledAt: new Date(), handler } })
+  } catch (e) {
+    // 集合可能还没建（没跑过 initCollections）—— 那本来就没有待审，忽略
+    if (!isCollectionMissing(e)) console.warn('[school] 撤回待审失败', e && e.message)
+  }
+}
+
+/**
+ * 把用户绑到学校 —— **全项目唯一写绑定关系的地方**。
+ * 免审直绑 / 管理员自助 / 审核通过都走这里，避免「同一件事三份实现、
+ * 其中一份漏了撤回待审」这类不一致。
+ */
+async function bindUserToSchool(me, schoolId) {
+  // 🔴 用 me._id 直接更新：me 是 getMe 解析出来的当前用户文档（已带 _id）。
+  // 早期写法 `where({ openid: me.openid })` 会漏掉「只存了系统字段 _openid、
+  // 没存自建 openid」的历史档案 —— 表现就是「切换学校报 用户档案不存在」。
+  // me._id 是文档主键，永远可靠，绕开这个坑。
+  if (!me || !me._id) throw new AppError('用户档案不存在', 404)
+  const s = isSuper(me)
+    ? ((await db.collection(COL.school).doc(schoolId).get()).data)
+    : await assertSchoolBindable(me, schoolId)
+  if (!s) throw new AppError('学校不存在', 404)
+
+  // 只写 schoolId：user 文档没有 schoolName 字段，校名一律由 getSchool 现取，
+  // 多写一个字段等于埋一份会和云端不一致的冗余副本。
+  await db.collection(COL.user).doc(me._id).update({ data: { schoolId } })
+  await withdrawOwnPending(me, 'self-bound')
+  return { ok: true, schoolId, school: s }
+}
+
+/**
+ * 免审新建学校（**仅管理员**，见 canCreateSchool）：**先查重，再决定建不建**。
+ *
+ * 不查重的话「东南大学」会被建出 5 份，下拉里五个同名学校，
+ * 用户根本不知道选哪个，数据也被切成五摊。
+ * 撞上已有的同名同校区 → 直接把用户绑到那所（`reused:true`），不建副本。
+ */
+async function createSchoolDirect(me, event) {
+  // 入口守卫：applySchool 已经挡过一道，这里再挡一次是因为它也可能被别处直接调用
+  // （权限判定散在调用方的话，加新调用方时必然漏掉一次）。
+  if (!canCreateSchool(me)) throw new AppError('仅管理员可创建学校', 403)
+  const name = String(event.name || '').trim()
+  if (!name) throw new AppError('请填写学校名称')
+  const campus = String(event.campus || '').trim()
+  const city = String(event.city || '').trim()
+  const intro = String(event.intro || '').trim()
+  // 建校内容会展示给全校看，安全检测不能因为「免审」就省掉
+  const okText = await sec.checkText([name, campus, city, intro].filter(Boolean).join(' '))
+  if (!okText) throw new AppError('内容未通过安全检测')
+
+  const same = await findSameSchool(name, campus)
+  if (same) {
+    const r = await bindUserToSchool(me, same._id)
+    return { status: 'bound', ok: true, schoolId: same._id, school: r.school, reused: true }
+  }
+
+  const geo = normalizeSchoolGeo({
+    center: event.center, scale: event.scale, bounds: event.bounds
+  })
+  const doc = {
+    name,
+    campus,
+    city,
+    intro,
+    schoolKey: schoolKeyOf(name, campus),
+    center: geo.center,     // { lat, lng } 地图默认中心
+    bounds: geo.bounds,     // { sw, ne } 校园可视范围
+    scale: geo.scale,
+    hidden: false,          // 用户自己建的学校必须立刻可选；隐藏只能由超管在后台设
+    createdBy: me.openid,
+    source: 'direct',       // 免审直建（区别于超管后台建的 / 审核通过的）
+    createdAt: new Date()
+  }
+  const add = await db.collection(COL.school).add({ data: doc })
+  await bindUserToSchool(me, add._id)
+  return {
+    status: 'bound', ok: true, schoolId: add._id,
+    school: Object.assign({}, doc, { _id: add._id }), created: true
+  }
 }
 
 async function createSchool(me, event) {
@@ -629,11 +1205,18 @@ async function createSchool(me, event) {
   if (!event.name) throw new AppError('缺少学校名称')
   const textOk = await sec.checkText([event.name, event.campus, event.intro].filter(Boolean).join(' '))
   if (!textOk) throw new AppError('内容未通过安全检测')
+  // 查重：超管在后台建校也会手滑（同一校区建两次），
+  // 建重了表现为下拉里两个一模一样的选项，用户选错校区数据就落在隔壁校区。
+  const same = await findSameSchool(event.name, event.campus)
+  if (same) {
+    throw new AppError('已存在「' + (same.campus ? same.name + ' · ' + same.campus : same.name) + '」', 409)
+  }
   const geo = normalizeSchoolGeo(event)
   const doc = {
     name: event.name,
     campus: event.campus || '',
     city: event.city || '',
+    schoolKey: schoolKeyOf(event.name, event.campus),
     center: geo.center,     // { lat, lng } 地图默认中心
     bounds: geo.bounds,     // { sw:{lat,lng}, ne:{lat,lng} } 校园可视范围（地图只展示这块）
     scale: geo.scale,       // 进入地图时的缩放级别
@@ -660,6 +1243,20 @@ async function updateSchool(me, event) {
   if (typeof event.campus === 'string') patch.campus = event.campus
   if (typeof event.city === 'string') patch.city = event.city
   if (typeof event.intro === 'string') patch.intro = event.intro
+
+  // 改名 / 改校区必须同步去重键：否则查重还在拿旧 key 比新名字，
+  // 表现为「改完名后同名学校查不出来」，又能建出一份重复的。
+  // ⚠️ 显式 `undefined` 判断（campus 允许被改成空字符串 = 不带校区名）。
+  if (patch.name !== undefined || patch.campus !== undefined) {
+    const nextName = patch.name || prev.data.name
+    const nextCampus = (patch.campus !== undefined && patch.campus !== null)
+      ? patch.campus : (prev.data.campus || '')
+    patch.schoolKey = schoolKeyOf(nextName, nextCampus)
+    const same = await findSameSchool(nextName, nextCampus)
+    if (same && same._id !== event.schoolId) {
+      throw new AppError('已存在「' + (same.campus ? same.name + ' · ' + same.campus : same.name) + '」', 409)
+    }
+  }
 
   // 是否对普通用户隐藏（测试校园 / 未开放校区）。
   // ⚠️ 必须显式 `undefined` 判断：`event.hidden || false` 会把 `hidden: false`
@@ -901,11 +1498,14 @@ async function listSchoolsAdmin(me) {
  * 所以学校与概览各自 try/catch，登录本身抛错则让前端走旧路径回落。
  */
 async function homeInit(me, event, ctx) {
-  const user = await login(me, event, ctx)
-  const schoolId = (user && user.schoolId) || ''
+  // 定身份（合并/重建/新建）必须先完成 —— schoolId 与角色都从这份档案来；
+  // 之后的「发权益 / 拉学校 / 拉概览」三路互不依赖，全部并行。
+  // 原来是 login() 整体串行：首页统计要等礼包检查那几次 DB 往返走完才开始查。
+  const r = await loginResolve(me, event, ctx)
+  const withOpenid = r.user
+  const schoolId = withOpenid.schoolId || ''
 
-  // user 可能被 login 重建/合并过，用最新这份往下传，保证角色与积分口径一致
-  const freshMe = Object.assign({}, me || {}, user)
+  const finalizeP = loginFinalize(r)
 
   const schoolP = schoolId
     ? getSchool({ schoolId }).catch(e => {
@@ -914,14 +1514,28 @@ async function homeInit(me, event, ctx) {
       })
     : Promise.resolve(null)
 
-  const overviewP = getOverview(freshMe, Object.assign({}, event, { schoolId }))
+  const overviewP = getOverview(withOpenid, Object.assign({}, event, { schoolId }))
     .catch(e => {
       // 概览是增强信息，失败就降级成 null：首页会自己走「无学校引导 / 单独重试」
       console.warn('[homeInit] 概览拉取失败，稍后由页面单独重试', e && e.message)
       return null
     })
 
-  const [school, overview] = await Promise.all([schoolP, overviewP])
+  const [user, school, overview] = await Promise.all([finalizeP, schoolP, overviewP])
+  // 概览里的 me 回声（猫粮值/积分卡的数值来源）必须用发完权益的最终档案覆盖，
+  // 否则新用户首屏礼包在首页「看不见」，要等下一次刷新才出现。
+  if (overview && user) {
+    overview.me = {
+      role: user.role,
+      points: user.points || 0,
+      peakPoints: Math.max(Number(user.peakPoints) || 0, Number(user.points) || 0),
+      level: Number(user.level) || level.levelOf(Number(user.points) || 0).lv,
+      food: user.food || 0,
+      sightingCount: user.sightingCount || 0,
+      nickName: user.nickName
+    }
+  }
+  if (ctx && ctx.startedAt) console.log('[homeInit] 耗时', Date.now() - ctx.startedAt, 'ms')
   return { user, school, overview }
 }
 
@@ -975,25 +1589,69 @@ async function assertSchoolBindable(me, schoolId) {
 }
 
 /**
- * 选校 / 申请新建学校。
+ * 选校 / 建校（2026-10-30 定稿的两条规则）：
  *
- * 两条路，但**都要人审**（2026-10-26 起）：
- *  1. 传 `schoolId`：申请加入**已存在**的学校，落一条 `type:'join'` 待审，
- *     管理员通过后才把申请人绑到该校。**不再「选中即绑定」** —— 否则任何人
- *     知道 id 就能挤进任意学校的数据（与打卡只走结构化字段同理，是审核类目红线）。
- *  2. 传 `name`：本校还没建档，落一条 `type:'create'` 待审，
- *     管理员通过后才真正建校并绑定申请人。
+ * 【绑定已有学校 · 传 `schoolId`】**人人可绑**，是否立即生效由 `SCHOOL_REVIEW` 决定：
+ *  - 免审（推广期默认 `off`）：直接 `bindUserToSchool`，选中即生效；
+ *  - 审核（`on`）：落一条 `type:'join'` 待审，超管通过后才绑定。
+ *    必须填 **reason（申请理由）** 且过文本安全检测 —— 理由会出现在管理员审核界面，
+ *    是判断「这人是不是本校的」的主要依据。
  *
- * 两种申请都必须填 **reason（申请理由）** 且通过文本安全检测 —— 理由会出现在
- * 管理员的审核界面，是管理员判断「这人是不是本校的」的主要依据。
+ * 【新建学校 · 传 `name`】**仅管理员（超管 / 社团管理员），且一律立即生效**：
+ *  - 普通用户传 name → 403，请他从已有列表里选学校；
+ *  - 管理员建校**不看 `SCHOOL_REVIEW`**：他是各校数据的维护者，
+ *    让他给自己提一条建校申请再等超管审一遍没有意义（与 bindSchoolSelf 同理由）。
+ *  校名 / 校区 / 简介**仍过安全检测**（建校内容会展示给全校），
+ *  并先查重：撞上同名同校区就绑到已有的那所（`reused:true`），不建副本。
  *
- * ⚠️ 刻意**不**在这里预建 schools 文档：预建的话它会立刻出现在 listSchools 里，
- * 别的用户能选到一所「还没人审过」的学校，审核就形同虚设。
+ * ⚠️ 为什么审核模式不能「选中即绑定」：知道 schoolId 就能挤进任意学校的数据。
+ * 免审模式是**推广期**的主动取舍（换拉新零摩擦），推广结束把开关改回 `on` 即可，
+ * 代码与前端都按 policy 自适应，不需要再改一遍。
  *
  * ⚠️ 同一用户只保留一条待审：连点/反复提交会把审核列表刷满，
  * 管理员处理掉一条又冒出三条，最后没人愿意审。
  */
+/**
+ * 申请落库后通知超管（站内通知 + 订阅消息）。
+ *
+ * 这里用 **await 而不是 fire-and-forget**：通知是这次提交的关键产物，
+ * fire-and-forget 在实例被回收时会丢失，申请就会一直挂着没人审 ——
+ * 正是本次要修的问题（管理员压根不知道有人申请）。
+ * 超管是 openid 白名单、人数极少，一次批量写入的耗时可控。
+ *
+ * 但异常必须吞掉：通知失败时申请其实已经落库，若把错误抛给用户，
+ * 他会再点一次，然后撞上 already_pending，体验更差。
+ */
+async function notifyAdminOfApply(apply) {
+  try {
+    await notify.schoolApplySubmitted(apply)
+  } catch (e) {
+    console.warn('[applySchool] 通知超管失败（申请已落库，忽略）', e && (e.message || e))
+  }
+}
+
 async function applySchool(me, event) {
+  const isJoin = !!event.schoolId
+
+  // 🔴 建校：**仅管理员，且管理员建校免审**（见 canCreateSchool）。
+  // 免审的理由和 bindSchoolSelf 一样 —— 管理员本身就是各校数据的维护者，
+  // 让他给自己提一条建校申请、再等超管审一遍，既无安全收益又纯添堵。
+  // ⚠️ 这段必须放在开关判断**之前**：免审开关本意只放开「绑定已有学校」，
+  // 放在后面的话 `SCHOOL_REVIEW=off` 时普通用户照样能建校。
+  if (!isJoin) {
+    if (!canCreateSchool(me)) {
+      throw new AppError('仅管理员可创建学校，请从列表中选择你的学校', 403)
+    }
+    return createSchoolDirect(me, event)
+  }
+
+  // 绑定已有学校：推广期免审（选中即生效），
+  // 后期恢复审核只需把环境变量改回 `SCHOOL_REVIEW=on`，代码不用动。
+  if (!schoolReviewRequired('bind')) {
+    const r = await bindUserToSchool(me, String(event.schoolId).trim())
+    return { status: 'bound', ok: true, schoolId: r.schoolId, school: r.school }
+  }
+
   // 同一用户只保留一条待审：连点/反复提交会把审核列表刷满。
   // ⚠️ 这是**写**路径：集合没建的话必须现建再写，否则用户点「提交申请」
   // 只会收到一句「提交失败」，而他自己什么也做不了。所以这里 await，
@@ -1008,54 +1666,139 @@ async function applySchool(me, event) {
     dup = await db.collection(COL.schoolApply)
       .where({ openid: me.openid, status: 'pending' }).limit(1).get()
   }
-  if (dup.data.length) return { status: 'pending', apply: dup.data[0] }
-
-  if (event.schoolId) {
-    // 加入已存在的学校：落一条 join 申请，等管理员审核通过后才绑定。
-    const s = await assertSchoolBindable(me, event.schoolId)
-    const reason = String(event.reason || '').trim()
-    if (!reason) throw new AppError('请填写申请理由')
-    const okText = await sec.checkText([reason].filter(Boolean).join(' '))
-    if (!okText) throw new AppError('申请理由未通过安全检测')
-    const doc = {
-      openid: me.openid,
-      _openid: me.openid,
-      nickName: me.nickName || '',
-      type: 'join',
-      schoolId: event.schoolId,
-      schoolName: s.name || '',
-      reason,
-      status: 'pending',
-      createdAt: new Date()
-    }
-    const add = await db.collection(COL.schoolApply).add({ data: doc })
-    return { status: 'submitted', apply: Object.assign({}, doc, { _id: add._id }) }
+  // 待审期间禁止再提交：给前端一个明确 reason，前端据此把选校/新建入口置灰。
+  // 只返回 status:'pending' 的话前端分不清「刚提交成功」和「早先就有待审」，
+  // 用户就能一直点，审核列表也会被刷屏。
+  if (dup.data.length) {
+    return { status: 'pending', reason: 'already_pending', apply: dup.data[0] }
   }
 
-  // 新建学校：落一条 create 申请，等管理员审核通过后才建校并绑定申请人。
-  const name = String(event.name || '').trim()
-  if (!name) throw new AppError('请填写学校名称')
+  // 走到这里只剩一种情况：**审核模式 + 加入已有学校**。
+  // （建校那条路已经在函数开头返回了 —— create 是管理员专属且免审，
+  // 所以 `school_applies` 里不会再出现 type:'create'。）
+  const s = await assertSchoolBindable(me, event.schoolId)
   const reason = String(event.reason || '').trim()
   if (!reason) throw new AppError('请填写申请理由')
-  const okText = await sec.checkText(
-    [name, event.campus, event.city, event.intro, reason].filter(Boolean).join(' '))
-  if (!okText) throw new AppError('内容未通过安全检测')
-
+  const okText = await sec.checkText(reason)
+  if (!okText) throw new AppError('申请理由未通过安全检测')
   const doc = {
     openid: me.openid,
     _openid: me.openid,
     nickName: me.nickName || '',
-    type: 'create',
-    name,
-    campus: String(event.campus || '').trim(),
-    city: String(event.city || '').trim(),
-    intro: String(event.intro || '').trim(),
+    type: 'join',
+    schoolId: event.schoolId,
+    schoolName: s.name || '',
     reason,
     status: 'pending',
     createdAt: new Date()
   }
   const add = await db.collection(COL.schoolApply).add({ data: doc })
-  return { status: 'submitted', apply: Object.assign({}, doc, { _id: add._id }) }
+  const apply = Object.assign({}, doc, { _id: add._id })
+  await notifyAdminOfApply(apply)
+  return { status: 'submitted', apply }
+}
+
+/**
+ * 管理员自助绑校 / 换校（**免审**）。
+ *
+ * 为什么管理员要豁免：2026-10-26 把「选中即绑定」的后门关掉、全部走待审，
+ * 是因为**任何人**知道 schoolId 就能挤进任意学校的数据（审核类目红线）。
+ * 但管理员本身就是各校数据的维护者，让他给自己提申请、再由超管审一遍，
+ * 既无安全收益又纯添堵（用户反馈「管理员选校还要申请不合理」）。
+ *
+ * ⚠️ 豁免的边界必须收在服务端：`role` 由 `requireRole` 校验，
+ * 前端传什么都不算数，普通用户调这个接口会被拦在 role:'admin' 之外。
+ *
+ * ⚠️ 普通管理员（admin）仍然过 `assertSchoolBindable`：隐藏校（测试校园）
+ * 只对超管可见，admin 不能靠直绑绕进去。
+ *
+ * 直绑成功后把该用户自己的 pending 申请置为 `withdrawn` —— 否则他已经换好学校了，
+ * 超管的待审列表里还挂着一条「申请加入 A 校」，审完又把他绑回 A 校。
+ */
+async function bindSchoolSelf(me, event) {
+  const schoolId = String((event && event.schoolId) || '').trim()
+  if (!schoolId) throw new AppError('缺少学校 ID', 400)
+  return bindUserToSchool(me, schoolId)
+}
+
+/**
+ * 超管：给历史学校补 `schoolKey`（去重键）。
+ *
+ * `schoolKey` 是这次才加的字段，老学校没有它 —— 查重会退化成全量比对（能work但慢）。
+ * 部署后跑一次这个 action 补上，查重就回到一次 where 命中。
+ *
+ * 并行 Promise.all 而不是串行 await 循环：串行是 N 次往返，
+ * 几十所学校能把云函数的 3s 预算吃穿（项目云函数预算红线）。
+ */
+async function backfillSchoolKeys(me) {
+  requireSuper(me)
+  const res = await db.collection(COL.school).limit(200).get()
+  const list = res.data || []
+  const todo = []
+  for (const s of list) {
+    const key = schoolKeyOf(s.name, s.campus)
+    if (!key || s.schoolKey === key) continue
+    todo.push({ id: s._id, key })
+  }
+  await Promise.all(todo.map(x =>
+    db.collection(COL.school).doc(x.id).update({ data: { schoolKey: x.key } })))
+  return { total: list.length, updated: todo.length }
+}
+
+/**
+ * 超管：列出**已经建重**的学校（同校名 + 同校区出现了 2 份以上）。
+ *
+ * 查重是这次才加的，历史上很可能已经存在重复（比如「东南大学」建了两次）。
+ * 只加查重不清理存量，用户下拉里照样有两个一模一样的选项。
+ * 这个 action 只读不改：合并校区要动猫档案 / 打卡 / 任务，必须人工确认后再做。
+ */
+async function findDuplicateSchools(me) {
+  requireSuper(me)
+  const res = await db.collection(COL.school).limit(200).get()
+  const list = res.data || []
+  const groups = {}
+  for (const s of list) {
+    const key = s.schoolKey || schoolKeyOf(s.name, s.campus)
+    if (!key || key === '|') continue
+    ;(groups[key] = groups[key] || []).push({
+      _id: s._id,
+      name: s.name || '',
+      campus: s.campus || '',
+      city: s.city || '',
+      createdBy: s.createdBy || '',
+      createdAt: s.createdAt || null,
+      missingKey: !s.schoolKey
+    })
+  }
+  return Object.keys(groups)
+    .filter(k => groups[k].length > 1)
+    .map(k => ({ key: k, count: groups[k].length, schools: groups[k] }))
+}
+
+/**
+ * 撤回自己的待审申请。
+ *
+ * 待审期间前端会把选校 / 新建入口全部置灰（防刷审核列表），
+ * 但**没有撤回通道的话就成了一个死局**：管理员迟迟不审、用户又撤销不了申请，
+ * 只能干等，想改主意换一所学校也不行（用户反馈「申请后还有问题」）。
+ *
+ * 用条件更新（status='pending' 才写）防并发：管理员刚好点通过的同时撤回，
+ * 只会有一个成功，另一个拿到 updated=0。
+ */
+async function withdrawSchoolApply(me, event) {
+  const id = String((event && event.id) || '').trim()
+  if (!id) throw new AppError('缺少申请 ID', 400)
+  let r
+  try {
+    r = await db.collection(COL.schoolApply)
+      .where({ _id: id, openid: me.openid, status: 'pending' })
+      .update({ data: { status: 'withdrawn', handledAt: new Date(), handler: 'self' } })
+  } catch (e) {
+    if (!isCollectionMissing(e)) throw e
+    throw new AppError('没有可撤回的申请', 404)
+  }
+  if (!r.stats || !r.stats.updated) throw new AppError('该申请已处理，无法撤回', 409)
+  return { ok: true }
 }
 
 /**
@@ -1086,7 +1829,19 @@ async function mySchoolApply(me) {
     pending: decorate(pick('pending')),
     rejected: decorate(pick('rejected')),
     approved: decorate(pick('approved')),
-    schoolId: me.schoolId || ''
+    schoolId: me.schoolId || '',
+    // 审核开关（推广期免审）：前端只用它决定界面（要不要弹理由框、文案怎么写），
+    // 真正的判定在服务端 —— 前端传什么都不影响 `applySchool` 走不走审核。
+    // `reviewBind` / `reviewCreate`：true = **需要**管理员审核（字段名带 review 前缀，
+    // 避免前端把 `policy.bind` 误读成「可以绑定」—— 两个方向都会写错一次）
+    policy: {
+      mode: SCHOOL_REVIEW_MODE,
+      reviewBind: schoolReviewRequired('bind'),
+      reviewCreate: schoolReviewRequired('create'),
+      // 建校是管理员专属（与免审开关无关，见 canCreateSchool）。
+      // 前端据此决定要不要显示「没有我的学校？创建」入口 —— 显示了点下去也是 403。
+      canCreate: canCreateSchool(me)
+    }
   }
 }
 
@@ -1141,9 +1896,11 @@ async function handleSchoolApply(me, event) {
     if (apply.type === 'join') {
       // 学校可能已被删 / 设为隐藏：再核一次，避免把用户绑到一个查不到数据的 dangling id。
       await assertSchoolBindable(me, apply.schoolId)
-      const users = await db.collection(COL.user).where({ openid: apply.openid }).limit(1).get()
-      if (users.data[0]) {
-        await db.collection(COL.user).doc(users.data[0]._id)
+      // 申请人可能只有历史 _openid 文档：用 findUserByOpenid 兜底（同样的 _or 查法），
+      // 否则 `where({ openid })` 查不到 → 通过审核了却没把人绑上。
+      const u = await findUserByOpenid(apply.openid)
+      if (u) {
+        await db.collection(COL.user).doc(u._id)
           .update({ data: { schoolId: apply.schoolId } })
       }
       await db.collection(COL.schoolApply).doc(event.id).update({
@@ -1158,12 +1915,28 @@ async function handleSchoolApply(me, event) {
       .filter(Boolean).join(' '))
     if (!okText) throw new AppError('申请内容未通过安全检测')
 
+    // 审核期间这所学校可能已经被建出来了（别人免审直建 / 另一条申请先通过）。
+    // 不查重就会在同一校名下建出两份，下拉里两个一模一样的选项，数据也被切成两摊。
+    const same = await findSameSchool(apply.name, apply.campus)
+    if (same) {
+      const u = await findUserByOpenid(apply.openid)
+      if (u) {
+        await db.collection(COL.user).doc(u._id)
+          .update({ data: { schoolId: same._id } })
+      }
+      await db.collection(COL.schoolApply).doc(event.id).update({
+        data: { status: 'approved', schoolId: same._id, handledAt: new Date() }
+      })
+      return { status: 'approved', schoolId: same._id, reused: true, school: same }
+    }
+
     const geo = normalizeSchoolGeo({})
     const schoolDoc = {
       name: apply.name,
       campus: apply.campus || '',
       city: apply.city || '',
       intro: apply.intro || '',
+      schoolKey: schoolKeyOf(apply.name, apply.campus),
       center: geo.center,
       bounds: geo.bounds,
       scale: geo.scale,
@@ -1173,9 +1946,9 @@ async function handleSchoolApply(me, event) {
     }
     const add = await db.collection(COL.school).add({ data: schoolDoc })
     // 绑定申请人（listSchools 里可能还没出现过这所学校，但申请人自己要有归属）
-    const users = await db.collection(COL.user).where({ openid: apply.openid }).limit(1).get()
-    if (users.data[0]) {
-      await db.collection(COL.user).doc(users.data[0]._id)
+    const u = await findUserByOpenid(apply.openid)
+    if (u) {
+      await db.collection(COL.user).doc(u._id)
         .update({ data: { schoolId: add._id } })
     }
     await db.collection(COL.schoolApply).doc(event.id).update({
@@ -1226,7 +1999,13 @@ async function getOverview(me, event) {
   const recentOut = recentData
     .filter(s => isMember(me) || s.visibility === 'public' || (me && s.reporter === me.openid))
     .map(s => Object.assign({}, s, { cat: catMap[s.catId] || null }))
-  await maplib.attachSightingMediaUrls(recentOut)
+  // 首页每条只展示首图（photosSmall[0]）：只换 1 张的临时链接并把其余裁掉。
+  // getTempFileURL 是概览链路上最贵的一次外网调用，原来每条换 3 张纯属浪费 ——
+  // 多换的图首页不渲染，客户端也没法拿它们做任何事（他人私有文件）。
+  await maplib.attachSightingMediaUrls(recentOut, { maxPhotos: 1 })
+  recentOut.forEach(s => {
+    if (Array.isArray(s.photos) && s.photos.length > 1) s.photos = s.photos.slice(0, 1)
+  })
 
   const alive = catAll.total || 0
   return {
@@ -1253,19 +2032,23 @@ async function getOverview(me, event) {
 /**
  * 经费汇总（只算收入/支出总额）。
  *
- * ⚠️ 必须做**字段投影**：`fund` 集合里可能存着凭证图、备注等大字段，
- * 而这里只用到 `amount`。不投影就等于为了加几个数把整表搬回来 ——
- * 记录一多，首页启动被这条查询拖垮。
+ * 用聚合在服务端求和：原先两次 get() 把整年流水搬回函数内加总 ——
+ * 记录变多后首页启动被它拖慢；且 get() 单批上限 100 条，超出会**少算**。
+ * 聚合一来一回只返两个数字，不随流水规模膨胀。
  */
 async function listFundSummary(schoolId) {
   const where = schoolId ? { schoolId } : {}
-  const pick = q => (typeof q.field === 'function' ? q.field({ amount: true }) : q)
-  const [inc, exp] = await Promise.all([
-    pick(db.collection(COL.fund).where(Object.assign({}, where, { type: 'income' }))).get(),
-    pick(db.collection(COL.fund).where(Object.assign({}, where, { type: 'expense' }))).get()
-  ])
-  const sum = arr => arr.reduce((a, b) => a + (Number(b.amount) || 0), 0)
-  return { income: sum(inc.data), expense: sum(exp.data) }
+  const $ = db.command.aggregate
+  const res = await db.collection(COL.fund).aggregate()
+    .match(where)
+    .group({ _id: '$type', total: $.sum('$amount') })
+    .end()
+  const list = (res && res.list) || []
+  const pick = t => {
+    const hit = list.find(r => r._id === t)
+    return hit ? (Number(hit.total) || 0) : 0
+  }
+  return { income: pick('income'), expense: pick('expense') }
 }
 
 /* ==================== 猫档案 ==================== */
@@ -1481,14 +2264,28 @@ async function listDex(me, event) {
 
 async function getCat(me, event) {
   if (!event.id) throw new AppError('缺少猫 ID')
-  const res = await db.collection(COL.cat).doc(event.id).get()
-  const cat = res.data
-  if (!cat) throw new AppError('猫咪不存在', 404)
+  // doc.get 对「不存在的 _id」会直接抛原始 DB 错误（document with _id xxx does not exist），
+  // 上一轮的中性兜底会把它吞成「数据读取失败」——但这里其实是可判定、可说人话的场景：
+  // 最常见是列表还是旧数据、点进来时这只猫已经被删了（30s 节流窗口内的过期列表）。
+  // 主动 catch 一次，转成明确的 404 业务文案，前端 toast 直接展示。
+  let cat = null
+  try {
+    const res = await db.collection(COL.cat).doc(event.id).get()
+    cat = res.data
+  } catch (e) {
+    console.warn('[getCat] 档案读取失败 id=' + event.id, (e && e.errMsg) || (e && e.message) || e)
+    throw new AppError('这只猫咪不存在或已被删除', 404)
+  }
+  if (!cat) throw new AppError('这只猫咪不存在或已被删除', 404)
 
+  // 目击 / TNR 是详情页的次要数据：它们查挂了不应该连累整页档案打不开
+  // （典型如 tnr_records 集合还没建、或查询瞬时抖动 —— 以前会整页报「数据读取失败」）。
   const [sightings, tnrList] = await Promise.all([
-    db.collection(COL.sighting).where({ catId: cat._id }).orderBy('createdAt', 'desc').limit(10).get(),
+    db.collection(COL.sighting).where({ catId: cat._id }).orderBy('createdAt', 'desc').limit(10).get()
+      .catch(e => { console.warn('[getCat] 目击读取降级', (e && e.message) || e); return { data: [] } }),
     isMember(me)
       ? db.collection(COL.tnr).where({ catId: cat._id }).orderBy('createdAt', 'desc').limit(5).get()
+          .catch(e => { console.warn('[getCat] TNR 读取降级', (e && e.message) || e); return { data: [] } })
       : Promise.resolve({ data: [] })
   ])
   const catOut = sanitizeCat(cat, me)
@@ -1618,8 +2415,7 @@ async function saveCat(me, event) {
     sterilized: d.sterilized || 'unknown',
     earMark: d.earMark || '',
     status: d.status || 'campus',
-    health: d.health || 'unknown',
-    characters: d.characters || [],
+    health: d.health || 'unknown',    characters: d.characters || [],
     location: d.location || null,
     spotPrivate: !!d.spotPrivate,
     avatar: d.avatar || '',
@@ -1637,6 +2433,9 @@ async function saveCat(me, event) {
     updatedBy: me.openid,
     updatedAt: now
   }
+  // 已下线的枚举在这里也归一一次：旧版客户端缓存 / AI 识别结果仍可能回传
+  // 休学(suspend)、灰蓝(gray)、暹罗(siamese)，别让它们再写回库里。
+  normalizeEnum(payload)
 
   if (d._id) {
     // 清空「已入库」标记：建档或改档（尤其是换照片）后，服务端特征库需要重新收录。
@@ -2680,6 +3479,137 @@ async function setRole(me, event) {
   return { ok: true }
 }
 
+/* ==================== 用户管理（超级管理员 · 全站） ==================== */
+
+/**
+ * 全站用户列表（**跨校区**，仅超管）。
+ *
+ * 与 `listMembers` 的区别必须说清楚，否则很容易被当成同一个接口乱用：
+ *  - `listMembers`：**本校区**成员，普通管理员也能用（管理自己社团的人）；
+ *  - `listUsersAdmin`：**全站**用户，只有超管能进。
+ * 学校是数据隔离的支点，跨校区改角色若不收在超管手里，
+ * A 校管理员就能把 B 校的人提成管理员，隔离直接失效。
+ *
+ * 搜索：昵称 / 账号 / 手机号前缀匹配（`db.RegExp`），量级几千也够用，不用全文索引。
+ * 排序：先试 `orderBy`，失败（缺索引）就退化成内存排序 —— 云开发在 where + orderBy
+ * 组合上没有复合索引时会直接报错，而用户列表是后台页面，不该因为索引缺失整个打不开。
+ *
+ * ⚠️ 全部脱敏下发：账号 / 手机号中段打码，绝不带 openid 与密码哈希。
+ * 后台是为了「找人 + 配权限」，不是给超管一份完整通讯录。
+ */
+async function listUsersAdmin(me, event) {
+  requireSuper(me)
+  const kw = String((event && event.keyword) || '').trim()
+  const role = String((event && event.role) || '').trim()
+  const schoolId = String((event && event.schoolId) || '').trim()
+  const size = Math.min(100, Math.max(1, Number((event && event.size)) || 50))
+
+  // 条件拼装：多个条件用 _.and 组合，单个条件直接传对象（云开发不支持「对象 + 指令」混写）
+  const parts = []
+  if (role && ['visitor', 'member', 'admin'].indexOf(role) >= 0) {
+    // 老数据把访客存成 role:'user'，筛「访客」时两种写法都得算上
+    parts.push(role === 'visitor' ? _.or([{ role: 'visitor' }, { role: 'user' }]) : { role })
+  }
+  if (schoolId) parts.push({ schoolId })
+  if (kw) {
+    // ⚠️ 必须 escapeReg：昵称里带 `.` `(` `*` 时，不转义会让整条查询直接报错。
+    const re = db.RegExp({ regexp: '^' + escapeReg(kw), options: 'i' })
+    parts.push(_.or([{ nickName: re }, { account: re }, { phone: re }]))
+  }
+  const cond = parts.length === 0 ? {} : (parts.length === 1 ? parts[0] : _.and(parts))
+
+  let list = []
+  try {
+    const res = await db.collection(COL.user)
+      .where(cond).orderBy('createdAt', 'desc').limit(size).get()
+    list = res.data || []
+  } catch (e) {
+    // 缺复合索引：去掉排序再查一次，改在内存里排（结果一样，只是多搬一次数据）
+    const res = await db.collection(COL.user).where(cond).limit(size).get()
+    list = (res.data || []).slice().sort((a, b) => {
+      const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0
+      const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0
+      return tb - ta
+    })
+  }
+
+  // 校名：用户文档里只有 schoolId，展示「哪所学校的」要现查一次学校表。
+  // 学校是几十所的量级，一次 limit(200) 建映射比逐条 get 划算（云函数 3s 预算红线）。
+  const schoolIds = Array.from(new Set(list.map(u => u.schoolId).filter(Boolean)))
+  let schoolMap = {}
+  if (schoolIds.length) {
+    try {
+      const sr = await db.collection(COL.school).limit(200).get()
+      ;(sr.data || []).forEach(s => {
+        schoolMap[s._id] = s.campus ? (s.name + ' · ' + s.campus) : s.name
+      })
+    } catch (e) { schoolMap = {} }
+  }
+
+  // 历史数据里 role 可能是早期口径的 'user'（不是三档之一），统一归一到 visitor ——
+  // 不归一的话这批人在「访客」筛选项里既看不见也改不了，后台会以为人丢了。
+  const normRole = r => (r === 'user' ? 'visitor' : (r || 'visitor'))
+
+  const users = list.map(u => {
+    const sup = isSuper({ openid: u.openid || u._openid })
+    return {
+      _id: u._id,
+      nickName: u.nickName || '',
+      avatarUrl: u.avatarUrl || '',
+      // 脱敏：账号 / 手机号只给中段打码后的样子
+      accountMask: u.account ? maskContact(u.account) : '',
+      phoneMask: u.phone ? maskContact(u.phone) : '',
+      // 是否设置了账号密码 —— 后台要知道「这人能不能换设备登录」
+      hasAccount: !!u.account,
+      role: normRole(u.role),
+      isSuper: sup,
+      schoolId: u.schoolId || '',
+      schoolName: schoolMap[u.schoolId] || '',
+      points: Math.max(0, Number(u.points) || 0),
+      sightingCount: Math.max(0, Number(u.sightingCount) || 0),
+      createdAt: u.createdAt || null,
+      lastSeenAt: u.lastSeenAt || null
+    }
+  })
+
+  // 角色统计放在服务端算：WXML 里不能对数组做 filter/length。
+  const roleCount = { admin: 0, member: 0, visitor: 0, super: 0 }
+  users.forEach(u => {
+    if (u.isSuper) roleCount.super += 1
+    else if (roleCount[u.role] !== undefined) roleCount[u.role] += 1
+  })
+
+  return { list: users, total: users.length, roleCount, keyword: kw, role }
+}
+
+/**
+ * 设置用户角色（**仅超管**）。与管理页面上的 `setRole`（本校区成员管理）分开，
+ * 因为这是全站视角：只改 role，**绝不动 schoolId**。
+ *
+ * 为什么不能复用 setRole：它会把用户挪到「超管当前的学校」，
+ * 在成员管理里那是对的（把人拉进本社团），在全站用户列表里就是顺手把人整份数据搬了家
+ * —— 他原来学校的猫档案和打卡会一起看不见，而超管只是想给他换个权限。
+ */
+async function setUserRole(me, event) {
+  requireSuper(me)
+  const role = String((event && event.role) || '')
+  if (['visitor', 'member', 'admin'].indexOf(role) < 0) throw new AppError('角色非法', 400)
+  const userId = String((event && event.userId) || '').trim()
+  if (!userId) throw new AppError('缺少用户 ID', 400)
+  const target = await db.collection(COL.user).doc(userId).get()
+  if (!target.data) throw new AppError('用户不存在', 404)
+  if (isSuper({ openid: target.data.openid || target.data._openid })) {
+    throw new AppError('超级管理员身份不可更改', 403)
+  }
+  if (userId === me._id && role !== 'admin') {
+    throw new AppError('不能降级自己（避免失去管理权限）', 400)
+  }
+  await db.collection(COL.user).doc(userId).update({
+    data: { role, updatedAt: new Date() }
+  })
+  return { ok: true, userId, role }
+}
+
 async function applyJoin(me, event) {
   if (isMember(me)) return { status: 'already' }
   const exist = await db.collection(COL.apply)
@@ -2705,6 +3635,15 @@ async function applyJoin(me, event) {
   return { status: 'submitted' }
 }
 
+async function myApply(me, event) {
+  // 非成员也能查到自己的入社申请：用于「成员与身份」页展示申请记录与状态，
+  // 而不是每次都显示空白申请表单。返回本人最新一条（按创建时间倒序），没有则 null。
+  const res = await db.collection(COL.apply)
+    .where({ openid: me.openid })
+    .orderBy('createdAt', 'desc').limit(1).get()
+  return res.data[0] || null
+}
+
 async function listApplies(me, event) {
   const schoolId = resolveSchoolId(me, event)
   assertSchool(me, schoolId)
@@ -2723,9 +3662,9 @@ async function handleApply(me, event) {
     data: { status: event.approve ? 'approved' : 'rejected', handler: me.nickName, handledAt: now }
   })
   if (event.approve) {
-    const u = await db.collection(COL.user).where({ openid: apply.data.openid }).limit(1).get()
-    if (u.data[0]) {
-      await db.collection(COL.user).doc(u.data[0]._id).update({
+    const u = await findUserByOpenid(apply.data.openid)
+    if (u) {
+      await db.collection(COL.user).doc(u._id).update({
         data: { role: 'member', schoolId: apply.data.schoolId || me.schoolId || '' }
       })
     }

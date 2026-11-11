@@ -139,7 +139,12 @@ const cat = (id, schoolId, extra) => Object.assign({
 async function seed() {
   store = {
     cats: [
-      cat('a1', SCHOOL_A, { name: '大橘', pattern: 'orange', updatedAt: new Date(2026, 9, 20) }),
+      cat('a1', SCHOOL_A, {
+        name: '大橘', pattern: 'orange', updatedAt: new Date(2026, 9, 20),
+        // 具体位置 + 内部字段：只应下发给成员，非成员一律拿不到（防虐猫）
+        location: { lat: 31.881687, lng: 118.82664, name: '梅园1D号楼' },
+        internalNote: '内部备注', medicalNote: '医疗记录', contact: '13800000000'
+      }),
       cat('a2', SCHOOL_A, { name: '狸花', pattern: 'tabby', updatedAt: new Date(2026, 9, 19) }),
       cat('a3', SCHOOL_A, { name: '奶牛', pattern: 'cow' }),
       // 建档时花色选择器没动过 → 落默认 other，筛选永远选不中它
@@ -148,6 +153,7 @@ async function seed() {
     ],
     users: [
       { _id: 'u_bound', openid: 'u_bound', schoolId: SCHOOL_A, role: 'visitor', nickName: 'n' },
+      { _id: 'u_member', openid: 'u_member', schoolId: SCHOOL_A, role: 'member', nickName: 'm' },
       { _id: 'u_free', openid: 'u_free', schoolId: '', role: 'visitor', nickName: 'n' },
       { _id: 'u_admin', openid: 'u_admin', schoolId: '', role: 'admin', nickName: 'admin' }
     ],
@@ -263,6 +269,55 @@ async function run() {
     (catsSrc.match(/clearFilters\(\)[\s\S]{0,220}/) || [''])[0])
   assert('E6 无筛选时的空态换成「本校还没有档案」（不是「不符合条件」）',
     /本校还没有猫咪档案/.test(wxmlSrc))
+
+  /* ==================== F. 位置隐私 + 下线枚举归一 ==================== */
+  console.log('\n--- F. 具体位置只给成员 / 老枚举归一 ---')
+
+  // F1：非成员拿不到具体位置（连点位地名一起没），内部备注同样不下发
+  let v = await as('u_bound', 'getCat', { id: 'a1' })
+  assert('F1 非成员档案不含 location', v && v.cat && !v.cat.location, v && v.cat && v.cat.location)
+  assert('F1 非成员看不到内部备注/医疗/联系方式',
+    v && v.cat && !v.cat.internalNote && !v.cat.medicalNote && !v.cat.contact, v && v.cat)
+
+  // F2：成员/管理员照常拿到完整位置（编辑档案要回填）
+  const m = await as('u_member', 'getCat', { id: 'a1' })
+  assert('F2 成员档案带具体位置',
+    m && m.cat && m.cat.location && m.cat.location.name === '梅园1D号楼', m && m.cat && m.cat.location)
+  assert('F2 成员能看到内部备注', m && m.cat && m.cat.internalNote === '内部备注', m && m.cat && m.cat.internalNote)
+
+  // F3：列表接口同样不泄露
+  const vl = await as('u_bound', 'listCats', {})
+  assert('F3 列表里非成员的猫没有 location',
+    (vl.list || []).every(c => !c.location), (vl.list || []).map(c => c.location))
+
+  // F4：地图点位地名只给成员（坐标不受影响，幼猫/病猫另有模糊）
+  const vp = await as('u_bound', 'listMapPoints', { schoolId: SCHOOL_A })
+  assert('F4 非成员地图点位不带地名', (vp.points || []).every(p => !p.spot),
+    (vp.points || []).map(p => p.spot))
+  const mp = await as('u_member', 'listMapPoints', { schoolId: SCHOOL_A })
+  assert('F4 成员地图点位带地名', (mp.points || []).some(p => p.spot === '梅园1D号楼'),
+    (mp.points || []).map(p => p.spot))
+  assert('F4 非成员地图仍然有点位（隐私不能把地图弄空）', (vp.points || []).length > 0, (vp.points || []).length)
+  // 2026-11-07 二次收紧：非成员**所有**点位坐标都模糊化（不只幼猫/病猫）——整体显示，放大也对不出精确位置
+  assert('F4b 非成员点位坐标一律模糊化', (vp.points || []).every(p => p.blurred === true),
+    (vp.points || []).map(p => p.blurred))
+  assert('F4b 成员点位坐标不模糊', (mp.points || []).every(p => p.blurred !== true),
+    (mp.points || []).map(p => p.blurred))
+
+  // F5：已下线枚举归一 —— 休学→失踪、灰蓝/暹罗→其他（老数据不能显示「未知」）
+  store.cats.push(cat('old1', SCHOOL_A, { name: '蓝猫', status: 'suspend', pattern: 'siamese' }))
+  store.cats.push(cat('old2', SCHOOL_A, { name: '灰猫', pattern: 'gray' }))
+  const o1 = await as('u_bound', 'getCat', { id: 'old1' })
+  assert('F5 休学归一成失踪', o1 && o1.cat && o1.cat.status === 'missing', o1 && o1.cat && o1.cat.status)
+  assert('F5 暹罗归一成其他', o1 && o1.cat && o1.cat.pattern === 'other', o1 && o1.cat && o1.cat.pattern)
+  const o2 = await as('u_bound', 'getCat', { id: 'old2' })
+  assert('F5 灰蓝归一成其他', o2 && o2.cat && o2.cat.pattern === 'other', o2 && o2.cat && o2.cat.pattern)
+
+  // F6：选择器里已没有这两个条目（前端常量层面）
+  const constSrc = require('fs').readFileSync(path.join(ROOT, 'miniprogram', 'utils', 'const.js'), 'utf8')
+  assert('F6 状态选择器不再有「休学」', !/value: 'suspend'/.test(constSrc))
+  assert('F6 花色选择器不再有灰蓝/暹罗', !/value: 'gray'|value: 'siamese'/.test(constSrc))
+  assert('F6 「毕业」改称「已领养」', /label: '已领养'/.test(constSrc) && !/label: '毕业'/.test(constSrc))
 
   /* ==================== 汇总 ==================== */
   console.log('\n============================')

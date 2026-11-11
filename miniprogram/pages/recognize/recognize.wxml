@@ -26,10 +26,26 @@
       <view class="vp-btn">{{mode === 'video' ? '选择视频' : '开始识别'}}</view>
     </view>
 
-    <!-- 已选择：预览 -->
+    <!-- 已选择：预览
+         回看历史记录时 localPath 靠上传时的 fileID 现换链（restoreHistoryPhoto）。
+         换不到必须说清楚原因 —— 留一块空白会被读成「这只猫没照片」或「页面坏了」，
+         而真相是本机从来只存结果、不存原图。 -->
     <block wx:if="{{stage !== 'idle'}}">
-      <image wx:if="{{mode === 'image'}}" class="vp-media" src="{{localPath}}" mode="aspectFill" />
-      <video wx:else class="vp-media" src="{{localPath}}" object-fit="cover" muted="{{true}}" autoplay="{{true}}" loop="{{true}}" show-play-btn="{{false}}" controls="{{false}}" enable-progress-gesture="{{false}}" />
+      <block wx:if="{{mode === 'image'}}">
+        <image wx:if="{{localPath}}" class="vp-media" src="{{localPath}}" mode="aspectFill" />
+        <view wx:else class="vp-media vp-missing">
+          <view class="vpm-ico">🖼</view>
+          <view class="vpm-txt">{{photoExpired ? '这张照片已不在本机，识别结果仍可查看' : '照片加载中…'}}</view>
+        </view>
+      </block>
+      <block wx:else>
+        <video wx:if="{{localPath}}" class="vp-media" src="{{localPath}}" object-fit="cover" muted="{{true}}" autoplay="{{true}}" loop="{{true}}" show-play-btn="{{false}}" controls="{{false}}" enable-progress-gesture="{{false}}" />
+        <view wx:else class="vp-media vp-missing">
+          <view class="vpm-ico">🎬</view>
+          <view class="vpm-txt">{{photoExpired ? '这段视频已不在本机，识别结果仍可查看' : '视频加载中…'}}</view>
+        </view>
+      </block>
+      <view class="vp-hist-tag" wx:if="{{isHistory}}">历史记录</view>
       <view class="scan-line" wx:if="{{stage === 'working'}}"></view>
       <view class="corner tl"></view>
       <view class="corner tr"></view>

@@ -1,5 +1,5 @@
 const app = getApp()
-const { C, labelOf, showBusy, hideBusy, fromNow, sightTagText } = require('../../utils/util.js')
+const { C, labelOf, showBusy, hideBusy, fromNow, sightTagText, formatTime } = require('../../utils/util.js')
 
 /**
  * 一条疑似重复档案的副文案：「2 小时前 · 3 张照片 · 5 次打卡」。
@@ -16,6 +16,34 @@ function dupMetaText(it) {
   if (it && it.hasAvatar) bits.push('有头像')
   return bits.join(' · ')
 }
+
+/**
+ * 超级管理后台的模块清单（首页九宫格的顺序与文案都出自这里）。
+ *
+ * 为什么不再是手风琴：模块内容普遍很长 —— 校园管理带展开的编辑表单、
+ * 特征库要列「未录入」清单 + 逐只录入、确认样本要显示缩略图，
+ * 全塞在一个屏幕里折叠着既不完整也难找。改成首页九宫格 + 点进去独立页面，
+ * 每个模块占满一屏，各自还能单独 Refresh 与下拉刷新。
+ *
+ * `loader` 是该模块详情页要加载的数据；首页**不加载**这些，
+ * 只挑少数几个便宜的计数做角标，避免打开后台就被一堆慢请求拖住。
+ */
+const MODULES = [
+  { key: 'vis',        ico: '👁',  txt: '打卡可见性', desc: '公开 / 仅内部', title: '打卡记录可见性', loader: 'base' },
+  { key: 'school',     ico: '🏫',  txt: '校园管理',   desc: '校区 · 地图范围', title: '校园管理',      loader: 'schools', badge: 'schools' },
+  { key: 'dup',        ico: '📑',  txt: '重复档案',   desc: '同名同校清理',   title: '重复档案',       loader: 'duplicates' },
+  { key: 'apply',      ico: '📨',  txt: '学校申请',   desc: '入校 / 建校审批', title: '学校申请',      loader: 'base',     badge: 'applies' },
+  { key: 'users',      ico: '👤',  txt: '用户管理',   desc: '全站角色配置',   title: '用户管理（全站）', loader: 'users',   badge: 'users' },
+  { key: 'members',    ico: '👥',  txt: '成员管理',   desc: '本校身份调整',   title: '成员管理',       loader: 'base',     badge: 'members' },
+  { key: 'sightings',  ico: '🧾',  txt: '上传记录',   desc: '修改 / 删除',    title: '上传记录管理',   loader: 'base',     badge: 'sightings' },
+  { key: 'engine',     ico: '⚙️',  txt: '识别引擎',   desc: '模型体检',       title: '识别引擎',       loader: 'engine' },
+  { key: 'index',      ico: '🔍',  txt: '特征库',     desc: '花色比对录入',   title: '特征库（花色比对）', loader: 'index' },
+  { key: 'samples',    ico: '🎞',  txt: '确认样本',   desc: '人工确认并入',   title: '确认样本（人工确认）', loader: 'samples' },
+  // 咪咪筹审核：不在后台里重画一套列表，直接跳到用户端列表的「待审核」分类，
+  // 管理员看到的就是用户看到的那张卡片，审核结论点进详情再下。
+  { key: 'chou',       ico: '🐾',  txt: '咪咪筹审核', desc: '待审筹款',       title: '咪咪筹审核',     loader: 'base',     badge: 'chou', jump: '/pages/campaign/campaign?tab=review' }
+]
+const MODULE_KEYS = MODULES.map(m => m.key)
 
 /**
  * 引擎体检的三个展示行，全部在这里算好。
@@ -153,6 +181,27 @@ function schoolRowOf(s, currentId) {
 }
 
 /**
+ * 单校「重建特征库」完成时间的本地账本：{ schoolId: ISO }。
+ *
+ * 为什么不能只在 setData 里存：管理员点完重建会往下翻、退出再进来，
+ * 内存态一刷新页面就没了，「到底有没有重建好」这个问题又回到原点。
+ *
+ * 与全局那份 'indexRebuiltAt' 分开存 —— 粒度不同（一所学校 vs 全部重建），
+ * 塞进同一把 key 会因为一处过期而误伤另一处。
+ */
+const REBUILT_KEY = 'indexRebuiltAtBySchool'
+function readRebuiltMap() {
+  const m = wx.getStorageSync(REBUILT_KEY)
+  return (m && typeof m === 'object') ? m : {}
+}
+function saveRebuiltAt(schoolId, iso) {
+  const m = readRebuiltMap()
+  m[schoolId] = iso
+  wx.setStorageSync(REBUILT_KEY, m)
+  return m
+}
+
+/**
  * 超级管理后台
  *  - 成员管理：更改管理员 / 成员 / 访客身份
  *  - 上传记录管理：查看并删除任意目击打卡
@@ -166,9 +215,22 @@ Page({
     members: [],
     sightings: [],
     loading: true,
+    // module 为空 = 首页九宫格；非空 = 某个模块的详情视图（点九宫格 navigateTo 进来）
+    module: '',
+    // 九宫格数据：图标 / 文案 / 角标全部 JS 预算（WXML 不能拼接也不能比较）
+    entries: [],
+    // 分板块：原先用于手风琴「展开哪一个」。现在详情页整页只渲染一个模块，
+    // 这里退化为控制面板主体的渲染开关（进入某模块时只把对应那位置 true）。
+    panels: {
+      vis: false, school: false, dup: false, apply: false,
+      users: false, members: false, sightings: false,
+      engine: false, index: false, samples: false
+    },
     building: false,
+    rebuildSchoolId: '',  // 正在重建特征库的学校 _id（校园管理板块，按学校重建）
     indexResult: '',
     indexDetail: '',
+    indexRebuiltAt: '',   // 最近一次「全部重建」成功的时间（持久化在本地缓存，刷新仍在）
     // 特征库状态（独立异步加载，不拖慢首屏）
     // scopeText / bankText / emptyKind / emptyText 全部在 JS 预拼：
     // WXML 的 mustache 不做字符串拼接与比较运算，「档案 0」的成因说明必须能直接渲染。
@@ -198,6 +260,11 @@ Page({
     schoolsError: '',
     schoolEditing: '',
     schoolSaving: false,
+    // 校区查重（超管）：`findDuplicateSchools` 的结果 + 检查中标志。
+    // 只报告不自动合并 —— 合并校区要动猫档案 / 打卡 / 任务，必须人工确认。
+    dupGroups: [],
+    dupChecked: false,
+    dupChecking: false,
     schoolForm: { name: '', campus: '', city: '', intro: '' },
     schoolCenter: null,
     schoolCenterText: '',
@@ -230,7 +297,39 @@ Page({
     sampleResult: '',
     // 「指定猫」下拉的候选项（只在存在未归属样本时才懒加载）
     catOptions: [],
-    catNames: []
+    catNames: [],
+    // 用户管理（超管 · 全站）：搜索 + 角色配置。
+    // 与 members（本校区成员）分开存：两个列表的语义不同，混在一起必然互相覆盖。
+    uaList: [],
+    uaLoading: false,
+    uaError: '',
+    uaKeyword: '',
+    uaRole: '',
+    uaSettingId: '',
+    // 角色统计由服务端算好下发（WXML 里不能对数组做 filter/length）
+    uaStat: { total: 0, super: 0, admin: 0, member: 0, visitor: 0 }
+  },
+
+  /**
+   * 进入用法有两种：
+   *  - 不带参数：首页九宫格（只加载少量计数做角标）
+   *  - 带 ?module=xxx：该模块的详情全屏页（只加载这个模块要的数据）
+   *
+   * module 在 onLoad 里定下来（页面实例新建时参数已确定），
+   * 后续下拉刷新 / 重建后的重新加载都复用这个值。
+   */
+  onLoad(options) {
+    const m = (options && options.module) || ''
+    if (MODULE_KEYS.indexOf(m) < 0) {
+      this.setData({ module: '', entries: MODULES.map(md => Object.assign({}, md, { n: 0 })) })
+      return
+    }
+    const panels = {}
+    MODULE_KEYS.forEach(k => { panels[k] = false })
+    panels[m] = true    // 详情页只渲染这一个模块的主体
+    this.setData({ module: m, panels })
+    const def = MODULES.filter(x => x.key === m)[0]
+    wx.setNavigationBarTitle({ title: def ? def.title : '超级管理后台' })
   },
 
   async onShow() {
@@ -239,15 +338,79 @@ Page({
       wx.showModal({ title: '无权限', content: '仅超级管理员可进入管理后台', showCancel: false })
       return
     }
-    this.load()
-    // 特征库状态要调识别服务（可能 1~3s），独立跑，不阻塞成员/记录列表。
-    // 引擎体检是另一个独立 action，并行发 —— 失败互不连累。
-    this.loadIndexStatus()
-    this.loadEngineHealth()
-    // 确认样本库：独立加载（要换缩略图临时链接，可能 1~2s，不能拖慢首屏）
-    this.loadSamples()
-    // 校园管理：独立加载（老版本云函数没有 listSchoolsAdmin，不能连累整页）
-    this.loadSchools()
+    if (this.data.module) {
+      await this.loadModule(this.data.module)
+      return
+    }
+    await this.loadHome()
+  },
+
+  /** 首页：只拉几个便宜的计数做角标，不拉识别服务那几个慢的（进模块再拉） */
+  async loadHome() {
+    await this.load()
+    await Promise.all([this.loadSchools(), this.loadUsers(), this.loadChouPending()])
+    this.refreshEntries()
+  },
+
+  /** 咪咪筹待审计数（角标）。失败不影响后台其它模块。 */
+  async loadChouPending() {
+    try {
+      const res = await app.callApi('listCampaigns', { scope: 'review' })
+      this.setData({ chouPending: (res.list || []).length })
+    } catch (e) {
+      this.setData({ chouPending: 0 })
+    }
+  },
+
+  /** 模块详情页：按需加载，别把十个模块的数据都拖进来 */
+  async loadModule(m) {
+    const def = MODULES.filter(x => x.key === m)[0]
+    const kind = def ? def.loader : ''
+    // 这几个数据同属一次 Promise.all（会员 / 打卡 / 策略 / 申请），
+    // 沿用原来的 load() 一次拿齐，代价远小于把它们拆开维护。
+    if (kind === 'base') return this.load()
+    if (kind === 'schools') return this.loadSchools()
+    if (kind === 'users') return this.loadUsers()
+    if (kind === 'duplicates') return this.loadDuplicates()
+    if (kind === 'engine') return this.loadEngineHealth()
+    if (kind === 'index') return this.loadIndexStatus()
+    if (kind === 'samples') return this.loadSamples()
+    return null
+  },
+
+  /** 九宫格点击进入对应模块（新页面展示，不是就地展开） */
+  goModule(e) {
+    const k = (e.currentTarget && e.currentTarget.dataset && e.currentTarget.dataset.k) || ''
+    if (!k || MODULE_KEYS.indexOf(k) < 0) return
+    const def = MODULES.filter(x => x.key === k)[0]
+    // 有些模块不在这里就地渲染，而是复用用户端页面（如咪咪筹审核）
+    if (def && def.jump) { wx.navigateTo({ url: def.jump }); return }
+    wx.navigateTo({ url: '/pages/admin/admin?module=' + k })
+  },
+
+  /** 角标数量：没有 / 为 0 就不显示，避免满屏「0」把真正要处理的数淹没 */
+  refreshEntries() {
+    const d = this.data
+    const nOf = k => {
+      if (k === 'schools') return (d.schools || []).length
+      if (k === 'applies') return (d.schoolApplies || []).length
+      if (k === 'users') return Number(d.uaStat && d.uaStat.total) || (d.uaList || []).length
+      if (k === 'members') return (d.members || []).length
+      if (k === 'sightings') return (d.sightings || []).length
+      if (k === 'chou') return Number(d.chouPending) || 0
+      return 0
+    }
+    this.setData({
+      entries: MODULES.map(m => Object.assign({}, m, { n: nOf(m.badge) }))
+    })
+  },
+
+  /** 手风琴折叠：详情页整页只有一个模块，点标题不该把它收起来 */
+  togglePanel(e) {
+    if (this.data.module) return
+    const p = (e.currentTarget && e.currentTarget.dataset && e.currentTarget.dataset.p) || ''
+    if (!p) return
+    this.setData({ ['panels.' + p]: !this.data.panels[p] })
   },
 
   async load() {
@@ -285,10 +448,139 @@ Page({
         })),
         policyPublic: !!(policy && policy.public)
       })
+      // 打开这一页 = 已经看过待审列表，相关通知标记已读。
+      // 不做这一步，「我的」页的未读红点会一直挂着不消失，通知就退化成噪音。
+      // 只清 school_apply 这一类：将来新增别的通知类型不会被这里误清。
+      app.callApi('listNotices', { size: 20 })
+        .then(r => {
+          const ids = ((r && r.list) || [])
+            .filter(n => n.type === 'school_apply' && !n.read)
+            .map(n => n._id)
+          if (ids.length) return app.callApi('markNoticesRead', { ids })
+        })
+        .catch(() => { /* 通知是增强项，失败不影响后台主体 */ })
     } catch (e) {
       wx.showToast({ title: (e && e.message) || '加载失败', icon: 'none' })
     } finally {
       this.setData({ loading: false })
+    }
+  },
+
+  /**
+   * 全站用户列表（超管）。
+   *
+   * 与 `members`（本校区成员）刻意走两个接口：成员管理是「把人拉进本社团」
+   * （会写 schoolId），用户管理是「配权限」（只改 role）。
+   * 复用同一个接口的话，超管想给人提权限，顺手就把他的数据搬到了自己学校。
+   */
+  async loadUsers() {
+    this.setData({ uaLoading: true, uaError: '' })
+    try {
+      const r = await app.callApi('listUsersAdmin', {
+        keyword: this.data.uaKeyword,
+        role: this.data.uaRole,
+        size: 50
+      })
+      const count = (r && r.roleCount) || {}
+      this.setData({
+        uaList: ((r && r.list) || []).map(u => Object.assign({}, u, {
+          isSuper: !!u.isSuper,
+          roleLabel: u.isSuper
+            ? '超级管理员'
+            : ({ admin: '管理员', member: '成员', visitor: '访客' }[u.role] || '访客'),
+          // 副文案一律在 JS 里拼好：WXML 的 mustache 不做字符串拼接，会静默渲染成空
+          subText: [
+            u.schoolName || '未绑定学校',
+            u.accountMask || '未设置账号',
+            '积分 ' + (u.points || 0),
+            '打卡 ' + (u.sightingCount || 0),
+            u.createdAt ? fromNow(u.createdAt) : ''
+          ].filter(Boolean).join(' · ')
+        })),
+        uaStat: {
+          total: (r && r.total) || 0,
+          super: count.super || 0,
+          admin: count.admin || 0,
+          member: count.member || 0,
+          visitor: count.visitor || 0
+        }
+      })
+    } catch (e) {
+      // 老版本云函数没有 listUsersAdmin：只让这一块显示失败，整页照常可用
+      this.setData({ uaList: [], uaError: (e && e.message) || '用户列表读取失败' })
+    } finally {
+      this.setData({ uaLoading: false })
+    }
+  },
+
+  onUserKeyword(e) { this.setData({ uaKeyword: (e.detail || {}).value || '' }) },
+
+  /** 角色筛选：点「全部 / 管理员 / 成员 / 访客」立即重查 */
+  pickUserRole(e) {
+    const role = (e.currentTarget && e.currentTarget.dataset && e.currentTarget.dataset.role) || ''
+    this.setData({ uaRole: role })
+    this.loadUsers()
+  },
+
+  /**
+   * 设置用户角色（**只改 role，不动 schoolId**）。
+   *
+   * 提管理员要二次确认：管理员能建档 / 改档 / 删别人的打卡，
+   * 手滑点一下就把陌生人提上去，撤回时数据可能已经被改过了。
+   */
+  async setUserRole(e) {
+    const ds = (e.currentTarget && e.currentTarget.dataset) || {}
+    const id = ds.id
+    let role = ds.role
+    if (!id || !role) return
+    if (this.data.uaSettingId) return      // 防连点
+
+    const row = (this.data.uaList || []).find(x => x._id === id)
+    const label = { admin: '管理员', member: '成员', visitor: '访客' }[role] || role
+
+    // 已是该角色：再次点击 = 取消该角色，恢复为访客（弹窗确认）
+    if (row && row.role === role) {
+      if (role === 'visitor') {
+        wx.showToast({ title: '该用户已是访客', icon: 'none' })
+        return
+      }
+      const ok = await new Promise(resolve => {
+        wx.showModal({
+          title: '取消' + label + '身份',
+          content: '该用户当前已是「' + label + '」，再次点击将取消该身份并恢复为访客。确定？',
+          confirmText: '取消身份',
+          success: r => resolve(!!r.confirm),
+          fail: () => resolve(false)
+        })
+      })
+      if (!ok) return
+      role = 'visitor'
+    }
+
+    if (role === 'admin') {
+      const ok = await new Promise(resolve => {
+        wx.showModal({
+          title: '设为管理员',
+          content: '管理员可建档、改档、删除打卡与处理申请。确定提升这位用户？',
+          confirmText: '确定',
+          success: r => resolve(!!r.confirm),
+          fail: () => resolve(false)
+        })
+      })
+      if (!ok) return
+    }
+    this.setData({ uaSettingId: id })
+    try {
+      await app.callApi('setUserRole', { userId: id, role })
+      wx.showToast({
+        title: row && row.role === ds.role ? ('已取消' + label + '，恢复为访客') : ('已设为' + label),
+        icon: 'none'
+      })
+      await this.loadUsers()
+    } catch (err) {
+      wx.showToast({ title: (err && err.message) || '设置失败', icon: 'none' })
+    } finally {
+      this.setData({ uaSettingId: '' })
     }
   },
 
@@ -329,11 +621,11 @@ Page({
   },
 
   onPullDownRefresh() {
-    this.load()
-      .then(() => Promise.all([
-        this.loadIndexStatus(), this.loadEngineHealth(), this.loadSamples(), this.loadSchools()
-      ]))
-      .then(() => wx.stopPullDownRefresh())
+    // 与进入页面时的口径保持一致：首页补角标数据，模块页只刷新自己那一块
+    const work = this.data.module
+      ? this.loadModule(this.data.module)
+      : this.loadHome()
+    work.then(() => wx.stopPullDownRefresh()).catch(() => wx.stopPullDownRefresh())
   },
 
   /* ==================== 校园管理 ==================== */
@@ -352,15 +644,168 @@ Page({
       const list = await app.callApi('listSchoolsAdmin', {})
       const g = app.globalData || {}
       const cur = (g.school && g.school._id) || (g.user && g.user.schoolId) || ''
-      this.setData({
-        schools: (list || []).map(s => schoolRowOf(s, cur)),
-        schoolsError: ''
+      // 各校特征库数量（独立、容错：识别服务挂了也不影响校区列表本身）
+      let idxMap = {}
+      try {
+        const r = await app.callApi('indexStatusBySchool', {})
+        ;(r.schools || []).forEach(x => { idxMap[x.schoolId] = x })
+      } catch (e) {
+        console.warn('[admin] 各校特征库统计失败（不影响校区列表）', e && e.message)
+      }
+      const num = x => (x == null ? '—' : x)
+      const rebuiltMap = readRebuiltMap()
+      const schools = (list || []).map(s => {
+        const row = schoolRowOf(s, cur)
+        const st = idxMap[s._id]
+        row.indexTotal = st ? num(st.total) : '—'
+        row.indexIndexed = st ? num(st.indexed) : '—'
+        row.indexMissing = st ? num(st.missing) : '—'
+        // WXML 的 mustache 不做比较运算（`x !== '—' && x > 0` 这类会被静默忽略），
+        // 「要不要显示缺 N 只」必须在 JS 里算成一个布尔值，否则那一截永远渲染不出来。
+        row.indexMissingShow = !!(st && st.missing != null && Number(st.missing) > 0)
+        row.indexBankError = st ? (st.bankError || '') : ''
+        row.indexCatError = st ? (st.catError || '') : ''
+        // 该校最近一次重建成功的时刻（本地账本，空串表示还没重建过）
+        row.indexRebuiltAt = rebuiltMap[s._id] ? formatTime(new Date(rebuiltMap[s._id])) : ''
+        return row
       })
+      this.setData({ schools, schoolsError: '' })
     } catch (e) {
       console.warn('[admin] 校园列表读取失败', e && e.message)
       this.setData({ schools: [], schoolsError: (e && e.message) || '读取失败' })
     } finally {
       this.setData({ schoolLoading: false })
+    }
+  },
+
+  /**
+   * 单校重建特征库：把该校全部档案照重新提交识别服务算特征（force=true）。
+   *
+   * 和「全部重建」同一套后端（buildIndex，按 schoolId 限定范围），只是只动这一所，
+   * 用于某校区单独补库 / 排查，不波及其它校区。
+   *
+   * 「有没有重建好」必须给一个可核对的答案：
+   *   ① 云端回包带 finishedAt（真正跑完的时刻），落到列表行显示「最近重建：…」；
+   *   ② 客户端 3s 预算经常先到（-504003），此时云端还在收尾 —— 不当失败，
+   *      交给 confirmSchoolRebuilt 轮询复核，拿到准数再报。
+   */
+  async rebuildSchoolIndex(e) {
+    const id = e.currentTarget.dataset.id
+    if (!id || this.data.rebuildSchoolId) return
+    const go = await new Promise(resolve => {
+      wx.showModal({
+        title: '重建该校特征库',
+        content: '将把该校所有猫咪档案照重新提交给识别服务计算特征，并忽略已入库标记。是否继续？',
+        success: resolve
+      })
+    })
+    if (!go.confirm) return
+
+    this.setData({ rebuildSchoolId: id })
+    let recorded = false
+    try {
+      const r = await app.callApi('indexRebuildSchool', { schoolId: id })
+      const built = Number(r && r.built) || 0
+      const failed = Array.isArray(r && r.failed) ? r.failed.length : 0
+      if (r && r.ok) {
+        // finishedAt 是云端真正跑完的时刻；拿不到才退而求其次用客户端时间。
+        // 不用 r.built 判断成败：档案 0 只或有猫没照片时 built 也可以是 0，
+        // 但重建**确实执行完了** —— 这时候给时间才是实话。
+        saveRebuiltAt(id, (r && r.finishedAt) || new Date().toISOString())
+        recorded = true
+        wx.showToast({
+          title: '已建 ' + built + ' 只' + (failed ? ('，失败 ' + failed) : ''),
+          icon: failed ? 'none' : 'success'
+        })
+      } else {
+        wx.showToast({ title: (r && r.msg) || '重建失败', icon: 'none' })
+      }
+    } catch (err) {
+      const msg = String((err && err.message) || '')
+      // -504003：客户端预算先到，云端可能仍在建 —— 不当失败，交给下面的复核
+      if (/504003|超时|timeout|timed out/i.test(msg)) {
+        wx.showToast({ title: '已提交，正在等待结果…', icon: 'none' })
+      } else {
+        wx.showToast({ title: msg || '重建失败', icon: 'none' })
+      }
+    }
+
+    // 没拿到确切时间（多半是超时）时复核一轮，别拿「上一秒的旧账」当结论
+    if (!recorded) await this.confirmSchoolRebuilt(id)
+    this.setData({ rebuildSchoolId: '' })
+    this.loadSchools()   // 最后一次刷新，把时间与数量都捞回来
+  },
+
+  /**
+   * 重建后的复核：轮询该校特征库数量，直到「已录入 == 共」为止。
+   *
+   * 为什么必须这一步：客户端 callFunction 约 3s 预算到了就抛 -504003，
+   * 但云函数自身的 Action 超时是 15s —— 它还在老老实实下载图片、算向量。
+   * 此刻拿到的任何计数都是「上一轮的老数据」，凭它说「没重建」就是在骗管理员。
+   *
+   * 三轮 × 2s：覆盖大多数校区（十几只猫）的实际建库耗时，再久就交给下一分钟的
+   * 定时任务兜底，管理员也能从「最近重建」那一行自己确认。
+   */
+  async confirmSchoolRebuilt(schoolId) {
+    for (let i = 0; i < 3; i++) {
+      await new Promise(r => setTimeout(r, 2000))
+      await this.loadSchools()
+      const row = (this.data.schools || []).filter(s => s._id === schoolId)[0] || {}
+      const total = Number(row.indexTotal)
+      const indexed = Number(row.indexIndexed)
+      // 「共 == 已录入」= 该校档案已全部进库，可以确认这次重建跑完了
+      if (total > 0 && indexed === total) {
+        saveRebuiltAt(schoolId, new Date().toISOString())
+        wx.showToast({ title: '该校特征库已重建完成', icon: 'success' })
+        return true
+      }
+    }
+    wx.showToast({ title: '后台仍在处理，稍后刷新查看', icon: 'none' })
+    return false
+  },
+
+  /**
+   * 检查重复校区（同名同校区被建了两份）。
+   *
+   * 去重键是 2026-10-30 才加的，历史上很可能已经建重（同一校区两条 `_id`）。
+   * 只拦新增不管存量的话，用户下拉里照样有两个一模一样的选项、数据还被切成两摊。
+   *
+   * ⚠️ 刻意**只读不合并**：合并要把一校区的猫档案 / 打卡 / 任务全部改挂到另一条 `_id`，
+   * 一旦判错就没法回滚，必须由人看着数据决定。
+   */
+  async checkDuplicateSchools() {
+    if (this.data.dupChecking) return
+    this.setData({ dupChecking: true })
+    try {
+      const groups = await app.callApi('findDuplicateSchools', {})
+      const list = Array.isArray(groups) ? groups : []
+      this.setData({ dupGroups: list, dupChecked: true })
+      wx.showToast({
+        title: list.length ? ('发现 ' + list.length + ' 组重复校区') : '没有发现重复校区',
+        icon: 'none'
+      })
+    } catch (e) {
+      wx.showToast({ title: (e && e.message) || '检查失败', icon: 'none' })
+    } finally {
+      this.setData({ dupChecking: false })
+    }
+  },
+
+  /**
+   * 给历史学校补 `schoolKey`（去重键）。
+   *
+   * 老文档没有这个字段，查重会退化成「全量拉取后逐条比对」—— 结果依然正确，但每次
+   * 建校都多一次全表读。补完之后就回到一次 where 命中。
+   */
+  async backfillSchoolKeys() {
+    wx.showLoading({ title: '修复中', mask: true })
+    try {
+      const r = await app.callApi('backfillSchoolKeys', {})
+      wx.showToast({ title: '已修复 ' + ((r && r.updated) || 0) + ' 所', icon: 'none' })
+    } catch (e) {
+      wx.showToast({ title: (e && e.message) || '修复失败', icon: 'none' })
+    } finally {
+      wx.hideLoading()
     }
   },
 
@@ -736,6 +1181,9 @@ Page({
       this.setData({ 'indexStatus.source': 'error', 'indexStatus.bankError': (e && e.message) || '' })
     } finally {
       this.setData({ indexLoading: false })
+      // 「最新更新时间」持久化在本地缓存：重建成功后写入，刷新页面也能看到。
+      const ra = wx.getStorageSync('indexRebuiltAt')
+      this.setData({ indexRebuiltAt: ra ? formatTime(new Date(ra)) : '' })
     }
   },
 
@@ -1177,7 +1625,11 @@ Page({
     }
 
     if (!lastErr) {
-      this.setData({ indexResult: '已建 ' + built + ' 只，跳过 ' + skipped + ' 只' })
+      // 「更新时间」取云端返回的 finishedAt（整轮重建完成时刻），落本地缓存以便刷新后仍在。
+      const finishedAt = (r && r.finishedAt) || new Date().toISOString()
+      const ts = formatTime(new Date(finishedAt))
+      wx.setStorageSync('indexRebuiltAt', finishedAt)
+      this.setData({ indexResult: '已建 ' + built + ' 只，跳过 ' + skipped + ' 只', indexRebuiltAt: ts })
       wx.showToast({ title: '建库完成', icon: 'success' })
       this.loadIndexStatus()   // 建完立刻刷新「已录入 / 未录入」计数
       return
@@ -1192,7 +1644,9 @@ Page({
   },
 
   goCat(e) {
-    wx.navigateTo({ url: '/pages/cat-detail/cat-detail?id=' + e.currentTarget.dataset.id })
+    const id = e.currentTarget && e.currentTarget.dataset && e.currentTarget.dataset.id
+    if (!id || id === 'undefined' || id === 'null') return
+    wx.navigateTo({ url: '/pages/cat-detail/cat-detail?id=' + id })
   },
 
   previewPhoto(e) {

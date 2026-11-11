@@ -130,6 +130,17 @@ def _download(url: str, max_bytes: int, timeout: Optional[float] = None) -> byte
         raise DownloadError("network", "%s: %s" % (type(e).__name__, e)) from e
 
 
+def download_bytes(url: str, max_bytes: Optional[int] = None,
+                   timeout: Optional[float] = None) -> bytes:
+    """下载**原始字节**（不解码、不缩放）。
+
+    给「下载后要原样保存」的场景用：生图服务返回的图片 URL（见 app/standard.py）
+    如果走 fetch_image 会被 FETCH_MAX_SIDE 缩到 1024，2048 的标准照就废了。
+    """
+    limit = int(max_bytes or config.MAX_IMAGE_BYTES)
+    return _download(url, limit, timeout=timeout)
+
+
 def fetch_image_ex(url: str, timeout: Optional[float] = None):
     """下载一张图，**带失败原因码**。
 

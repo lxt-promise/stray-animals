@@ -21,6 +21,8 @@ Page(Object.assign({
   data: {
     id: '',
     cat: null,
+    // 档案不存在（非法 id / 已被删）：wxml 走空态，不留白屏
+    notFound: false,
     sightings: [],
     tnr: [],
     canEdit: false,
@@ -52,9 +54,17 @@ Page(Object.assign({
 
   async load(silent) {
     if (!silent) this.setData({ loading: true })
+    // 非法 id 直接判「档案不存在」，不打云函数：
+    // 上游任何入口拼出 `?id=undefined`（曾经真实发生过，见 cat-card 事件撞名）
+    // 都会在这里被拦住，不再产生一条 `action=getCat | id=undefined` 的失败日志 + 报错弹窗。
+    const id = String(this.data.id || '')
+    if (!id || id === 'undefined' || id === 'null') {
+      this.setData({ loading: false, notFound: true })
+      return
+    }
     try {
       await app.ensureReady()
-      const res = await app.callApi('getCat', { id: this.data.id })
+      const res = await app.callApi('getCat', { id })
       const cat = res.cat
       const rarity = rarityOf(cat.pattern)
       // 照片一律先换 https 再渲染（hydrateCatsAsync 内部先批量预取再映射）：
@@ -90,9 +100,21 @@ Page(Object.assign({
       })
       wx.setNavigationBarTitle({ title: cat.name || '猫咪档案' })
     } catch (e) {
+      // 404 = 档案不存在/已删（云端 getCat 已把 DB 错误转成这个业务码）：
+      // 走空态页，不再弹「数据读取失败」这种听起来像小程序坏了的 toast。
+      if (Number(e && e.code) === 404) {
+        this.setData({ loading: false, notFound: true })
+        return
+      }
       this.setData({ loading: false })
       wx.showToast({ title: e.message || '加载失败', icon: 'none' })
     }
+  },
+
+  goBack() {
+    wx.navigateBack({
+      fail: () => wx.switchTab({ url: '/pages/cats/cats' })
+    })
   },
 
   goEdit() {
@@ -101,6 +123,11 @@ Page(Object.assign({
 
   goSighting() {
     wx.navigateTo({ url: '/pages/sighting-post/sighting-post?catId=' + this.data.id })
+  },
+
+  /** 猫名片：这只猫的可分享卡片（花色/首现/打卡数/救助状态） */
+  goCard() {
+    wx.navigateTo({ url: '/pages/cat-card/cat-card?id=' + this.data.id })
   },
 
   /**

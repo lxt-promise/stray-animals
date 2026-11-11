@@ -38,7 +38,7 @@
       </view>
       <view class="ai-title">拍一张，认出它是谁</view>
       <view class="ai-desc">
-        上传照片或视频，在校园猫档案里秒级比对。遇到新面孔？一键建档入库。
+        上传照片或视频，在校园猫档案里快速比对。遇到新面孔？一键建档入库。
       </view>
       <view class="ai-actions">
         <view class="ai-btn photo" bindtap="goRecognize" data-mode="image" hover-class="btn-press">

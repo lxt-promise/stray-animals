@@ -6,6 +6,62 @@ const photo = require('../../utils/photo.js')
 const HISTORY_KEY = 'recognize_history'
 const HISTORY_MAX = 5
 
+/**
+ * 历史记录**快照**：只留能重放的部分，并且一律存 fileID，不存临时链接。
+ *
+ * 为什么要单独整形（2026-11-10 现场「历史记录点进去猫和照片都是空」）：
+ *  ① **查询图存的是 tempPath**：chooseMedia 给的临时路径重启即失效，
+ *     回看时 <image src=""> 就是一块空白 —— 用户看到的就是「没有照片」。
+ *     现在改存上传后的 fileID，回看时现换链。
+ *  ② 候选头像走的是当时换出来的 https 临时链接（2h 有效）。存进缓存后第二天再看，
+ *     链接全部 403，而 hydrateCats 又会被这个 https 覆盖掉 avatarId，
+ *     连重新换链的原料都没了 —— 头像只能退 🐱。现在只留原始 fileID。
+ *  ③ features.embedding 是 768 维向量，纯排查用，白占缓存额度（单 key 上限 1MB），
+ *     快照里直接丢掉。
+ *
+ * 旧版本留下的记录没有这几个字段，回看逻辑必须能降级（见 tapHistory）。
+ */
+function snapshotResult(result) {
+  if (!result || typeof result !== 'object') return null
+  const f = result.features || {}
+  const cands = Array.isArray(result.candidates) ? result.candidates : []
+  return {
+    provider: result.provider || '',
+    type: result.type || '',
+    frames: result.frames || 0,
+    latency: result.latency || 0,
+    features: {
+      tags: Array.isArray(f.tags) ? f.tags : [],
+      pattern: f.pattern || '',
+      color: f.color || '',
+      breed: f.breed || ''
+    },
+    candidates: cands.map(c => ({
+      catId: c.catId || '',
+      name: c.name || '',
+      // 只留 fileID：avatar 可能已经是 https（旧版本存法），能反解就反解，不能就空着，
+      // 回看时由「回源取档案头像」兜底
+      avatarId: c.avatarId || (photo.isFileId(c.avatar) ? c.avatar : ''),
+      score: c.score || 0,
+      rawSim: c.rawSim || 0,
+      lead: c.lead || 0,
+      reason: c.reason || ''
+    })),
+    threshold: result.threshold,
+    degraded: !!result.degraded,
+    indexedTotal: (result.indexedTotal === undefined || result.indexedTotal === null)
+      ? -1 : result.indexedTotal,
+    attrsReady: !!result.attrsReady,
+    identified: !!result.identified,
+    attrReason: result.attrReason || '',
+    qualityOk: result.qualityOk !== false,
+    qualityReason: result.qualityReason || '',
+    lightMeanV: (result.lightMeanV === undefined) ? null : result.lightMeanV,
+    lowConfidence: !!result.lowConfidence,
+    notice: result.notice || ''
+  }
+}
+
 // 分析阶段文案（与真实请求并行，接口先返回则直接跳到完成）
 //
 // ⚠️ 进度上限刻意停在 92%（不是 100）：
@@ -58,7 +114,11 @@ Page(Object.assign({
       // 那会给出一个未经核实的结论，用户按它去识别却可能被扣费。
       hint: '识别 20 猫粮值/次 · 每天 10 次'
     },
-    history: []             // 历史识别记录（最新 5 条）
+    history: [],            // 历史识别记录（最新 5 条）
+    // 回看历史记录：本机不保存原图，只有上传后的 fileID（换链失败就是没图）。
+    // 这两个标记负责把「为什么没有画面」说清楚，而不是留一块空白让人以为坏了。
+    isHistory: false,
+    photoExpired: false
   },
 
   onLoad(options) {
@@ -132,10 +192,12 @@ Page(Object.assign({
   },
 
   /* ==================== 历史识别记录 ====================
-   * 只存本地（wx.storage），每条 = { ts, timeText, mode, result, taskId }。
+   * 只存本地（wx.storage），每条 = { ts, timeText, mode, result, taskId, photoId }。
    * 上限 5 条：新的进来，最老的挤掉 —— 存储不膨胀，列表也不至于滚不到头。
-   * 点击某条 = 把当时的结果原样放回页面（stage:'done'），
-   * 图片本体的 tempPath 已随缓存过期失效，但候选头像走的是云端临时链接，仍可展示。
+   * 点击某条 = 把当时的结果放回页面（stage:'done'），并用 photoId 重新换链还原查询图。
+   *
+   * ⚠️ 别在这里存 tempPath / 临时 https 链接：前者重启即失效，后者 2h 后 403。
+   *    详见 snapshotResult 的注释（2026-11-10「历史记录点进去一片空白」的根因）。
    */
   loadHistory() {
     let list = []
@@ -143,21 +205,56 @@ Page(Object.assign({
     this.setData({ history: Array.isArray(list) ? list.slice(0, HISTORY_MAX) : [] })
   },
 
-  saveHistory(result, taskId) {
+  /**
+   * @param {Object} result 云端原始识别结果（**不要传 withPhotoUrls 之后的**，
+   *   那份的 avatar 已经换成临时链接，存下来就再也换不回去了）
+   * @param {string} taskId
+   * @param {string} photoId 本次上传的查询图 fileID（回看时靠它还原取景区）
+   */
+  saveHistory(result, taskId, photoId) {
     try {
       const list = wx.getStorageSync(HISTORY_KEY) || []
       list.unshift({
         ts: Date.now(),
         timeText: formatTime(new Date()),
         mode: this.data.mode,
-        result,
-        taskId: taskId || ''
+        result: snapshotResult(result),
+        taskId: taskId || '',
+        photoId: photoId || ''
       })
       wx.setStorageSync(HISTORY_KEY, list.slice(0, HISTORY_MAX))
     } catch (e) {
+      // 缓存写失败不该影响本次识别结果的展示，但历史里就没这条了
       console.warn('[recognize] 历史记录写入失败', e)
     }
     this.loadHistory()
+  },
+
+  /**
+   * 回看时把查询图换回可渲染地址。
+   *
+   * 三级：内存缓存 → getTempFileURL 现换 → 标记「已过期」。
+   * 换不到时必须显式标记，模板据此渲染一句说明 —— 只留空白的话，
+   * 用户会以为「这只猫没照片」或「页面坏了」，而真相是本地从来就没存过原图。
+   */
+  restoreHistoryPhoto(fileId) {
+    if (!fileId) {
+      this.setData({ localPath: '', photoExpired: true })
+      return
+    }
+    const cached = photo.cachedUrl(fileId)
+    if (cached) {
+      this.setData({ localPath: cached, photoExpired: false })
+      return
+    }
+    photo.refresh(fileId).then(url => {
+      // 用户可能已经点了「重新识别」，此时不要再把旧图塞回去
+      if (!this.data.isHistory) return
+      this.setData({ localPath: url || '', photoExpired: !url })
+    }).catch(() => {
+      if (!this.data.isHistory) return
+      this.setData({ localPath: '', photoExpired: true })
+    })
   },
 
   /**
@@ -219,18 +316,23 @@ Page(Object.assign({
   },
 
   /**
-   * 候选头像加载失败：三级兜底，任何一级成功即止；全失败退 🐱 占位。
+   * 候选头像加载失败：四级兜底，任何一级成功即止；全失败退 🐱 占位。
    *
    *  ① 去缩略参数：`?sign=...&imageMogr2/thumbnail/200x` → `?sign=...`
    *     （参数不被支持 / 被边缘节点拒时自救）
    *  ② 重新换链：丢掉缓存、对原始 fileID 重新 getTempFileURL 拿**新签名**
-   *  ③ 置空 → 模板渲染 🐱
+   *  ③ 回源：连 fileID 都没有（旧历史记录只剩过期 https）→ 按 catId 取档案当前头像
+   *  ④ 置空 → 模板渲染 🐱
    *
    * 为什么必须有 ②（2026-10-15 现场）：
    *   渲染层报 Failed to load image .../cats/1792074374248-539.jpg?sign=...&imageMogr2/thumbnail/200x，
    *   而**同一条链接去掉 imageMogr2 后也照样报错** —— 根因不是参数，是这条临时链接
    *   本身已经不可用（签名过期 / 文件被覆盖）。旧兜底链到 ① 就结束了，
    *   结果只是拿同一个坏地址再试一次，必然再失败。
+   *
+   * 为什么必须有 ③（2026-11-10）：历史识别记录里存的可能是上一版的临时链接，
+   * 2h 后必然全 403；此时既没有 fileID 也没有新签名，唯一还能拿到图的出处
+   * 就是档案本身（getCat 会连带 photoIds 一起返回）。
    */
   onCandAvatarErr(e) {
     const i = e.currentTarget.dataset.i
@@ -251,30 +353,134 @@ Page(Object.assign({
         const item = (this.data.result && this.data.result.candidates || [])[i]
         if (!item) return
         this.setData({ ['result.candidates[' + i + '].avatar']: url || '' })
+        // 换链也拿不到（文件被删 / 无权限）→ 走回源，别停在 🐱
+        if (!url) this.repairAvatar(i, c.catId)
       }).catch(() => {
         this.setData({ ['result.candidates[' + i + '].avatar']: '' })
+        this.repairAvatar(i, c.catId)
       })
       return
     }
 
-    // ③ 退占位
+    // ③ 回源：连 fileID 都没有（旧历史里存的是早已过期的 https）→ 按 catId 取档案头像
+    if (c.catId && !c._fetched) {
+      this.setData({
+        // _fetched 由 repairAvatar 自己置位（那里才是幂等的入口，
+        // 这里抢先置位会让它以为「已经回源过」直接返回）
+        ['result.candidates[' + i + '].avatar']: ''
+      })
+      this.repairAvatar(i, c.catId)
+      return
+    }
+
+    // ④ 退占位
     this.setData({ ['result.candidates[' + i + '].avatar']: '' })
   },
 
   // 点击某条历史 → 回看该次识别结果
-  tapHistory(e) {
+  //
+  // 2026-11-10 现场「点进历史记录，猫和照片都是空的」：
+  //   ① 查询图从来没进过历史（只存了 tempPath，重启即失效）→ 取景区空白；
+  //   ② 旧版本把**换链后的 https 临时链接**存进了缓存，2h 后全部 403，
+  //      而且 hydrateCats 会把 avatarId 也写成那条过期链接，
+  //      连重新换链的原料都没了 → 候选头像全退 🐱。
+  //   现在：快照只存 fileID（snapshotResult），这里用 photoId 还原查询图，
+  //   候选头像缺图时回源取一次档案头像（repairAvatars）。
+  async tapHistory(e) {
     const idx = Number(e.currentTarget.dataset.index)
     const item = this.data.history[idx]
     if (!item || !item.result) return
+    const photoId = item.photoId || item.result.photoId || ''
     this.setData({
       stage: 'done',
+      // 模式要跟着记录走：历史是视频、当前页停在图片模式时，
+      // 取景区会用 <image> 去渲染一个视频地址 —— 又是一个空白
+      mode: item.mode === 'video' ? 'video' : 'image',
       error: '',
       result: this.withPhotoUrls(item.result),
-      taskId: item.taskId || '',
-      confirmedId: '',       // 回看只是展示，不重放确认动作
+      // 回看只是展示，不重放「人工确认」（重复点会再写一条标注样本）
+      taskId: '',
+      fileId: photoId,
+      duration: 0,
+      localPath: '',
+      thumbPath: '',
+      isHistory: true,
+      photoExpired: false,
+      confirmedId: '',
       progress: 100,
       stageText: '完成'
     })
+    this.resolveHistoryPhoto(photoId, item.taskId || '')
+    this.repairAvatars()
+  },
+
+  /**
+   * 查询图还原：优先用记录里的 photoId；**老记录没有 photoId** 时按 taskId 回云端认领
+   * （任务文档里一直记着上传时的 fileId，查询图本体也一直在云存储里）。
+   *
+   * _histSeq 是竞态保护：连着点两条历史、或点了「重新识别」后，
+   * 迟到的响应不该把旧图塞进当前页面。
+   */
+  async resolveHistoryPhoto(photoId, taskId) {
+    const seq = (this._histSeq || 0) + 1
+    this._histSeq = seq
+    let id = photoId
+    if (!id && taskId) {
+      try {
+        const r = await app.callApi('recognizeTaskPhoto', { taskId })
+        id = (r && r.fileId) || ''
+      } catch (e) {
+        // 任务已被清理 / 不是自己的任务：退回「照片已不在本机」的说明
+        console.warn('[recognize] 取历史素材失败', taskId, e && (e.message || e.errMsg))
+      }
+    }
+    if (seq !== this._histSeq || !this.data.isHistory) return
+    this.restoreHistoryPhoto(id)
+  },
+
+  /**
+   * 候选头像兜底：hydrateCats 只认 fileID。旧记录里连 fileID 都没有时，
+   * 唯一的出处就是档案本身 —— 按 catId 回源取一次头像。
+   *
+   * 只在「既没有可渲染地址、也没有 fileID 可换链」时触发（最多 TOP_N=2 次）：
+   * 有 fileID 的交给 hydrateCats 的 warm 预取，有地址但加载失败的走
+   * onCandAvatarErr 的兜底链 —— 都不在这里重复请求。
+   * （开发者工具下 fileID 会先返回 ''，那是正常的「待换链」，
+   *   不能当成缺图，否则每次回看都白打两次 getCat。）
+   */
+  repairAvatars() {
+    const cands = (this.data.result && this.data.result.candidates) || []
+    cands.forEach((c, i) => {
+      if (!c || !c.catId) return
+      if (c.avatar || photo.isFileId(c.avatarId)) return
+      this.repairAvatar(i, c.catId)
+    })
+  },
+
+  async repairAvatar(i, catId) {
+    if (!catId) return
+    const item0 = (this.data.result && this.data.result.candidates || [])[i]
+    // 同一个候选只回源一次（_fetched 幂等）：否则每个 binderror 都会再打一次 getCat
+    if (!item0 || item0._fetched) return
+    this.setData({ ['result.candidates[' + i + ']._fetched']: true })
+    try {
+      const r = await app.callApi('getCat', { id: catId })
+      const cat = (r && r.cat) || null
+      if (!cat) return
+      // 详情接口除了 https 头像，还带一份原始 fileID（photoIds）——
+      // 优先用 fileID 换链，这样后续 <image> 的 binderror 还有料可以重试
+      const id = (Array.isArray(cat.photoIds) && cat.photoIds[0]) || ''
+      let url = id ? await photo.refresh(id) : ''
+      if (!url && cat.avatar) url = cat.avatar
+      if (!url) return
+      const item = (this.data.result && this.data.result.candidates || [])[i]
+      // 期间用户可能已经重新识别 / 换了另一条历史，别把图塞错位置
+      if (!item || item.catId !== catId || item.avatar) return
+      this.setData({ ['result.candidates[' + i + '].avatar']: photo.thumb(url, 200) })
+    } catch (e) {
+      // 档案被删 / 接口失败都静默：占位 🐱 已经显示，不再打扰用户
+      console.warn('[recognize] 回源取头像失败', catId, e && (e.message || e.errMsg))
+    }
   },
 
   clearHistory() {
@@ -348,6 +554,8 @@ Page(Object.assign({
       wx.showToast({ title: mode === 'video' ? '未能读取所选视频，请重试' : '未能读取所选照片，请重试', icon: 'none' })
       return
     }
+    // 作废可能还在飞行中的历史换图请求，避免旧图盖到新素材上
+    this._histSeq = (this._histSeq || 0) + 1
     this.setData({
       localPath: f.tempFilePath,
       thumbPath: f.thumbTempFilePath || '',
@@ -355,6 +563,11 @@ Page(Object.assign({
       result: null,
       confirmedId: '',
       taskId: '',
+      fileId: '',
+      // 这次是**新的一次识别**：把「历史回看」状态彻底摘掉，
+      // 否则 restoreHistoryPhoto 的回调会以为还在回看，把旧图塞进新流程。
+      isHistory: false,
+      photoExpired: false,
       error: ''
     })
     this.analyze(f.tempFilePath)
@@ -420,9 +633,11 @@ Page(Object.assign({
     if (m === this.data.mode) return
     // 切模式即作废上一次的 working 计时（视频↔图片互切时不该继承僵死判定）
     this._workingSince = 0
+    this._histSeq = (this._histSeq || 0) + 1
     this.setData({
       mode: m, localPath: '', thumbPath: '', fileId: '', result: null,
-      stage: 'idle', progress: 0, taskId: '', confirmedId: '', error: ''
+      stage: 'idle', progress: 0, taskId: '', confirmedId: '', error: '',
+      isHistory: false, photoExpired: false
     })
   },
 
@@ -517,6 +732,8 @@ Page(Object.assign({
   async analyze(tempPath) {
     // 重入保护（与 choose 双保险）：working 中重复 analyze 直接忽略
     if (this.data.stage === 'working') return
+    // 软引导补全手机号（非拦截，不 await）：识别前提示一次
+    if (app.maybeGuidePhone) app.maybeGuidePhone()
     // 记下开始时刻，供 choose 的僵死判定（见 WORKING_STALE_MS）
     this._workingSince = Date.now()
     // 视频要下载 + 抽帧 + 逐帧推理（服务端约 3.5s，是图片的 3 倍），
@@ -616,8 +833,10 @@ Page(Object.assign({
       // 扣费在云端已发生（首次免费也记了一笔流水），立刻刷新余额与剩余次数。
       // 不 await：余额显示晚一拍不影响出结果，阻塞反而让"结果出现"更慢。
       this.loadWallet()
-      // 成功即入历史（最新 5 条），供之后在首页回看
-      this.saveHistory(result, started.taskId)
+      // 成功即入历史（最新 5 条），供之后在首页回看。
+      // photoId 必须显式传：`this.data.fileId` 要到下一行 setData 才有值，
+      // 在这里读是上一轮的旧 fileID（回看时就会拉到别人家的图）。
+      this.saveHistory(result, started.taskId, up.fileID)
       // 真正的终态才把进度点到 100（走 setProgress 保证与前面的单调序列衔接）
       this.setProgress(100, '完成')
       this.setData({ fileId: up.fileID, result: this.withPhotoUrls(result), stage: 'done' })
@@ -800,10 +1019,12 @@ Page(Object.assign({
 
   reset() {
     this._workingSince = 0
+    // 丢弃还在飞行中的历史换图请求（见 resolveHistoryPhoto 的 _histSeq）
+    this._histSeq = (this._histSeq || 0) + 1
     this.setData({
       stage: 'idle', localPath: '', thumbPath: '', fileId: '', result: null,
       progress: 0, stageText: '', error: '', duration: 0,
-      taskId: '', confirmedId: ''
+      taskId: '', confirmedId: '', isHistory: false, photoExpired: false
     })
     this.loadHistory()   // 从回看状态返回首页时，刷新历史列表
   }

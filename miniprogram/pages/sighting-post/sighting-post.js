@@ -202,6 +202,8 @@ Page({
 
   async submit() {
     if (this.data.submitting) return
+    // 软引导补全手机号（非拦截，不 await）：打卡前提示一次
+    if (app.maybeGuidePhone) app.maybeGuidePhone()
     // 新猫场景不再有「临时名字」自由文本；改为要求选一个花纹特征（保证有一定描述度）
     if (!this.data.catId && !this.data.photos.length) {
       return toast('请选择猫咪，或上传一张照片')

@@ -11,7 +11,7 @@ Page(Object.assign({
     applies: [],
     loading: true,
     applyForm: { nickName: '', contact: '', reason: '', experience: '' },
-    applied: false
+    myApply: null
   },
 
   onLoad(options) {
@@ -31,7 +31,19 @@ Page(Object.assign({
       const isAdmin = app.isAdmin()
       this.setData({ isMember, isAdmin })
       if (!isMember) {
-        this.setData({ tab: 'apply', loading: false })
+        // 查本人入社申请：有则展示记录与状态，无则展示申请表单。
+        // 被拒绝时预填上次内容，方便修改后重新提交。
+        const myApply = await app.callApi('myApply', {})
+        let applyForm = this.data.applyForm
+        if (myApply && myApply.status === 'rejected') {
+          applyForm = {
+            nickName: myApply.nickName || '',
+            contact: myApply.contact || '',
+            reason: myApply.reason || '',
+            experience: myApply.experience || ''
+          }
+        }
+        this.setData({ tab: 'apply', myApply, applyForm, loading: false })
         return
       }
       if (this.data.tab === 'member') {
@@ -70,7 +82,9 @@ Page(Object.assign({
       const res = await app.callApi('applyJoin', f)
       hideBusy()
       if (res.status === 'already') return toast('你已是社团成员')
-      this.setData({ applied: true })
+      // 提交后刷新本人申请状态，界面从空白表单切到「审核中」记录
+      const myApply = await app.callApi('myApply', {})
+      this.setData({ myApply })
       wx.showModal({
         title: '已提交',
         content: '社团管理员会尽快审核，通过后你将获得编辑权限。',

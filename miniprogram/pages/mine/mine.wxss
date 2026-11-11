@@ -299,6 +299,7 @@
   font-size: 30rpx;
 }
 .menu-item:last-child { border-bottom: none; }
+
 /* 菜单图标：统一 56rpx 圆角方块，比裸 emoji 更整齐，也不会让文字基线偏移 */
 .mi-ico {
   width: 56rpx;
@@ -417,6 +418,22 @@
   background: rgba(180, 35, 24, .07);
   color: #B42318;
 }
+/* 审核中：正文 + 右侧「撤回」。撤回按钮不随文字折行，所以走 flex 而不是 inline */
+.apply-state-line {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+.apply-state-txt { flex: 1; }
+.apply-withdraw {
+  flex-shrink: 0;
+  padding: 4rpx 20rpx;
+  border-radius: 24rpx;
+  border: 1rpx solid currentColor;
+  font-size: 24rpx;
+  line-height: 1.8;
+}
 
 /* ===== 图鉴进度 ===== */
 .progress {
@@ -490,5 +507,71 @@
 .sheet-btn.solid {
   background: var(--brand-grad, linear-gradient(135deg, #f97316, #f59e0b));
   color: #fff;
+}
+
+/* ==================== 学校申请：待审锁 + 通知（2026-10-30） ====================
+   用户反馈两件事：管理员收不到申请通知、申请可以重复提交。
+   前者靠工作台红点与待审入口，后者靠入口置灰 —— 置灰必须是**看得出来**的，
+   否则用户会一直点一个「点了没反应」的按钮，比报错还难受。 */
+
+.school-pick.disabled { opacity: .5; }
+.school-pick.disabled .school-pick-main { color: var(--text-weak); }
+.school-apply-toggle.disabled { opacity: .5; }
+.sheet-btn.solid.disabled { opacity: .55; }
+
+/* 工作台未读通知红点 */
+.wb-dot {
+  display: inline-block;
+  min-width: 34rpx;
+  height: 34rpx;
+  line-height: 34rpx;
+  padding: 0 8rpx;
+  margin-left: 12rpx;
+  border-radius: 999rpx;
+  background: var(--warn);
+  color: #fff;
+  font-size: 20rpx;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* 待审申请行：> 0 时高亮，让超管一眼看到「有人在等」 */
+.wb-apply-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  margin-top: 20rpx;
+  padding: 22rpx 24rpx;
+  border-radius: var(--radius-sm);
+  background: var(--brand-light);
+  border: 1rpx solid var(--card-line);
+}
+.wb-apply-num {
+  font-size: 40rpx;
+  font-weight: 700;
+  color: var(--text-weak);
+}
+.wb-apply-num.hl { color: var(--warn); }
+
+/* 开启申请通知（订阅消息授权） */
+.wb-notify {
+  margin-top: 16rpx;
+  color: var(--brand-dark);
+}
+
+/* 菜单项右侧未读红点（工作台待审申请数；仅超管会 >0） */
+.badge {
+  display: inline-block;
+  min-width: 32rpx;
+  height: 32rpx;
+  line-height: 32rpx;
+  padding: 0 8rpx;
+  border-radius: 999rpx;
+  background: var(--warn);
+  color: #fff;
+  font-size: 20rpx;
+  font-weight: 600;
+  text-align: center;
 }
 

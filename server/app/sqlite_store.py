@@ -28,9 +28,17 @@ def _conn() -> sqlite3.Connection:
              dim        INTEGER,
              embedding  BLOB,
              source     TEXT,
-             updated_at REAL
+             updated_at REAL,
+             version    INTEGER DEFAULT 0
            )"""
     )
+    # 兼容旧库（没有 version 列时补上）；sqlite 的 ALTER TABLE 不支持 IF NOT EXISTS，
+    # 用 try/except 吞掉「列已存在」。旧行 version=0，load 时会被当前版本过滤掉
+    # （换骨干后必须重建，见 config.FEATURE_POOL_VERSION）。
+    try:
+        c.execute("ALTER TABLE cat_index ADD COLUMN version INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     return c
 
 
@@ -38,11 +46,12 @@ def put(cat_id: str, school_id: str, emb: np.ndarray, source: str = "recognize")
     c = _conn()
     try:
         c.execute(
-            "INSERT INTO cat_index(cat_id,school_id,dim,embedding,source,updated_at) "
-            "VALUES(?,?,?,?,?,?) ON CONFLICT(cat_id) DO UPDATE SET "
+            "INSERT INTO cat_index(cat_id,school_id,dim,embedding,source,updated_at,version) "
+            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(cat_id) DO UPDATE SET "
             "school_id=excluded.school_id,dim=excluded.dim,embedding=excluded.embedding,"
-            "source=excluded.source,updated_at=excluded.updated_at",
-            (cat_id, school_id or "", int(emb.shape[0]), emb.astype(np.float32).tobytes(), source, time.time()),
+            "source=excluded.source,updated_at=excluded.updated_at,version=excluded.version",
+            (cat_id, school_id or "", int(emb.shape[0]), emb.astype(np.float32).tobytes(),
+             source, time.time(), int(config.FEATURE_POOL_VERSION)),
         )
         c.commit()
     finally:
@@ -63,7 +72,10 @@ def delete(cat_id: str) -> bool:
 def get(cat_id: str) -> Optional[np.ndarray]:
     c = _conn()
     try:
-        r = c.execute("SELECT embedding FROM cat_index WHERE cat_id=?", (cat_id,)).fetchone()
+        r = c.execute(
+            "SELECT embedding FROM cat_index WHERE cat_id=? AND version=?",
+            (cat_id, int(config.FEATURE_POOL_VERSION)),
+        ).fetchone()
         return np.frombuffer(r[0], dtype=np.float32) if r else None
     finally:
         c.close()
@@ -71,26 +83,40 @@ def get(cat_id: str) -> Optional[np.ndarray]:
 
 def ids(school_id: str = "") -> List[str]:
     c = _conn()
+    ver = int(config.FEATURE_POOL_VERSION)
     try:
         if school_id:
-            rows = c.execute("SELECT cat_id FROM cat_index WHERE school_id=?", (school_id,)).fetchall()
+            rows = c.execute(
+                "SELECT cat_id FROM cat_index WHERE school_id=? AND version=?",
+                (school_id, ver),
+            ).fetchall()
         else:
-            rows = c.execute("SELECT cat_id FROM cat_index").fetchall()
+            rows = c.execute(
+                "SELECT cat_id FROM cat_index WHERE version=?", (ver,)
+            ).fetchall()
         return [r[0] for r in rows]
     finally:
         c.close()
 
 
 def load(school_id: str = "") -> Dict[str, np.ndarray]:
-    """一次性取出某校区全部向量，供 numpy 批量矩阵乘。"""
+    """一次性取出某校区全部向量（仅当前 FEATURE_POOL_VERSION 的），供 numpy 批量矩阵乘。
+
+    版本不符的向量（换骨干/归一化后残留的旧向量）直接跳过，绝不混算 ——
+    同维不同义的向量做点积会产出看似正常实则全错的相似度。
+    """
     c = _conn()
+    ver = int(config.FEATURE_POOL_VERSION)
     try:
         if school_id:
             rows = c.execute(
-                "SELECT cat_id,embedding FROM cat_index WHERE school_id=?", (school_id,)
+                "SELECT cat_id,embedding FROM cat_index WHERE school_id=? AND version=?",
+                (school_id, ver),
             ).fetchall()
         else:
-            rows = c.execute("SELECT cat_id,embedding FROM cat_index").fetchall()
+            rows = c.execute(
+                "SELECT cat_id,embedding FROM cat_index WHERE version=?", (ver,)
+            ).fetchall()
         return {r[0]: np.frombuffer(r[1], dtype=np.float32) for r in rows}
     finally:
         c.close()

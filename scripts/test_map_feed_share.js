@@ -96,7 +96,7 @@ const m6 = markerOf(mk({ lastFedAt: new Date(now - 60 * H) }))
 assert('超过 48h 改用「天」计数', /2天未喂/.test(m6.callout.content), m6.callout.content)
 
 // 非在校状态不该催投喂
-const noFit = ['foster', 'suspend', 'adopted', 'missing', 'rainbow']
+const noFit = ['foster', 'treating', 'suspend', 'adopted', 'missing', 'rainbow']
 noFit.forEach(st => {
   const m = markerOf(mk({ status: st, lastFedAt: null }))
   assert(st + ' 状态不催投喂', m.callout.display === 'BYCLICK' && !/未投喂/.test(m.callout.content),
@@ -246,7 +246,7 @@ const wxml = fs.readFileSync(path.join(MP, 'pages/map/map.wxml'), 'utf8')
 assert('图例新增投喂气泡说明', /投喂气泡/.test(wxml))
 assert('图例引用 feedAlertHours（不写死第二份数字）', /\{\{feedAlertHours\}\}/.test(wxml))
 assert('图例说明「常显」语义', /常显/.test(wxml))
-assert('图例补充说明豁免状态', /寄养|毕业/.test(wxml))
+assert('图例补充说明豁免状态', /寄养|已领养/.test(wxml))
 assert('底部列表有投喂标签', /feedLabel/.test(wxml))
 assert('底部列表标签按 pending 变色', /item\.feedPending \? 'feed-warn' : 'feed-ok'/.test(wxml))
 

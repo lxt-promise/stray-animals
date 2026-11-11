@@ -65,3 +65,22 @@
   min-height: 140rpx;
   font-size: 28rpx;
 }
+
+/* 加载提示 */
+.loading-tip {
+  text-align: center;
+  color: var(--text-weak);
+  padding: 40rpx 0;
+  font-size: 28rpx;
+}
+/* 申请状态标签 */
+.status-tag {
+  font-size: 24rpx;
+  font-weight: 600;
+  padding: 6rpx 18rpx;
+  border-radius: 999rpx;
+  flex-shrink: 0;
+}
+.st-pending  { background: rgba(249, 115, 22, .12); color: #C2410C; }
+.st-rejected { background: rgba(180, 35, 24, .10);  color: #B42318; }
+.st-approved { background: rgba(22, 163, 74, .12);   color: #15803D; }

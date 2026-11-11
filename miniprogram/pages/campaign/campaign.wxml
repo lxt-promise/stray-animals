@@ -1,0 +1,64 @@
+<view class="page chou-page">
+
+  <!-- 顶部说明 + 发起入口 -->
+  <view class="chou-hero">
+    <view class="hero-main">
+      <view class="hero-title">咪咪筹</view>
+      <view class="hero-sub">为生病或要绝育的校园猫筹一笔治疗费</view>
+      <view class="hero-sub2">每一笔都绑定猫咪档案，收支可在「资金公示」核对</view>
+    </view>
+    <view class="hero-btn" bindtap="goCreate">我要发起</view>
+  </view>
+
+  <!-- 分类 -->
+  <view class="chou-tabs">
+    <view class="chou-tab {{tab === 'active' ? 'on' : ''}}" data-tab="active" bindtap="onTab">进行中</view>
+    <view class="chou-tab {{tab === 'done' ? 'on' : ''}}" data-tab="done" bindtap="onTab">已结束</view>
+    <view class="chou-tab {{tab === 'mine' ? 'on' : ''}}" data-tab="mine" bindtap="onTab">我发起的</view>
+    <view class="chou-tab {{tab === 'review' ? 'on' : ''}}" data-tab="review" bindtap="onTab" wx:if="{{isAdmin}}">待审核</view>
+  </view>
+
+  <!-- 列表 -->
+  <view class="chou-card" wx:for="{{list}}" wx:key="_id" data-id="{{item._id}}" bindtap="goDetail">
+    <view class="cc-head">
+      <image class="cc-cover" src="{{item.avatar}}" mode="aspectFill" wx:if="{{item.avatar}}"></image>
+      <view class="cc-cover ph" wx:else>🐱</view>
+      <view class="cc-main">
+        <view class="cc-title">{{item.title}}</view>
+        <view class="cc-meta">
+          <text class="tag kind">{{item.kindLabel}}</text>
+          <text class="tag ghost" wx:if="{{item.catName}}">{{item.catName}}</text>
+          <text class="tag days" wx:if="{{item.daysText}}">{{item.daysText}}</text>
+          <text class="tag pending" wx:if="{{item.reviewText}}">{{item.reviewText}}</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="cc-summary" wx:if="{{item.summary}}">{{item.summary}}</view>
+
+    <view class="cc-progress">
+      <view class="cc-bar" style="width:{{item.percent}}%"></view>
+    </view>
+    <view class="cc-nums">
+      <text class="raised">已筹 ¥{{item.raisedText}}</text>
+      <text class="goal">目标 ¥{{item.goalText}}</text>
+      <text class="pct">{{item.percent}}%</text>
+    </view>
+
+    <view class="cc-foot">
+      <text class="cc-donors">{{item.donorCount}} 人已帮</text>
+      <text class="cc-state {{item.status === 'active' ? 'on' : 'off'}}">{{item.statusText}}</text>
+    </view>
+  </view>
+
+  <view class="empty" wx:if="{{!loading && isEmpty}}">
+    <text class="emoji">🐾</text>
+    {{emptyText}}
+  </view>
+
+  <view class="chou-tip">
+    所有筹款需审核通过后才公开展示。筹款按笔记入「资金公示」，
+    治疗票据由社团管理员上传核销，任何人可查。
+  </view>
+
+</view>

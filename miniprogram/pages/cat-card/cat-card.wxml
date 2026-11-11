@@ -1,0 +1,70 @@
+<view class="page cc">
+
+  <view class="cc-loading" wx:if="{{loading}}">
+    <text class="emoji">🐾</text>
+    <text class="small muted">名片生成中…</text>
+  </view>
+
+  <block wx:else>
+    <!-- ===== 名片主体 =====
+         对标 CatchCat 的收藏卡：一张卡讲清一只猫。
+         顶部色条与稀有度徽章用稀有度色（WXSS 拿不到数据，只能 inline style）。 -->
+    <view class="namecard">
+      <view class="nc-accent" style="background:{{rarityColor}}"></view>
+
+      <view class="nc-head">
+        <view class="nc-rare" style="background:{{rarityColor}}">{{rarityLabel}}</view>
+        <view class="nc-school small muted" wx:if="{{schoolName}}">{{schoolName}}</view>
+      </view>
+
+      <view class="nc-photo" bindtap="preview" hover-class="pressed">
+        <image wx:if="{{avatar}}" src="{{avatar}}" mode="aspectFill" />
+        <view wx:else class="nc-initial">{{initial}}</view>
+      </view>
+
+      <view class="nc-name">{{name}}</view>
+      <view class="nc-pattern small muted">{{patternLabel}}</view>
+
+      <!-- 三格数据：首现 / 打卡 / 最近出现 -->
+      <view class="nc-stats">
+        <view class="nc-stat">
+          <view class="nc-v">{{firstSeenText || '—'}}</view>
+          <view class="nc-k">首次记录</view>
+        </view>
+        <view class="nc-stat">
+          <view class="nc-v">{{sightingCount}}</view>
+          <view class="nc-k">打卡次数</view>
+        </view>
+        <view class="nc-stat">
+          <view class="nc-v">{{lastSeenText || '—'}}</view>
+          <view class="nc-k">最近出现</view>
+        </view>
+      </view>
+
+      <view class="nc-divider"></view>
+
+      <!-- 救助状态：全部来自档案真实字段，非成员看不到医疗备注（云端 sanitizeCat 已脱敏） -->
+      <view class="nc-rescue">
+        <view class="nc-rescue-title small muted">救助状态</view>
+        <view class="nc-tags">
+          <text class="tag {{statusTag}}">{{statusLabel}}</text>
+          <text class="tag {{sterTag}}">{{sterLabel}}</text>
+          <text class="tag {{healthTag}}">{{healthLabel}}</text>
+        </view>
+      </view>
+
+      <view class="nc-foot small muted">喵园 · 校园流浪猫档案</view>
+    </view>
+
+    <!-- ===== 操作 ===== -->
+    <view class="cc-actions">
+      <button class="btn" open-type="share">分享这张名片</button>
+      <button class="btn btn-plain" bindtap="goDetail">查看完整档案</button>
+    </view>
+
+    <view class="tip small muted">
+      名片只展示本校公开档案信息（花色、救助状态、打卡统计），不含联系方式与私密记录。
+    </view>
+  </block>
+
+</view>

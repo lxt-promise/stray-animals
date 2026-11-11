@@ -95,8 +95,13 @@ console.log('\n=== 2c. school_applies 集合缺失自愈（2026-10-26 深夜，�
   // 现象：没跑过 initCollections 的环境里，每个用户每次进「我的」页都读到
   // school_applies，控制台刷「-502005 database collection not exists」。
   // 集合没建 =「还没有任何申请」，不是故障，必须和真读失败区分开。
-  assert('有集合缺失判定函数 isCollectionMissing',
-    /function isCollectionMissing\(/.test(CF))
+  // isCollectionMissing 原先定义在 index.js，为让 lib/*（notify.js 等）也能复用，
+  // 已上提到 core.js 统一导出 —— 断言跟着指向 core，index 侧只验证「确实导入了」。
+  const CORE = read('cloudfunctions/catcampus/lib/core.js')
+  assert('有集合缺失判定函数 isCollectionMissing（core.js 统一提供）',
+    /function isCollectionMissing\(/.test(CORE))
+  assert('index.js 从 core 导入 isCollectionMissing（不再自带一份）',
+    /isCollectionMissing/.test(CF) && !/function isCollectionMissing\(/.test(CF))
   assert('判定认 -502005 / collection not exists',
     /-502005/.test(CF) && /collection not exists/.test(CF))
   const msa = sliceFn(CF, 'async function mySchoolApply(')

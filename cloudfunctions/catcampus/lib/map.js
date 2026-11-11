@@ -7,7 +7,7 @@
  *  2. 两级可见：非社团成员拿不到私有点位（spotPrivate），其余点位坐标做模糊化。
  *     过滤与模糊都在服务端完成 —— 客户端拿不到的数据才是安全的。
  */
-const { cloud, db, _, COL, isMember, blurLocation, needBlur } = require('./core')
+const { cloud, db, _, COL, isMember, blurLocation, needBlur, normalizeEnum } = require('./core')
 
 /** 网格边长（度）：zoom 越大格子越小 */
 function gridSize(zoom) {
@@ -244,7 +244,12 @@ async function mapPoints(user, event) {
     .filter(x => member || !x.cat.spotPrivate)
     .map(x => {
       const c = x.cat
-      const loc = (!member && needBlur(c)) ? blurLocation(x.picked.loc) : x.picked.loc
+      // 🔴 防虐猫（2026-11-07 二次收紧）：非成员**一律**拿模糊坐标（±120m），
+      // 不再只是幼猫/病猫模糊 —— 「整体显示」：校园尺度上看得清猫大概在哪片，
+      // 放大也对不出精确楼栋；成员（管理员/社团成员）看精确坐标。
+      const loc = member ? x.picked.loc : blurLocation(x.picked.loc)
+      // 下线枚举归一（休学→失踪、灰蓝/暹罗→其他），与 sanitizeCat 同口径
+      normalizeEnum(c)
       return {
         catId: c._id,
         name: c.name,
@@ -257,10 +262,12 @@ async function mapPoints(user, event) {
         pattern: c.pattern || 'other',
         sex: c.sex || 'unknown',
         // 最近一次「本人投喂」的时间（addSighting 里 isFedByMe 时才写）。
-        // 前端据此在地图上标「未投喂」；寄养/休学/毕业/失踪/离世的猫不应催投喂，那里另行判断。
+        // 前端据此在地图上标「未投喂」；寄养/已领养/失踪/离世的猫不应催投喂，那里另行判断。
         lastFedAt: c.lastFedAt || null,
-        // 位置名：打卡点位不带名称，优先用档案常驻点的地名
-        spot: (c.location && c.location.name) || '',
+        // 位置名：打卡点位不带名称，优先用档案常驻点的地名。
+        // 🔴 防虐猫（2026-11-07）：地名就是精确位置，只给管理员 / 社团成员；
+        // 非成员只有坐标（幼猫/病猫还会模糊），弹窗里不出现「梅园1D号楼」这种字样。
+        spot: member ? ((c.location && c.location.name) || '') : '',
         lat: loc.lat,
         lng: loc.lng,
         blurred: !!loc.blurred,
@@ -326,7 +333,7 @@ async function mapPoints(user, event) {
     //  - 底部猫列表的 <image> 组件用它展示真实头像（<image> 走逻辑层，能正常加载）
     points,
     scope: member ? 'member' : 'public',
-    notice: member ? '' : '幼猫、病猫与私有点位已隐藏或模糊处理，保护猫咪安全。'
+    notice: member ? '' : '猫咪的具体位置仅管理员与社团成员可见，普通用户显示的是模糊化的大致位置。'
   }
 }
 

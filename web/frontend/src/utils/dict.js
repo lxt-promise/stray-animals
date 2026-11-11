@@ -11,10 +11,8 @@ export const PATTERN = [
   { value: 'cow', label: '奶牛', rarity: 'uncommon' },
   { value: 'black', label: '纯黑', rarity: 'uncommon' },
   { value: 'white', label: '纯白', rarity: 'rare' },
-  { value: 'gray', label: '灰蓝', rarity: 'uncommon' },
   { value: 'calico', label: '三花', rarity: 'epic' },
   { value: 'tortoiseshell', label: '玳瑁', rarity: 'epic' },
-  { value: 'siamese', label: '暹罗', rarity: 'rare' },
   { value: 'other', label: '其它', rarity: 'common' }
 ]
 
@@ -29,6 +27,7 @@ export const CAT_STATUS = [
   { value: 'kitten', label: '幼猫', tag: 'warn' },
   { value: 'sick', label: '伤病', tag: 'warn' },
   { value: 'foster', label: '寄养中', tag: 'info' },
+  { value: 'treating', label: '看病中', tag: 'warn' },
   { value: 'adopted', label: '已领养', tag: 'info' },
   { value: 'missing', label: '长期未见', tag: 'gray' },
   { value: 'rainbow', label: '已去喵星', tag: 'gray' }

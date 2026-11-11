@@ -1,0 +1,105 @@
+<view class="page">
+
+  <!-- 测试账号切换（仅超管可见）
+       超管只有一个微信身份，看不到普通用户 / 社团成员眼里的界面与数据。
+       选中后由服务端按该账号解析身份（权限、脱敏、入口显隐全按对方生效），
+       本机随时可以退出 —— 「只有超管能设置」由服务端 openid 白名单兜底。 -->
+  <view class="card" wx:if="{{testSw.show}}">
+    <view class="card-title">测试账号切换</view>
+
+    <!-- 正在以测试身份浏览：只留一个退出入口，避免误改真实账号 -->
+    <block wx:if="{{testSw.acting}}">
+      <view class="acting-bar">
+        <text class="acting-ico">🧪</text>
+        <text class="acting-txt">正在以「{{testSw.actingName}}」身份浏览</text>
+      </view>
+      <view class="small muted mt">界面、权限与数据都按这个账号生效，和真的用那个微信登录进来一致。</view>
+      <button class="btn mt" bindtap="exitActing">退出测试身份</button>
+    </block>
+
+    <block wx:else>
+      <view class="sw-row" wx:for="{{testSw.slots}}" wx:key="key">
+        <view class="sw-main">
+          <view class="sw-label">{{item.label}}</view>
+          <view class="small muted">{{item.userText}}</view>
+        </view>
+        <view class="sw-btns">
+          <picker range="{{item.names}}" value="{{item.pickIndex}}" data-slot="{{item.key}}" bindchange="onPickTestUser">
+            <view class="mini-btn">{{item.hasUser ? '更换' : '选择'}}</view>
+          </picker>
+          <view class="mini-btn primary" wx:if="{{item.hasUser}}"
+                data-id="{{item.userId}}" data-name="{{item.userName}}" bindtap="switchToTest">切换</view>
+        </view>
+      </view>
+      <view class="small muted mt" wx:if="{{testSw.hint}}">{{testSw.hint}}</view>
+      <view class="small muted mt">槽位名只用于你自己分辨；切换后真正生效的是该账号本身的角色（可在「用户管理」里调整）。</view>
+      <view class="small muted mt">切换只影响本机：你的超管账号、积分与档案都不会被改动；测试身份下不能改账号密码。</view>
+    </block>
+  </view>
+
+  <!-- 账号与安全：设置 / 修改账号密码，或登录已有账号（多设备通用）
+       已设置过账号时表单**默认收起**，点「修改账号 / 修改密码」才展开 ——
+       一进页就摊开三行输入框，看起来像「还没设置」，用户会以为没生效。-->
+  <view class="card">
+    <view class="card-title">账号与安全</view>
+
+    <view class="acct-status">
+      <text class="label">当前账号</text>
+      <text class="value {{acct.hasAccount ? '' : 'muted'}}">{{acct.hasAccount ? acct.accountMask : '未设置'}}</text>
+    </view>
+
+    <!-- 未设置账号：直接给表单（这一步必须做，没有别的入口） -->
+    <block wx:if="{{!acct.hasAccount}}">
+      <view class="mode-tabs">
+        <view class="tab {{acctMode === 'set' ? 'on' : ''}}" data-mode="set" bindtap="switchAcctMode">设置账号密码</view>
+        <view class="tab {{acctMode === 'login' ? 'on' : ''}}" data-mode="login" bindtap="switchAcctMode">登录已有账号</view>
+      </view>
+    </block>
+    <!-- 已设置账号：三个入口，再点一次同一个 tab 即收起 -->
+    <block wx:else>
+      <view class="mode-tabs" wx:if="{{!acctMode}}">
+        <view class="tab" data-mode="account" bindtap="toggleAcctMode">修改账号</view>
+        <view class="tab" data-mode="pwd" bindtap="toggleAcctMode">修改密码</view>
+        <view class="tab" data-mode="login" bindtap="toggleAcctMode">登录其他账号</view>
+      </view>
+      <view class="mode-tabs" wx:else>
+        <view class="tab on" data-mode="{{acctMode}}" bindtap="toggleAcctMode">{{acctModeLabel}}</view>
+        <view class="tab" data-mode="{{acctMode}}" bindtap="closeAcctForm">收起</view>
+      </view>
+    </block>
+
+    <block wx:if="{{acctMode === 'set'}}">
+      <view class="form-item"><text class="label">账号</text><input placeholder="手机号或邮箱" value="{{acctForm.account}}" bindinput="onAcctAccount" /></view>
+      <view class="form-item"><text class="label">密码</text><input placeholder="至少 6 位" password value="{{acctForm.password}}" bindinput="onAcctPwd" /></view>
+      <view class="form-item"><text class="label">确认密码</text><input placeholder="再次输入密码" password value="{{acctForm.password2}}" bindinput="onAcctPwd2" /></view>
+      <view class="small muted">账号只支持 11 位手机号或邮箱（唯一），密码至少 6 位。用手机号注册会自动作为联系方式。</view>
+      <button class="btn mt" bindtap="submitAcct">设置账号密码</button>
+    </block>
+
+    <block wx:elif="{{acctMode === 'account'}}">
+      <view class="form-item"><text class="label">新账号</text><input placeholder="手机号或邮箱" value="{{acctForm.account}}" bindinput="onAcctAccount" /></view>
+      <view class="form-item"><text class="label">当前密码</text><input placeholder="验证身份后修改" password value="{{acctForm.oldPassword}}" bindinput="onAcctOldPwd" /></view>
+      <view class="small muted">账号是登录与多设备同步的唯一凭据，只支持手机号或邮箱；换绑后请用新账号登录。</view>
+      <button class="btn mt" bindtap="submitAcct">确认修改账号</button>
+    </block>
+
+    <block wx:elif="{{acctMode === 'pwd'}}">
+      <view class="form-item"><text class="label">原密码</text><input placeholder="请输入原密码" password value="{{acctForm.oldPassword}}" bindinput="onAcctOldPwd" /></view>
+      <view class="form-item"><text class="label">新密码</text><input placeholder="至少 6 位" password value="{{acctForm.password}}" bindinput="onAcctPwd" /></view>
+      <view class="form-item"><text class="label">确认新密码</text><input placeholder="再次输入" password value="{{acctForm.password2}}" bindinput="onAcctPwd2" /></view>
+      <button class="btn mt" bindtap="submitAcct">确认修改密码</button>
+    </block>
+
+    <block wx:elif="{{acctMode === 'login'}}">
+      <view class="form-item"><text class="label">账号</text><input placeholder="手机号或邮箱" value="{{acctForm.account}}" bindinput="onAcctAccount" /></view>
+      <view class="form-item"><text class="label">密码</text><input placeholder="至少 6 位" password value="{{acctForm.password}}" bindinput="onAcctPwd" /></view>
+      <view class="small muted">用账号密码登录到已有账号，本设备将并入该账号（多设备通用）。</view>
+      <button class="btn mt" bindtap="submitAcct">登录已有账号</button>
+    </block>
+  </view>
+
+  <view class="tip small muted">
+    账号用于多设备登录同一份档案（个人主体下替代微信官方手机号登录），仅支持手机号或邮箱。密码以加盐哈希存储，不会明文留存。
+  </view>
+
+</view>

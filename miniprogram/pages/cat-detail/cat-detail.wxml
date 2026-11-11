@@ -30,6 +30,17 @@
     </view>
   </view>
 
+  <!-- 猫名片：把这只猫浓缩成一张可分享的卡片（对标 CatchCat 的收藏卡）。
+       放这里而不是塞进底部操作栏 —— 底部两个按钮已经是「记录目击 / 编辑档案」，
+       再挤第三个会把主操作变小。 -->
+  <view class="card mt" bindtap="goCard" hover-class="pressed">
+    <view class="card-title">
+      猫咪名片
+      <text class="more">生成可分享卡片 ›</text>
+    </view>
+    <view class="small muted">花色 · 首次记录 · 打卡次数 · 救助状态，一键分享给好友。</view>
+  </view>
+
   <!-- 基本信息 -->
   <view class="card mt">
     <view class="card-title">档案</view>
@@ -60,7 +71,7 @@
     <view class="photo-grid">
       <!-- 预览不再走 wx.previewImage（它加载失败只给一片黑、连 fail 都不回调），
            改成页面内全屏 <image>，与格子同一条渲染链路。 -->
-      <view class="photo-cell" wx:for="{{cat.photosSmall}}" wx:for-index="pi"
+      <view class="photo-cell" wx:for="{{cat.photosSmall}}" wx:for-index="pi" wx:key="pi"
             bindtap="previewPhoto" data-i="{{pi}}">
         <image wx:if="{{item}}" src="{{item}}" mode="aspectFill" lazy-load="{{true}}"
           binderror="onAlbumErr" data-i="{{pi}}" />
@@ -114,7 +125,14 @@
     </view>
     <view class="empty" wx:if="{{!sightings.length}}">
       <text class="emoji">👀</text>
-      还没有人记录过它
+      <!-- 口径说明：概览的「累计 N 次目击」是档案计数器（全量），
+           列表按可见性过滤（打卡默认仅打卡者与社团成员可见）。
+           有计数但列表为空 ≠ 没人记录过，要如实说明，别吓到用户。 -->
+      <block wx:if="{{cat.sightingCount}}">
+        <text class="empty-line">它已有 {{cat.sightingCount}} 次目击记录</text>
+        <text class="empty-line subtle">打卡记录默认仅打卡者与社团成员可见</text>
+      </block>
+      <block wx:else><text>还没有人记录过它</text></block>
     </view>
   </view>
 
@@ -147,4 +165,13 @@
     <view class="viewer-tip" wx:else>加载中…</view>
   </view>
 
+</view>
+
+<!-- 非法 / 失效 id 的空态：有人拼出了 `?id=undefined`，或档案已被删。
+     以前这里会白屏 + 弹「数据读取失败」，让人以为小程序坏了；
+     现在直接说清楚，并给一条回得去的路。 -->
+<view class="empty" wx:elif="{{notFound}}">
+  <text class="emoji">🐈</text>
+  <view>这只猫咪的档案不存在，可能已被删除</view>
+  <button class="btn mt" bindtap="goBack">返回</button>
 </view>

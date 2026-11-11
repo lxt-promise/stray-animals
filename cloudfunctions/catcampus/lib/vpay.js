@@ -42,6 +42,14 @@ const SANDBOX_ENV = 1
 const PROD_ENV = 0
 
 /**
+ * 发货钩子（业务侧注入）：虚拟支付发货意图落库后 fire-and-forget 调用。
+ * 例：募捐模块注入 donation.applyDelivery，把善款自动记进 funds。
+ * 保持本模块「只收钱 + 记意图」的解耦边界 —— 它不认识业务，只负责回调钩子。
+ */
+let _deliverHook = null
+function setDeliverHook(fn) { _deliverHook = (typeof fn === 'function') ? fn : null }
+
+/**
  * 后台道具登记（可选，用于下单时校验价格与 MP 后台一致）。
  * 道具仍须在 MP 后台【虚拟支付 → 道具管理】创建并发布；这里只是本地镜像。
  * 留空数组 = 不强制校验价格（以 MP 后台为准）。
@@ -402,7 +410,7 @@ async function onGoodsDeliver(p) {
   }
 
   // 新订单：落 delivery 意图（status=pending，业务侧发放后调 completeDelivery 置 delivered）
-  await db.collection(COL.vpayDelivery).add({
+  const add = await db.collection(COL.vpayDelivery).add({
     data: {
       wxOrderId, openid, outTradeNo, productId, quantity,
       status: 'pending', createdAt: new Date(), updatedAt: new Date()
@@ -412,6 +420,14 @@ async function onGoodsDeliver(p) {
     await db.collection(COL.vpayOrder).where({ outTradeNo }).update({
       data: { status: 'paid', wxOrderId, updatedAt: new Date() }
     }).catch(() => {})
+  }
+  // 业务钩子：把「发货意图」交给业务侧（如募捐入账）。fire-and-forget —— 绝不为钩子
+  // 阻塞微信推送 ack（回调有自身超时）；钩子内部自行 try/catch，失败只记日志不重试推送。
+  if (_deliverHook) {
+    const deliveryDoc = Object.assign({ _id: add._id }, {
+      wxOrderId, openid, outTradeNo, productId, quantity, status: 'pending'
+    })
+    _deliverHook(deliveryDoc).catch(e => console.warn('[vpay] deliverHook 失败', e && e.message))
   }
   return ackXml(0, 'success')
 }
@@ -516,6 +532,8 @@ module.exports = {
   createOrder, queryOrder, refundOrder, handleNotify,
   // 查询 / 消费
   listOrders, listDeliveries, completeDelivery,
+  // 发货钩子（业务侧注入，如募捐入账）
+  setDeliverHook,
   // 解析（测试用）
   parseXml
 }
